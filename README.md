@@ -196,7 +196,7 @@ Key flags:
 
 ## Test data
 
-`test_data/` contains two Chr22-scale PAFs (gzipped, ~3.3 MB each) for end-to-end testing.
+`test_data/` contains two Chr22-scale PAFs (gzipped, ~0.5 MB each) for end-to-end testing.
 
 ```bash
 BIN=./target/release/maligno
