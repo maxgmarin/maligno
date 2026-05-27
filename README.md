@@ -14,10 +14,10 @@
 
 ```
   SAM/BAM ──sam2paf──▶ PAF ──paf2alninfo──▶ alninfo.tsv ──readinfo──▶ readinfo.tsv ─┐
-          (optional)        (ref A)           (35 cols)                 (28 cols)     │
-                                                                                     ├─ compare ─▶ compare.tsv
-  SAM/BAM ──sam2paf──▶ PAF ──paf2alninfo──▶ alninfo.tsv ──readinfo──▶ readinfo.tsv ─┘   (77 cols)
-          (optional)        (ref B)           (35 cols)                 (28 cols)
+                            (ref A)                                                 │
+                                                                                    ├─ compare ─▶ compare.tsv
+  SAM/BAM ──sam2paf──▶ PAF ──paf2alninfo──▶ alninfo.tsv ──readinfo──▶ readinfo.tsv ─┘            
+                            (ref B)                                              
 ```
 
 | Subcommand    | Input                              | Output                                  |
