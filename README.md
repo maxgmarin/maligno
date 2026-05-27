@@ -45,6 +45,28 @@ cargo build --release --target x86_64-unknown-linux-musl
 
 ---
 
+## Install
+
+Build and copy the `maligno` binary into a `bin/` directory of your choice:
+
+```bash
+# Default: installs to ~/.cargo/bin/maligno (usually already on PATH)
+cargo install --path .
+
+# Or choose the install root — cargo appends bin/ automatically
+cargo install --path . --root ~/.local      # → ~/.local/bin/maligno
+
+# Add --force to overwrite a previous install when rebuilding
+cargo install --path . --root ~/.local --force
+```
+
+Ensure the target `bin/` directory is on your `PATH` (e.g. add
+`export PATH="$HOME/.local/bin:$PATH"` to your shell rc) so you can run `maligno`
+from anywhere. `cargo install` builds for the host machine; for the HPC static
+binary use the musl cross-build above.
+
+---
+
 ## Usage
 
 ### Full pipeline from BAM
