@@ -2,10 +2,12 @@
 //!
 //! A single binary with four subcommands covering the full pipeline:
 //!
-//!   1. `paf2alninfo`  PAF                → per-alignment info TSV (35 cols)
-//!   2. `readinfo`     alninfo TSV        → per-read summary TSV   (28 cols)
-//!   3. `compare`      two readinfo TSVs  → per-read comparison TSV (77 cols)
-//!   4. `sam2paf`      SAM                → PAF  (utility; use before paf2alninfo)
+//!   1. `paf2alninfo`        PAF                → per-alignment info TSV (36 cols)
+//!   2. `readinfo`           alninfo TSV        → per-read summary TSV   (29 cols)
+//!   3. `compare`            two readinfo TSVs  → per-read comparison TSV (79 cols by default;
+//!                                                83 with `--compare-genomic-junctions`)
+//!   4. `compare-junctions`  two readinfo TSVs  → streamlined splice-focused comparison (28 cols)
+//!   5. `sam2paf`            SAM                → PAF  (utility; use before paf2alninfo)
 //!
 //! Full pipeline (including optional SAM conversion):
 //!
@@ -20,8 +22,10 @@
 //! appear in each readinfo file (with Num_Aln=0), so they DO get compared.
 
 // ── Pipeline modules ──────────────────────────────────────────────────────────
+mod cigar_junctions;    // CIGAR-based intron extractor (utility; not yet wired in)
+mod compare_junctions;  // streamlined splice-focused comparison
 mod compare_streaming;
-mod cs_parser;       // cs-tag parser  (PAF → alninfo path)
+mod cs_parser;          // cs-tag parser  (PAF → alninfo path; also extracts genomic junctions)
 mod io_utils;
 mod junction;
 mod paf;
@@ -35,6 +39,7 @@ mod sam2paf; // SAM → PAF converter (self-contained; owns cigar/convert/cs_gen
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+use compare_junctions::CompareJunctionsArgs;
 use compare_streaming::CompareStreamingArgs;
 use paf2alninfo::Paf2AlnInfoArgs;
 use readinfo::ReadInfoArgs;
@@ -56,6 +61,8 @@ enum Commands {
     Readinfo(ReadInfoArgs),
     /// Streaming merge-join comparison of two sorted readinfo TSVs (constant memory).
     Compare(CompareStreamingArgs),
+    /// Streamlined splice-junction-focused comparison (28 cols).
+    CompareJunctions(CompareJunctionsArgs),
     /// SAM → PAF converter (utility; use before paf2alninfo to start the pipeline).
     Sam2paf(Sam2pafArgs),
 }
@@ -65,7 +72,8 @@ fn main() -> Result<()> {
     match &cli.command {
         Commands::Paf2alninfo(args) => paf2alninfo::run(args),
         Commands::Readinfo(args)    => readinfo::run(args),
-        Commands::Compare(args)     => compare_streaming::run(args),
-        Commands::Sam2paf(args)     => sam2paf::run(args),
+        Commands::Compare(args)          => compare_streaming::run(args),
+        Commands::CompareJunctions(args) => compare_junctions::run(args),
+        Commands::Sam2paf(args)          => sam2paf::run(args),
     }
 }

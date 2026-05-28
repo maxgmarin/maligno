@@ -15,7 +15,10 @@ use std::io::{BufRead, Write};
 use anyhow::{Context, Result};
 
 use crate::io_utils::{escape_tsv_field, fmt_float, open_input, open_output};
-use crate::junction::{junction_distance, junction_set_stats, parse_junction_str};
+use crate::junction::{
+    genomic_junction_set_stats, junction_distance, junction_set_stats, parse_genomic_junction_str,
+    parse_junction_str,
+};
 
 // ── CLI args ─────────────────────────────────────────────────────────────────
 
@@ -40,6 +43,14 @@ pub struct CompareStreamingArgs {
     /// Output comparison TSV file ('.gz' for gzip)
     #[arg(short = 'o', long = "output", value_name = "compare.tsv[.gz]")]
     pub output: String,
+
+    /// Also emit set-based comparison metrics for genome-coordinate junctions.
+    /// Adds 4 columns at the end: Genomic_N_Matched_Junctions, Genomic_N_Unmatched_Junctions,
+    /// Genomic_N_Junctions_OnlyA, Genomic_N_Junctions_OnlyB.
+    /// Cross-chromosome compares are automatically disjoint because chrom is embedded
+    /// in each genomic-junction tuple.
+    #[arg(long = "compare-genomic-junctions")]
+    pub compare_genomic_junctions: bool,
 }
 
 // ── ReadInfo column indices (must match readinfo.rs) ──────────────────────────
@@ -71,10 +82,11 @@ const READINFO_DATA_COLS: &[&str] = &[
     "N_SoftClipped_Events",
     "num_bp_inserted",
     "cs",
+    "genomic_junctions",
 ];
 
-fn comparison_col_names() -> Vec<&'static str> {
-    vec![
+fn comparison_col_names(with_genomic: bool) -> Vec<&'static str> {
+    let mut cols = vec![
         "AS_Diff",
         "ms_Diff",
         "AS_Ratio",
@@ -98,19 +110,28 @@ fn comparison_col_names() -> Vec<&'static str> {
         "N_Matched_Junctions",
         "N_Junctions_OnlyA",
         "N_Junctions_OnlyB",
-    ]
+    ];
+    if with_genomic {
+        cols.extend_from_slice(&[
+            "Genomic_N_Matched_Junctions",
+            "Genomic_N_Unmatched_Junctions",
+            "Genomic_N_Junctions_OnlyA",
+            "Genomic_N_Junctions_OnlyB",
+        ]);
+    }
+    cols
 }
 
 // ── ReadKey for sorting/comparison ──────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct ReadKey {
-    name: String,
-    len: u64,
+pub(crate) struct ReadKey {
+    pub(crate) name: String,
+    pub(crate) len: u64,
 }
 
 impl ReadKey {
-    fn from_fields(fields: &[String], idx_name: usize, idx_len: usize) -> Result<Self> {
+    pub(crate) fn from_fields(fields: &[String], idx_name: usize, idx_len: usize) -> Result<Self> {
         let name = fields[idx_name].clone();
         let len: u64 = fields[idx_len]
             .parse()
@@ -139,7 +160,7 @@ fn safe_ratio_u64(a: u64, b: u64) -> String {
 
 // ── Streaming line iterator with buffering ─────────────────────────────────
 
-struct ReadInfoReader {
+pub(crate) struct ReadInfoReader {
     reader: Box<dyn BufRead>,
     header: Vec<String>,
     col_map: std::collections::HashMap<String, usize>,
@@ -148,7 +169,7 @@ struct ReadInfoReader {
 }
 
 impl ReadInfoReader {
-    fn new(path: &str) -> Result<Self> {
+    pub(crate) fn new(path: &str) -> Result<Self> {
         let reader = open_input(path)?;
 
         let mut r = ReadInfoReader {
@@ -180,7 +201,7 @@ impl ReadInfoReader {
         Ok(())
     }
 
-    fn advance(&mut self) -> Result<()> {
+    pub(crate) fn advance(&mut self) -> Result<()> {
         if self.done {
             self.current_line = None;
             return Ok(());
@@ -209,11 +230,11 @@ impl ReadInfoReader {
         Ok(())
     }
 
-    fn current(&self) -> Option<&[String]> {
+    pub(crate) fn current(&self) -> Option<&[String]> {
         self.current_line.as_ref().map(|v| v.as_slice())
     }
 
-    fn get_col(&self, col_name: &str) -> Option<&str> {
+    pub(crate) fn get_col(&self, col_name: &str) -> Option<&str> {
         self.col_map
             .get(col_name)
             .and_then(|&i| {
@@ -223,7 +244,7 @@ impl ReadInfoReader {
             })
     }
 
-    fn get_col_idx(&self, col_name: &str) -> Option<usize> {
+    pub(crate) fn get_col_idx(&self, col_name: &str) -> Option<usize> {
         self.col_map.get(col_name).copied()
     }
 }
@@ -255,7 +276,7 @@ pub fn run(args: &CompareStreamingArgs) -> Result<()> {
     for col in READINFO_DATA_COLS {
         write!(out, "\t{col}_{}", args.label_b)?;
     }
-    for col in comparison_col_names() {
+    for col in comparison_col_names(args.compare_genomic_junctions) {
         write!(out, "\t{col}")?;
     }
     writeln!(out)?;
@@ -440,6 +461,19 @@ pub fn run(args: &CompareStreamingArgs) -> Result<()> {
             let (n_matched, n_only_a, n_only_b) = junction_set_stats(&juncs_a, &juncs_b); // 75/76/77
             let n_unmatched = n_only_a + n_only_b; // col 73 (REDEFINED: set symmetric difference)
 
+            // Genomic-junction set comparison (flag-gated).
+            // Cross-chromosome safety is automatic: chrom is part of each tuple element.
+            let (g_matched, g_only_a, g_only_b, g_unmatched) = if args.compare_genomic_junctions {
+                let a_genomic = reader_a.get_col("genomic_junctions").unwrap_or("");
+                let b_genomic = reader_b.get_col("genomic_junctions").unwrap_or("");
+                let gj_a = parse_genomic_junction_str(a_genomic);
+                let gj_b = parse_genomic_junction_str(b_genomic);
+                let (m, oa, ob) = genomic_junction_set_stats(&gj_a, &gj_b);
+                (m, oa, ob, oa + ob)
+            } else {
+                (0, 0, 0, 0)
+            };
+
             // Write output row
             write!(out, "{}\t{}", key_a.name, key_a.len)?;
 
@@ -468,6 +502,12 @@ pub fn run(args: &CompareStreamingArgs) -> Result<()> {
                 fmt_float(seqid_diff),
                 fmt_float(qac_diff),
             )?;
+            if args.compare_genomic_junctions {
+                write!(
+                    out,
+                    "\t{g_matched}\t{g_unmatched}\t{g_only_a}\t{g_only_b}",
+                )?;
+            }
             writeln!(out)?;
 
             n_merged += 1;

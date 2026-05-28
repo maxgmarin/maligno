@@ -56,3 +56,203 @@ pub fn junction_set_stats(a: &[i64], b: &[i64]) -> (u64, u64, u64) {
     let only_b = set_b.len() as u64 - overlap;
     (overlap, only_a, only_b)
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// Genomic-junction (chrom, start, end) tuple parsing + set comparison
+// ───────────────────────────────────────────────────────────────────────────
+
+/// Parse a Python tuple-of-tuples string of `(chrom, start, end)` triples
+/// into `Vec<(String, u64, u64)>`.
+///
+/// Accepts the format written by `write_genomic_junction_tuple` in record.rs:
+///
+/// ```text
+/// "()"                                         → []
+/// "(('chr22', 100, 250),)"                     → [("chr22", 100, 250)]
+/// "(('chr22', 100, 250), ('chr22', 400, 800))" → [..., ...]
+/// ```
+///
+/// Either single or double quotes around `chrom` are accepted. Backslash-escapes
+/// (`\\`, `\'`, `\"`, `\t`, `\n`, `\r`) inside the quoted chrom are unescaped.
+/// Defensive against malformed input — returns the tuples it could parse.
+pub fn parse_genomic_junction_str(s: &str) -> Vec<(String, u64, u64)> {
+    let bytes = s.as_bytes();
+    let n = bytes.len();
+    let mut out: Vec<(String, u64, u64)> = Vec::new();
+    let mut i = 0;
+
+    while i < n {
+        // Look for "(<quote>" — the start of an inner (chrom, start, end) tuple.
+        if bytes[i] == b'(' && i + 1 < n && (bytes[i + 1] == b'\'' || bytes[i + 1] == b'"') {
+            let quote = bytes[i + 1];
+            i += 2; // past '(' and opening quote
+
+            // Read quoted chrom (handle backslash escapes).
+            let mut chrom = String::new();
+            while i < n && bytes[i] != quote {
+                if bytes[i] == b'\\' && i + 1 < n {
+                    match bytes[i + 1] {
+                        b'\\' => chrom.push('\\'),
+                        b'\'' => chrom.push('\''),
+                        b'"'  => chrom.push('"'),
+                        b't'  => chrom.push('\t'),
+                        b'n'  => chrom.push('\n'),
+                        b'r'  => chrom.push('\r'),
+                        other => {
+                            chrom.push('\\');
+                            chrom.push(other as char);
+                        }
+                    }
+                    i += 2;
+                } else {
+                    chrom.push(bytes[i] as char);
+                    i += 1;
+                }
+            }
+            if i >= n { break; }
+            i += 1; // past closing quote
+
+            // Skip ", " (comma + optional whitespace).
+            while i < n && (bytes[i] == b',' || bytes[i].is_ascii_whitespace()) {
+                i += 1;
+            }
+
+            // Parse start integer.
+            let start_idx = i;
+            while i < n && bytes[i].is_ascii_digit() { i += 1; }
+            let start: u64 = s[start_idx..i].parse().unwrap_or(0);
+
+            // Skip ", ".
+            while i < n && (bytes[i] == b',' || bytes[i].is_ascii_whitespace()) {
+                i += 1;
+            }
+
+            // Parse end integer.
+            let end_idx = i;
+            while i < n && bytes[i].is_ascii_digit() { i += 1; }
+            let end: u64 = s[end_idx..i].parse().unwrap_or(0);
+
+            // Skip to closing ')' of this inner tuple.
+            while i < n && bytes[i] != b')' { i += 1; }
+            if i < n { i += 1; }
+
+            out.push((chrom, start, end));
+        } else {
+            i += 1;
+        }
+    }
+
+    out
+}
+
+/// Set-overlap stats for genome-coordinate junctions, treating each
+/// `(chrom, start, end)` triple as a set element. Deduplicated on both sides.
+///
+/// Cross-chromosome safety: different `chrom` strings → different set elements →
+/// junctions on different contigs cannot accidentally match.
+pub fn genomic_junction_set_stats(
+    a: &[(String, u64, u64)],
+    b: &[(String, u64, u64)],
+) -> (u64, u64, u64) {
+    use std::collections::HashSet;
+    let set_a: HashSet<&(String, u64, u64)> = a.iter().collect();
+    let set_b: HashSet<&(String, u64, u64)> = b.iter().collect();
+    let overlap = set_a.intersection(&set_b).count() as u64;
+    let only_a = set_a.len() as u64 - overlap;
+    let only_b = set_b.len() as u64 - overlap;
+    (overlap, only_a, only_b)
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Tests
+// ───────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_genomic_junction_str ─────────────────────────────────────────
+
+    #[test]
+    fn genomic_parse_empty() {
+        assert!(parse_genomic_junction_str("()").is_empty());
+        assert!(parse_genomic_junction_str("").is_empty());
+    }
+
+    #[test]
+    fn genomic_parse_single() {
+        assert_eq!(
+            parse_genomic_junction_str("(('chr22', 100, 250),)"),
+            vec![("chr22".to_string(), 100, 250)]
+        );
+    }
+
+    #[test]
+    fn genomic_parse_multiple() {
+        assert_eq!(
+            parse_genomic_junction_str("(('chr22', 100, 250), ('chr22', 400, 800))"),
+            vec![
+                ("chr22".to_string(), 100, 250),
+                ("chr22".to_string(), 400, 800),
+            ]
+        );
+    }
+
+    #[test]
+    fn genomic_parse_double_quoted() {
+        assert_eq!(
+            parse_genomic_junction_str("((\"chr1\", 5, 9),)"),
+            vec![("chr1".to_string(), 5, 9)]
+        );
+    }
+
+    #[test]
+    fn genomic_parse_escape_sequence_in_chrom() {
+        // Defensive: chrom containing an escaped tab should be unescaped.
+        assert_eq!(
+            parse_genomic_junction_str("(('weird\\tname', 1, 2),)"),
+            vec![("weird\tname".to_string(), 1, 2)]
+        );
+    }
+
+    // ── genomic_junction_set_stats ─────────────────────────────────────────
+
+    #[test]
+    fn genomic_set_same_chrom_partial_overlap() {
+        let a = vec![
+            ("chr1".into(), 100, 200),
+            ("chr1".into(), 300, 400),
+        ];
+        let b = vec![
+            ("chr1".into(), 300, 400),
+            ("chr1".into(), 500, 600),
+        ];
+        // overlap = {(chr1, 300, 400)}; only_a = {(chr1, 100, 200)}; only_b = {(chr1, 500, 600)}
+        assert_eq!(genomic_junction_set_stats(&a, &b), (1, 1, 1));
+    }
+
+    #[test]
+    fn genomic_set_cross_chrom_disjoint() {
+        // Same coordinates on different chromosomes must NOT match.
+        let a = vec![("chr1".into(), 100, 250)];
+        let b = vec![("chr2".into(), 100, 250)];
+        assert_eq!(genomic_junction_set_stats(&a, &b), (0, 1, 1));
+    }
+
+    #[test]
+    fn genomic_set_identical() {
+        let v = vec![
+            ("chr1".into(), 100, 200),
+            ("chr1".into(), 300, 400),
+        ];
+        assert_eq!(genomic_junction_set_stats(&v, &v), (2, 0, 0));
+    }
+
+    #[test]
+    fn genomic_set_one_side_empty() {
+        let a = vec![("chr1".into(), 1, 2), ("chr1".into(), 3, 4)];
+        let b: Vec<(String, u64, u64)> = vec![];
+        assert_eq!(genomic_junction_set_stats(&a, &b), (0, 2, 0));
+        assert_eq!(genomic_junction_set_stats(&b, &a), (0, 0, 2));
+    }
+}

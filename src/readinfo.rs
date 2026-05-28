@@ -31,6 +31,7 @@ const COL_JUNCTIONS: usize = 29;
 const COL_SEQID: usize = 32;
 const COL_QUERY_ALN_LEN: usize = 33;
 const COL_QUERY_ALN_COV: usize = 34;
+const COL_GENOMIC_JUNCTIONS: usize = 35;
 
 pub const READINFO_HEADER: &str = "Read_Name\tRead_Len\t\
     TargetRef_1st\t\
@@ -48,7 +49,8 @@ pub const READINFO_HEADER: &str = "Read_Name\tRead_Len\t\
     N_SoftClipped_Bases_Start\tN_SoftClipped_Bases_End\t\
     N_SoftClipped_Events\t\
     num_bp_inserted\t\
-    cs";
+    cs\t\
+    genomic_junctions";
 
 // ── ReadInfo row ─────────────────────────────────────────────────────────────
 
@@ -86,6 +88,8 @@ pub struct ReadInfoRow {
     pub n_sc_events: u64,
     pub num_bp_inserted: u64,
     pub cs: String,
+    /// Best alignment's genomic_junctions string (Python tuple-of-tuples form).
+    pub genomic_junctions: String,
     /// All fields except Read_Name and Read_Len, pre-formatted for pass-through.
     pub raw_fields: Vec<String>,
 }
@@ -139,7 +143,7 @@ struct AlnRow {
 
 fn parse_aln_row(line: &str) -> Option<AlnRow> {
     let fields: Vec<String> = line.split('\t').map(str::to_owned).collect();
-    if fields.len() <= COL_QUERY_ALN_COV {
+    if fields.len() <= COL_GENOMIC_JUNCTIONS {
         return None;
     }
     let ms: i64 = fields[COL_MS].parse().unwrap_or(0);
@@ -185,6 +189,7 @@ fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
     let num_bp_inserted: u64 = bf[COL_NUM_BP_INSERTED].parse().unwrap_or(0);
     let junctions = bf[COL_JUNCTIONS].clone();
     let cs = bf[COL_CS].clone();
+    let genomic_junctions = bf[COL_GENOMIC_JUNCTIONS].clone();
     let junc_count = junction_count_str(&junctions);
 
     // Aggregates over all rows
@@ -272,6 +277,7 @@ fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
         n_sc_events.to_string(),
         num_bp_inserted.to_string(),
         cs.clone(),
+        genomic_junctions.clone(),
     ];
 
     ReadInfoRow {
@@ -303,6 +309,7 @@ fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
         n_sc_events,
         num_bp_inserted,
         cs,
+        genomic_junctions,
         raw_fields,
     }
 }
@@ -441,6 +448,7 @@ fn collapse_group_nosort(rows: &[AlnRow]) -> ReadInfoRow {
     let num_bp_inserted: u64 = bf[COL_NUM_BP_INSERTED].parse().unwrap_or(0);
     let junctions = bf[COL_JUNCTIONS].clone();
     let cs = bf[COL_CS].clone();
+    let genomic_junctions = bf[COL_GENOMIC_JUNCTIONS].clone();
     let junc_count = junction_count_str(&junctions);
 
     let mut as_max = i64::MIN;
@@ -502,6 +510,7 @@ fn collapse_group_nosort(rows: &[AlnRow]) -> ReadInfoRow {
         n_sc_events.to_string(),
         num_bp_inserted.to_string(),
         cs.clone(),
+        genomic_junctions.clone(),
     ];
 
     ReadInfoRow {
@@ -533,6 +542,7 @@ fn collapse_group_nosort(rows: &[AlnRow]) -> ReadInfoRow {
         n_sc_events,
         num_bp_inserted,
         cs,
+        genomic_junctions,
         raw_fields,
     }
 }

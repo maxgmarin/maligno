@@ -57,6 +57,11 @@ pub struct AlnInfo {
     pub seqid:                f64,
     pub query_aln_len:        u64,
     pub query_aln_cov:        f64,
+    /// Splice junctions in absolute reference coordinates (0-based half-open).
+    /// Each tuple is (chrom, intron_start, intron_end), ref-ascending. Empty for unaligned rows.
+    /// `chrom` is embedded per tuple so cross-chromosome set comparisons are automatically
+    /// disjoint (junctions on different contigs never collide).
+    pub genomic_junctions:    Vec<(String, u64, u64)>,
 }
 
 impl AlnInfo {
@@ -105,6 +110,16 @@ impl AlnInfo {
         };
 
         let splice_junction_count = junctions.len();
+
+        // ── Genomic junctions ─────────────────────────────────────────────
+        // Convert ref-relative (start, end) from the cs walk to absolute reference
+        // coords by adding target_start. Embed target_name as the chrom in each tuple
+        // so set-based comparisons across chromosomes don't accidentally match.
+        let genomic_junctions: Vec<(String, u64, u64)> = cs_stats
+            .raw_genomic_junctions
+            .iter()
+            .map(|&(s, e)| (rec.target_name.to_owned(), rec.target_start + s, rec.target_start + e))
+            .collect();
 
         // ── Derived scalars ───────────────────────────────────────────────
         let target_start_1based = rec.target_start + 1;
@@ -156,6 +171,7 @@ impl AlnInfo {
             seqid,
             query_aln_len,
             query_aln_cov,
+            genomic_junctions,
         }
     }
 
@@ -174,7 +190,8 @@ impl AlnInfo {
              N_SoftClipped_Bases_Start\tN_SoftClipped_Bases_End\t\
              N_SoftClipped_Events\tnum_bp_inserted\t\
              junctions\tsplice_junction_count\t\
-             Target_Start_1based\tseqid\tQuery_Aln_Len\tQuery_Aln_Cov"
+             Target_Start_1based\tseqid\tQuery_Aln_Len\tQuery_Aln_Cov\t\
+             genomic_junctions"
         )
     }
 
@@ -203,13 +220,17 @@ impl AlnInfo {
         // junctions: Python's str(tuple) format
         write_junction_tuple(w, &self.junctions)?;
 
-        writeln!(w, "\t{}\t{}\t{}\t{}\t{}",
+        write!(w, "\t{}\t{}\t{}\t{}\t{}\t",
             self.splice_junction_count,
             self.target_start_1based,
             fmt_float(self.seqid),
             self.query_aln_len,
             fmt_float(self.query_aln_cov),
-        )
+        )?;
+
+        // genomic_junctions: nested Python tuple format with chrom embedded
+        write_genomic_junction_tuple(w, &self.genomic_junctions)?;
+        writeln!(w)
     }
 }
 
@@ -262,6 +283,63 @@ fn write_junction_tuple<W: Write>(w: &mut W, junctions: &[i64]) -> std::io::Resu
             for (i, j) in junctions.iter().enumerate() {
                 if i > 0 { write!(w, ", ")?; }
                 write!(w, "{j}")?;
+            }
+            write!(w, ")")
+        }
+    }
+}
+
+/// Write genomic junctions in Python's `str(tuple of tuples)` format.
+///
+/// Each inner tuple is `(chrom, start, end)` — chrom is embedded so cross-chromosome
+/// set comparisons don't accidentally match. Coordinates are 0-based half-open.
+///
+/// | len | example                                     |
+/// |-----|---------------------------------------------|
+/// | 0   | `()`                                        |
+/// | 1   | `(('chr22', 100, 250),)`                    |
+/// | 2+  | `(('chr22', 100, 250), ('chr22', 400, 800))`|
+///
+/// Single quotes match Python's default `repr()` for strings.
+fn write_genomic_junction_tuple<W: Write>(
+    w: &mut W,
+    juncs: &[(String, u64, u64)],
+) -> std::io::Result<()> {
+    // The chrom string is wrapped in single quotes. If a chrom ever contained a single
+    // quote, backslash, tab, or newline we escape it. (Reference contig names in practice
+    // never contain these, but be defensive.)
+    fn write_chrom<W: Write>(w: &mut W, c: &str) -> std::io::Result<()> {
+        write!(w, "'")?;
+        for ch in c.chars() {
+            match ch {
+                '\\' => write!(w, "\\\\")?,
+                '\'' => write!(w, "\\'")?,
+                '\t' => write!(w, "\\t")?,
+                '\n' => write!(w, "\\n")?,
+                '\r' => write!(w, "\\r")?,
+                _ => write!(w, "{ch}")?,
+            }
+        }
+        write!(w, "'")
+    }
+
+    match juncs.len() {
+        0 => write!(w, "()"),
+        1 => {
+            // Outer 1-tuple wrapping the inner (chrom, start, end) 3-tuple.
+            // Without the trailing comma, Python parses this as just the inner 3-tuple.
+            let (c, s, e) = &juncs[0];
+            write!(w, "((")?;
+            write_chrom(w, c)?;
+            write!(w, ", {s}, {e}),)")
+        }
+        _ => {
+            write!(w, "(")?;
+            for (i, (c, s, e)) in juncs.iter().enumerate() {
+                if i > 0 { write!(w, ", ")?; }
+                write!(w, "(")?;
+                write_chrom(w, c)?;
+                write!(w, ", {s}, {e})")?;
             }
             write!(w, ")")
         }

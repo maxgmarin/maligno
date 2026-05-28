@@ -22,9 +22,10 @@
 
 | Subcommand    | Input                              | Output                                  |
 |---------------|------------------------------------|-----------------------------------------|
-| `paf2alninfo` | PAF (`-i`, `.gz`/`-` ok)           | per-alignment info TSV (`-o`, 35 cols)  |
-| `readinfo`    | alninfo TSV (`-i`, `.gz`/`-` ok)   | per-read summary TSV (`-o`, 28 cols)    |
-| `compare`     | two readinfo TSVs (`-a`, `-b`)     | per-read comparison TSV (`-o`, 77 cols) |
+| `paf2alninfo` | PAF (`-i`, `.gz`/`-` ok)           | per-alignment info TSV (`-o`, 36 cols)  |
+| `readinfo`    | alninfo TSV (`-i`, `.gz`/`-` ok)   | per-read summary TSV (`-o`, 29 cols)    |
+| `compare`     | two readinfo TSVs (`-a`, `-b`)     | per-read comparison TSV (`-o`, 79 cols, +4 with `--compare-genomic-junctions`) |
+| `compare-junctions` | two readinfo TSVs (`-a`, `-b`) | streamlined splice-focused comparison TSV (`-o`, 28 cols) |
 | `sam2paf`     | SAM file or stdin (`-`)            | PAF written to stdout                   |
 
 All inputs/outputs transparently support gzip (`.gz` suffix) and stdin/stdout (`-`).
@@ -78,7 +79,7 @@ BIN=./target/release/maligno
 samtools view -h refA.bam | $BIN sam2paf -U - | gzip > refA.paf.gz
 samtools view -h refB.bam | $BIN sam2paf -U - | gzip > refB.paf.gz
 
-# 1. PAF → alninfo  (one row per alignment, 35 cols)
+# 1. PAF → alninfo  (one row per alignment, 36 cols)
 $BIN paf2alninfo -i refA.paf.gz -o refA.alninfo.tsv.gz
 $BIN paf2alninfo -i refB.paf.gz -o refB.alninfo.tsv.gz
 
@@ -151,6 +152,31 @@ These stay internally consistent: `N_Matched_Junctions + N_Junctions_OnlyA` equa
 junction count of A, and likewise for B. (`Junction_Distance` and `Junc_Dist_V2` are
 retained positional/legacy metrics.)
 
+**Genomic-junction comparison (`--compare-genomic-junctions`).** When both alignments are to
+the *same* reference, you can compare junctions in **reference coordinates** instead of (or
+in addition to) the query-coordinate metrics above. Pass `--compare-genomic-junctions` to
+`compare` and four additional columns appear at the end of the row:
+
+| Column                          | Meaning |
+|---------------------------------|---------|
+| `Genomic_N_Matched_Junctions`   | overlap on `(chrom, start, end)` sets |
+| `Genomic_N_Unmatched_Junctions` | set symmetric difference (= `OnlyA + OnlyB`) |
+| `Genomic_N_Junctions_OnlyA`     | only in A |
+| `Genomic_N_Junctions_OnlyB`     | only in B |
+
+The `chrom` is embedded in each genomic-junction tuple, so cross-chromosome compares
+correctly produce zero overlap. The underlying column (`genomic_junctions`, always emitted
+by `paf2alninfo` and `readinfo`) uses 0-based half-open BED coordinates in
+`(('chrom', start, end), ...)` Python-tuple-of-tuples form, parseable with
+`ast.literal_eval`.
+
+> **Migration note (column positions).** Adding `genomic_junctions` as a per-side data
+> column shifted the position of every subsequent column by 2 in `compare` output. The
+> comparison block now starts at column **57** (was 55), and e.g. `N_Unmatched_Junctions`
+> moved from column 73 → **75**. Scripts that filter by column *number* (`awk '$73 > 0'`)
+> need updating; prefer column-*name* lookup using the header (e.g.
+> `awk -F'\t' 'NR==1{for(i=1;i<=NF;i++)c[$i]=i;next} $c["N_Unmatched_Junctions"]>0'`).
+
 **Join semantics — inner join.** Only reads present in **both** files produce an output
 row. Reads present in only one file are dropped but counted in the end-of-run summary
 printed to stderr:
@@ -173,6 +199,33 @@ Read comparison summary:
 ```bash
 LC_ALL=C sort -t$'\t' -k1,1 -k2,2n input.readinfo.tsv   # keep header separately
 ```
+
+### `compare-junctions`
+
+A **streamlined, splice-focused** variant of `compare`. Same streaming merge-join over two
+readinfo files, but emits only **28 columns** instead of 79–83 — useful when the question is
+"how do the splice junctions for each read differ between two alignments?" rather than full
+score/indel/coverage diffs.
+
+| Cols | Content |
+|------|---------|
+| 1–2  | `Read_Name`, `Read_Len` (join keys) |
+| 3–18 | 8 per-side data columns × 2 sides: `TargetRef_1st, Num_Aln, JuncCount, seqid_Max, Query_Aln_Cov_Max, junctions, genomic_junctions, cs` |
+| 19–28| 10 comparison metrics: `seqid_Diff, QueryAlnCov_Diff` + 4 query-junction set metrics (matched / unmatched / OnlyA / OnlyB) + 4 parallel `Genomic_*` set metrics |
+
+Genomic-junction metrics are always emitted (no flag) — `chrom` is embedded in each
+genomic-junction tuple, so cross-chromosome compares correctly produce zero overlap.
+
+```bash
+$BIN compare-junctions \
+  -a refA.readinfo.tsv.gz --label-a RefA \
+  -b refB.readinfo.tsv.gz --label-b RefB \
+  -o RefA_vs_RefB.junctions.tsv.gz
+```
+
+The metric values that overlap with the full `compare` output (the 8 set columns) are
+identical row-for-row — `compare-junctions` is purely a column-selection variant, not a
+different algorithm.
 
 ### `sam2paf`
 
@@ -219,7 +272,7 @@ zcat < /tmp/Splice_vs_SpliceHQ.compare.tsv.gz | awk -F'\t' 'NR==1 || $73 > 0' | 
 zcat < /tmp/Splice_vs_SpliceHQ.compare.tsv.gz | awk -F'\t' 'NR==1 || $73 > 0' | cut -f 1,2,13,39,11,37,73  | less -S
 
 
-# Verify column counts (expect 35, 28, 77)
+# Verify column counts (expect 36, 29, 79)
 zcat < /tmp/Splice.alninfo.tsv.gz              | awk -F'\t' '{print NF}' | sort | uniq -c
 zcat < /tmp/Splice.readinfo.tsv.gz             | awk -F'\t' '{print NF}' | sort | uniq -c
 zcat < /tmp/Splice_vs_SpliceHQ.compare.tsv.gz | awk -F'\t' '{print NF}' | sort | uniq -c
@@ -234,12 +287,14 @@ src/
 ├── main.rs                 — CLI dispatcher (clap subcommands)
 ├── paf2alninfo.rs          — PAF → per-alignment info TSV
 ├── readinfo.rs             — alninfo → per-read summary TSV
-├── compare_streaming.rs    — streaming merge-join comparison
+├── compare_streaming.rs    — streaming merge-join comparison (full)
+├── compare_junctions.rs    — streamlined splice-focused comparison (28 cols)
 ├── record.rs               — AlnInfo struct + TSV serialisation
 ├── paf.rs                  — PAF record parser
-├── cs_parser.rs            — cs-tag parser (PAF → stats)
+├── cs_parser.rs            — cs-tag parser (PAF → stats + genomic junctions)
+├── cigar_junctions.rs      — CIGAR-based intron extractor (utility, not yet wired in)
 ├── io_utils.rs             — open_input / open_output (gzip transparent)
-├── junction.rs             — junction coordinate utilities
+├── junction.rs             — junction parsers + set-overlap stats
 └── sam2paf/
     ├── mod.rs              — sam2paf CLI args + run()
     ├── convert.rs          — SAM → PAF conversion logic
