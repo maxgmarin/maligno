@@ -56,7 +56,8 @@ pub struct CompareStreamingArgs {
 // ── ReadInfo column indices (must match readinfo.rs) ──────────────────────────
 
 const READINFO_DATA_COLS: &[&str] = &[
-    "TargetRef_1st",
+    "TargetChr",
+    "Strand",
     "AS_Max",
     "AS_Min",
     "ms_Max",
@@ -87,6 +88,7 @@ const READINFO_DATA_COLS: &[&str] = &[
 
 fn comparison_col_names(with_genomic: bool) -> Vec<&'static str> {
     let mut cols = vec![
+        "Strand_Match",
         "AS_Diff",
         "ms_Diff",
         "AS_Ratio",
@@ -373,6 +375,7 @@ pub fn run(args: &CompareStreamingArgs) -> Result<()> {
                 .parse()
                 .unwrap_or(0);
             let a_junctions = reader_a.get_col("junctions").unwrap_or("");
+            let a_strand = reader_a.get_col("Strand").unwrap_or("*");
 
             // Parse typed values from B
             let b_as_max: i64 = reader_b.get_col("AS_Max").unwrap_or("0").parse().unwrap_or(0);
@@ -428,8 +431,10 @@ pub fn run(args: &CompareStreamingArgs) -> Result<()> {
                 .parse()
                 .unwrap_or(0);
             let b_junctions = reader_b.get_col("junctions").unwrap_or("");
+            let b_strand = reader_b.get_col("Strand").unwrap_or("*");
 
             // Compute metrics
+            let strand_match = a_strand == b_strand;
             let as_diff = b_as_max - a_as_max;
             let ms_diff = b_ms_max - a_ms_max;
             let as_ratio = safe_ratio_i64(b_as_max, a_as_max);
@@ -488,10 +493,11 @@ pub fn run(args: &CompareStreamingArgs) -> Result<()> {
                 write!(out, "\t{escaped}")?;
             }
 
-            // Comparison metrics
+            // Comparison metrics (Strand_Match first, then existing diffs/ratios)
             write!(
                 out,
-                "\t{as_diff}\t{ms_diff}\t{as_ratio}\t{ms_ratio}\t{}\t{qal_diff}\t{}\t\
+                "\t{strand_match}\t\
+                 {as_diff}\t{ms_diff}\t{as_ratio}\t{ms_ratio}\t{}\t{qal_diff}\t{}\t\
                  {bp_ins_diff}\t{bp_ins_ratio}\t\
                  {n_ins_diff}\t{n_ins_ratio}\t\
                  {n_del_diff}\t{n_del_ratio}\t\

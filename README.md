@@ -23,9 +23,9 @@
 | Subcommand    | Input                              | Output                                  |
 |---------------|------------------------------------|-----------------------------------------|
 | `paf2alninfo` | PAF (`-i`, `.gz`/`-` ok)           | per-alignment info TSV (`-o`, 36 cols)  |
-| `readinfo`    | alninfo TSV (`-i`, `.gz`/`-` ok)   | per-read summary TSV (`-o`, 29 cols)    |
-| `compare`     | two readinfo TSVs (`-a`, `-b`)     | per-read comparison TSV (`-o`, 79 cols, +4 with `--compare-genomic-junctions`) |
-| `compare-junctions` | two readinfo TSVs (`-a`, `-b`) | streamlined splice-focused comparison TSV (`-o`, 28 cols) |
+| `readinfo`    | alninfo TSV (`-i`, `.gz`/`-` ok)   | per-read summary TSV (`-o`, 30 cols)    |
+| `compare`     | two readinfo TSVs (`-a`, `-b`)     | per-read comparison TSV (`-o`, 82 cols, +4 with `--compare-genomic-junctions`) |
+| `compare-junctions` | two readinfo TSVs (`-a`, `-b`) | streamlined splice-focused comparison TSV (`-o`, 31 cols) |
 | `sam2paf`     | SAM file or stdin (`-`)            | PAF written to stdout                   |
 
 All inputs/outputs transparently support gzip (`.gz` suffix) and stdin/stdout (`-`).
@@ -170,12 +170,22 @@ by `paf2alninfo` and `readinfo`) uses 0-based half-open BED coordinates in
 `(('chrom', start, end), ...)` Python-tuple-of-tuples form, parseable with
 `ast.literal_eval`.
 
-> **Migration note (column positions).** Adding `genomic_junctions` as a per-side data
-> column shifted the position of every subsequent column by 2 in `compare` output. The
-> comparison block now starts at column **57** (was 55), and e.g. `N_Unmatched_Junctions`
-> moved from column 73 → **75**. Scripts that filter by column *number* (`awk '$73 > 0'`)
-> need updating; prefer column-*name* lookup using the header (e.g.
-> `awk -F'\t' 'NR==1{for(i=1;i<=NF;i++)c[$i]=i;next} $c["N_Unmatched_Junctions"]>0'`).
+**Strand tracking and renames (v0.2.1+).** Each side now carries a `Strand_<label>` data
+column (the best alignment's strand), and the comparison block starts with a `Strand_Match`
+(true/false) metric that flags strand-flips between A and B. The legacy column name
+`TargetRef_1st` has been renamed to `TargetChr` (suffixed in compare output as
+`TargetChr_<label>`).
+
+> **Migration note (column positions).** Schema growth has shifted column positions twice
+> in pre-1.0 development: first when `genomic_junctions` was added, then again when
+> `Strand` and `Strand_Match` were added (v0.2.1). Scripts that filter by column *number*
+> (`awk '$73 > 0'`) need updating each time; prefer column-*name* lookup using the header,
+> which is robust to future schema growth:
+> ```bash
+> awk -F'\t' 'NR==1{for(i=1;i<=NF;i++)c[$i]=i;next} $c["N_Unmatched_Junctions"]>0'
+> ```
+> Also: if you have older readinfo TSVs with `TargetRef_1st`, rerun `readinfo` to get the
+> renamed column (or rename in your scripts).
 
 **Join semantics — inner join.** Only reads present in **both** files produce an output
 row. Reads present in only one file are dropped but counted in the end-of-run summary
@@ -203,15 +213,15 @@ LC_ALL=C sort -t$'\t' -k1,1 -k2,2n input.readinfo.tsv   # keep header separately
 ### `compare-junctions`
 
 A **streamlined, splice-focused** variant of `compare`. Same streaming merge-join over two
-readinfo files, but emits only **28 columns** instead of 79–83 — useful when the question is
+readinfo files, but emits only **31 columns** instead of 82–86 — useful when the question is
 "how do the splice junctions for each read differ between two alignments?" rather than full
 score/indel/coverage diffs.
 
 | Cols | Content |
 |------|---------|
 | 1–2  | `Read_Name`, `Read_Len` (join keys) |
-| 3–18 | 8 per-side data columns × 2 sides: `TargetRef_1st, Num_Aln, JuncCount, seqid_Max, Query_Aln_Cov_Max, junctions, genomic_junctions, cs` |
-| 19–28| 10 comparison metrics: `seqid_Diff, QueryAlnCov_Diff` + 4 query-junction set metrics (matched / unmatched / OnlyA / OnlyB) + 4 parallel `Genomic_*` set metrics |
+| 3–20 | 9 per-side data columns × 2 sides: `TargetChr, Strand, Num_Aln, JuncCount, seqid_Max, Query_Aln_Cov_Max, junctions, genomic_junctions, cs` |
+| 21–31| 11 comparison metrics: `Strand_Match` + `seqid_Diff` + `QueryAlnCov_Diff` + 4 query-junction set metrics (matched / unmatched / OnlyA / OnlyB) + 4 parallel `Genomic_*` set metrics |
 
 Genomic-junction metrics are always emitted (no flag) — `chrom` is embedded in each
 genomic-junction tuple, so cross-chromosome compares correctly produce zero overlap.
@@ -272,7 +282,7 @@ zcat < /tmp/Splice_vs_SpliceHQ.compare.tsv.gz | awk -F'\t' 'NR==1 || $73 > 0' | 
 zcat < /tmp/Splice_vs_SpliceHQ.compare.tsv.gz | awk -F'\t' 'NR==1 || $73 > 0' | cut -f 1,2,13,39,11,37,73  | less -S
 
 
-# Verify column counts (expect 36, 29, 79)
+# Verify column counts (expect 36, 30, 82)
 zcat < /tmp/Splice.alninfo.tsv.gz              | awk -F'\t' '{print NF}' | sort | uniq -c
 zcat < /tmp/Splice.readinfo.tsv.gz             | awk -F'\t' '{print NF}' | sort | uniq -c
 zcat < /tmp/Splice_vs_SpliceHQ.compare.tsv.gz | awk -F'\t' '{print NF}' | sort | uniq -c
@@ -288,7 +298,7 @@ src/
 ├── paf2alninfo.rs          — PAF → per-alignment info TSV
 ├── readinfo.rs             — alninfo → per-read summary TSV
 ├── compare_streaming.rs    — streaming merge-join comparison (full)
-├── compare_junctions.rs    — streamlined splice-focused comparison (28 cols)
+├── compare_junctions.rs    — streamlined splice-focused comparison (31 cols)
 ├── record.rs               — AlnInfo struct + TSV serialisation
 ├── paf.rs                  — PAF record parser
 ├── cs_parser.rs            — cs-tag parser (PAF → stats + genomic junctions)

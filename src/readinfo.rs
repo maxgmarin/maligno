@@ -9,6 +9,7 @@ use crate::junction::junction_count_str;
 // ── Column indices in alninfo TSV ────────────────────────────────────────────
 const COL_QUERY_NAME: usize = 0;
 const COL_QUERY_LEN: usize = 1;
+const COL_STRAND: usize = 4;
 const COL_TARGET_NAME: usize = 5;
 const COL_MS: usize = 12;
 const COL_AS: usize = 13;
@@ -34,7 +35,7 @@ const COL_QUERY_ALN_COV: usize = 34;
 const COL_GENOMIC_JUNCTIONS: usize = 35;
 
 pub const READINFO_HEADER: &str = "Read_Name\tRead_Len\t\
-    TargetRef_1st\t\
+    TargetChr\tStrand\t\
     AS_Max\tAS_Min\t\
     ms_Max\tms_Min\t\
     Query_Aln_Cov_Max\tQuery_Aln_Len_Max\t\
@@ -62,7 +63,8 @@ pub const READINFO_HEADER: &str = "Read_Name\tRead_Len\t\
 pub struct ReadInfoRow {
     pub read_name: String,
     pub read_len: u64,
-    pub target_ref_1st: String,
+    pub target_chr: String,
+    pub strand: char,
     pub as_max: i64,
     pub as_min: i64,
     pub ms_max: i64,
@@ -170,7 +172,8 @@ fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
 
     let read_name = bf[COL_QUERY_NAME].clone();
     let read_len: u64 = bf[COL_QUERY_LEN].parse().unwrap_or(0);
-    let target_ref_1st = bf[COL_TARGET_NAME].clone();
+    let target_chr = bf[COL_TARGET_NAME].clone();
+    let strand: char = bf[COL_STRAND].chars().next().unwrap_or('*');
 
     // Best-alignment stats
     let n_match_events: u64 = bf[COL_N_MATCH_EVENTS].parse().unwrap_or(0);
@@ -251,7 +254,8 @@ fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
 
     // Build raw_fields for pass-through (all columns except Read_Name, Read_Len)
     let raw_fields: Vec<String> = vec![
-        target_ref_1st.clone(),
+        target_chr.clone(),
+        strand.to_string(),
         as_max.to_string(),
         as_min.to_string(),
         ms_max.to_string(),
@@ -283,7 +287,8 @@ fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
     ReadInfoRow {
         read_name,
         read_len,
-        target_ref_1st,
+        target_chr,
+        strand,
         as_max,
         as_min,
         ms_max,
@@ -430,7 +435,8 @@ fn collapse_group_nosort(rows: &[AlnRow]) -> ReadInfoRow {
 
     let read_name = bf[COL_QUERY_NAME].clone();
     let read_len: u64 = bf[COL_QUERY_LEN].parse().unwrap_or(0);
-    let target_ref_1st = bf[COL_TARGET_NAME].clone();
+    let target_chr = bf[COL_TARGET_NAME].clone();
+    let strand: char = bf[COL_STRAND].chars().next().unwrap_or('*');
 
     let n_match_events: u64 = bf[COL_N_MATCH_EVENTS].parse().unwrap_or(0);
     let n_match_bases: u64 = bf[COL_N_MATCH_BASES].parse().unwrap_or(0);
@@ -484,7 +490,8 @@ fn collapse_group_nosort(rows: &[AlnRow]) -> ReadInfoRow {
     if ms_min == i64::MAX { ms_min = 0; }
 
     let raw_fields: Vec<String> = vec![
-        target_ref_1st.clone(),
+        target_chr.clone(),
+        strand.to_string(),
         as_max.to_string(),
         as_min.to_string(),
         ms_max.to_string(),
@@ -516,7 +523,8 @@ fn collapse_group_nosort(rows: &[AlnRow]) -> ReadInfoRow {
     ReadInfoRow {
         read_name,
         read_len,
-        target_ref_1st,
+        target_chr,
+        strand,
         as_max,
         as_min,
         ms_max,

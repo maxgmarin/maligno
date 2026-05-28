@@ -57,7 +57,8 @@ pub struct CompareJunctionsArgs {
 
 /// Per-side data columns (each appears once for A and once for B, suffixed).
 const PER_SIDE_COLS: &[&str] = &[
-    "TargetRef_1st",
+    "TargetChr",
+    "Strand",
     "Num_Aln",
     "JuncCount",
     "seqid_Max",
@@ -69,6 +70,7 @@ const PER_SIDE_COLS: &[&str] = &[
 
 /// Comparison metric column names (written as-is, no suffix).
 const COMPARISON_COLS: &[&str] = &[
+    "Strand_Match",
     "seqid_Diff",
     "QueryAlnCov_Diff",
     "N_Matched_Junctions",
@@ -168,6 +170,11 @@ pub fn run(args: &CompareJunctionsArgs) -> Result<()> {
             let seqid_diff = b_seqid - a_seqid;
             let qac_diff = b_cov - a_cov;
 
+            // Strand match (boolean rendered as "true"/"false").
+            let a_strand = reader_a.get_col("Strand").unwrap_or("*");
+            let b_strand = reader_b.get_col("Strand").unwrap_or("*");
+            let strand_match = a_strand == b_strand;
+
             // Query-junction set stats (same definition as `compare`).
             let juncs_a = parse_junction_str(reader_a.get_col("junctions").unwrap_or(""));
             let juncs_b = parse_junction_str(reader_b.get_col("junctions").unwrap_or(""));
@@ -195,7 +202,7 @@ pub fn run(args: &CompareJunctionsArgs) -> Result<()> {
             }
             write!(
                 out,
-                "\t{}\t{}\t{n_matched}\t{n_unmatched}\t{n_only_a}\t{n_only_b}\
+                "\t{strand_match}\t{}\t{}\t{n_matched}\t{n_unmatched}\t{n_only_a}\t{n_only_b}\
                  \t{g_matched}\t{g_unmatched}\t{g_only_a}\t{g_only_b}",
                 fmt_float(seqid_diff),
                 fmt_float(qac_diff),
