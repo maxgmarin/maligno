@@ -61,82 +61,63 @@ pub fn junction_set_stats(a: &[i64], b: &[i64]) -> (u64, u64, u64) {
 // Genomic-junction (chrom, start, end) tuple parsing + set comparison
 // ───────────────────────────────────────────────────────────────────────────
 
-/// Parse a Python tuple-of-tuples string of `(chrom, start, end)` triples
-/// into `Vec<(String, u64, u64)>`.
+/// Parse a Python tuple-of-tuples string of `(start, end)` integer pairs.
 ///
-/// Accepts the format written by `write_genomic_junction_tuple` in record.rs:
+/// As of v0.2.3 the serialized form for `genomic_junctions` drops the chromosome
+/// from each inner tuple — chrom is available separately via the per-row
+/// `TargetChr` (alninfo) / `TargetChr_<label>` (compare) column. The caller
+/// reconstructs full `(chrom, start, end)` tuples by combining this output with
+/// the relevant per-row chrom.
+///
+/// Accepts the format written by `write_genomic_junction_tuple` in record.rs and
+/// `format_genomic_junction_tuple` in this module:
 ///
 /// ```text
-/// "()"                                         → []
-/// "(('chr22', 100, 250),)"                     → [("chr22", 100, 250)]
-/// "(('chr22', 100, 250), ('chr22', 400, 800))" → [..., ...]
+/// "()"                          → []
+/// "((100, 250),)"               → [(100, 250)]
+/// "((100, 250), (400, 800))"    → [(100, 250), (400, 800)]
 /// ```
 ///
-/// Either single or double quotes around `chrom` are accepted. Backslash-escapes
-/// (`\\`, `\'`, `\"`, `\t`, `\n`, `\r`) inside the quoted chrom are unescaped.
-/// Defensive against malformed input — returns the tuples it could parse.
-pub fn parse_genomic_junction_str(s: &str) -> Vec<(String, u64, u64)> {
+/// Defensive against malformed input — returns the pairs it could parse.
+pub fn parse_genomic_junction_str(s: &str) -> Vec<(u64, u64)> {
     let bytes = s.as_bytes();
     let n = bytes.len();
-    let mut out: Vec<(String, u64, u64)> = Vec::new();
+    let mut out: Vec<(u64, u64)> = Vec::new();
     let mut i = 0;
 
     while i < n {
-        // Look for "(<quote>" — the start of an inner (chrom, start, end) tuple.
-        if bytes[i] == b'(' && i + 1 < n && (bytes[i + 1] == b'\'' || bytes[i + 1] == b'"') {
-            let quote = bytes[i + 1];
-            i += 2; // past '(' and opening quote
-
-            // Read quoted chrom (handle backslash escapes).
-            let mut chrom = String::new();
-            while i < n && bytes[i] != quote {
-                if bytes[i] == b'\\' && i + 1 < n {
-                    match bytes[i + 1] {
-                        b'\\' => chrom.push('\\'),
-                        b'\'' => chrom.push('\''),
-                        b'"'  => chrom.push('"'),
-                        b't'  => chrom.push('\t'),
-                        b'n'  => chrom.push('\n'),
-                        b'r'  => chrom.push('\r'),
-                        other => {
-                            chrom.push('\\');
-                            chrom.push(other as char);
-                        }
-                    }
-                    i += 2;
-                } else {
-                    chrom.push(bytes[i] as char);
-                    i += 1;
-                }
-            }
-            if i >= n { break; }
-            i += 1; // past closing quote
-
-            // Skip ", " (comma + optional whitespace).
-            while i < n && (bytes[i] == b',' || bytes[i].is_ascii_whitespace()) {
-                i += 1;
-            }
+        // Look for "(" followed by a digit — start of an inner (start, end) pair.
+        if bytes[i] == b'(' && i + 1 < n && bytes[i + 1].is_ascii_digit() {
+            i += 1; // past '('
 
             // Parse start integer.
             let start_idx = i;
-            while i < n && bytes[i].is_ascii_digit() { i += 1; }
+            while i < n && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
             let start: u64 = s[start_idx..i].parse().unwrap_or(0);
 
-            // Skip ", ".
+            // Skip "," + optional whitespace.
             while i < n && (bytes[i] == b',' || bytes[i].is_ascii_whitespace()) {
                 i += 1;
             }
 
             // Parse end integer.
             let end_idx = i;
-            while i < n && bytes[i].is_ascii_digit() { i += 1; }
+            while i < n && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
             let end: u64 = s[end_idx..i].parse().unwrap_or(0);
 
-            // Skip to closing ')' of this inner tuple.
-            while i < n && bytes[i] != b')' { i += 1; }
-            if i < n { i += 1; }
+            // Skip to closing ')'.
+            while i < n && bytes[i] != b')' {
+                i += 1;
+            }
+            if i < n {
+                i += 1;
+            }
 
-            out.push((chrom, start, end));
+            out.push((start, end));
         } else {
             i += 1;
         }
@@ -234,47 +215,32 @@ pub fn format_junction_tuple(juncs: &[i64]) -> String {
     }
 }
 
-/// Render `&[(String, u64, u64)]` as a Python tuple-of-tuples string:
+/// Render `&[(String, u64, u64)]` as a Python tuple-of-tuples string.
+///
+/// As of v0.2.3 the chrom field is **intentionally dropped on serialization** —
+/// chrom is available separately via the per-row `TargetChr` sibling column, so
+/// embedding it in every tuple was redundant noise. The in-memory tuple keeps
+/// its `String` chrom (used by `genomic_junction_set_stats` and friends for
+/// cross-chromosome safety); only the serialized form is shorter.
 /// ```text
 ///   []                              → "()"
-///   [("chr22", 100, 250)]           → "(('chr22', 100, 250),)"
-///   [(c1, s1, e1), (c2, s2, e2)]   → "(('c1', s1, e1), ('c2', s2, e2))"
+///   [("chr22", 100, 250)]           → "((100, 250),)"
+///   [(c1, s1, e1), (c2, s2, e2)]   → "((s1, e1), (s2, e2))"
 /// ```
-/// Chrom is single-quoted with `\\`, `\'`, `\t`, `\n`, `\r` escapes.
 pub fn format_genomic_junction_tuple(juncs: &[(String, u64, u64)]) -> String {
-    fn push_chrom(s: &mut String, c: &str) {
-        s.push('\'');
-        for ch in c.chars() {
-            match ch {
-                '\\' => s.push_str("\\\\"),
-                '\'' => s.push_str("\\'"),
-                '\t' => s.push_str("\\t"),
-                '\n' => s.push_str("\\n"),
-                '\r' => s.push_str("\\r"),
-                _ => s.push(ch),
-            }
-        }
-        s.push('\'');
-    }
-
     match juncs.len() {
         0 => "()".to_string(),
         1 => {
-            let (c, st, en) = &juncs[0];
-            let mut s = String::from("((");
-            push_chrom(&mut s, c);
-            s.push_str(&format!(", {st}, {en}),)"));
-            s
+            let (_chrom, st, en) = &juncs[0];
+            format!("(({st}, {en}),)")
         }
         _ => {
             let mut s = String::from("(");
-            for (i, (c, st, en)) in juncs.iter().enumerate() {
+            for (i, (_chrom, st, en)) in juncs.iter().enumerate() {
                 if i > 0 {
                     s.push_str(", ");
                 }
-                s.push('(');
-                push_chrom(&mut s, c);
-                s.push_str(&format!(", {st}, {en})"));
+                s.push_str(&format!("({st}, {en})"));
             }
             s.push(')');
             s
@@ -301,36 +267,25 @@ mod tests {
     #[test]
     fn genomic_parse_single() {
         assert_eq!(
-            parse_genomic_junction_str("(('chr22', 100, 250),)"),
-            vec![("chr22".to_string(), 100, 250)]
+            parse_genomic_junction_str("((100, 250),)"),
+            vec![(100, 250)]
         );
     }
 
     #[test]
     fn genomic_parse_multiple() {
         assert_eq!(
-            parse_genomic_junction_str("(('chr22', 100, 250), ('chr22', 400, 800))"),
-            vec![
-                ("chr22".to_string(), 100, 250),
-                ("chr22".to_string(), 400, 800),
-            ]
+            parse_genomic_junction_str("((100, 250), (400, 800))"),
+            vec![(100, 250), (400, 800)]
         );
     }
 
     #[test]
-    fn genomic_parse_double_quoted() {
+    fn genomic_parse_extra_whitespace_tolerated() {
+        // Be defensive about loose whitespace between integers / commas.
         assert_eq!(
-            parse_genomic_junction_str("((\"chr1\", 5, 9),)"),
-            vec![("chr1".to_string(), 5, 9)]
-        );
-    }
-
-    #[test]
-    fn genomic_parse_escape_sequence_in_chrom() {
-        // Defensive: chrom containing an escaped tab should be unescaped.
-        assert_eq!(
-            parse_genomic_junction_str("(('weird\\tname', 1, 2),)"),
-            vec![("weird\tname".to_string(), 1, 2)]
+            parse_genomic_junction_str("((100,250), (400,  800))"),
+            vec![(100, 250), (400, 800)]
         );
     }
 
@@ -465,11 +420,9 @@ mod tests {
 
     #[test]
     fn format_genomic_single_has_trailing_comma() {
+        // Chrom field is dropped on serialization (v0.2.3+).
         let v = vec![("chr22".to_string(), 100, 250)];
-        assert_eq!(
-            format_genomic_junction_tuple(&v),
-            "(('chr22', 100, 250),)"
-        );
+        assert_eq!(format_genomic_junction_tuple(&v), "((100, 250),)");
     }
 
     #[test]
@@ -480,30 +433,30 @@ mod tests {
         ];
         assert_eq!(
             format_genomic_junction_tuple(&v),
-            "(('chr22', 100, 250), ('chr22', 400, 800))"
+            "((100, 250), (400, 800))"
         );
     }
 
     #[test]
-    fn format_genomic_chrom_with_special_chars_escaped() {
+    fn format_genomic_chrom_value_is_ignored() {
+        // Chrom is dropped on serialization regardless of its value (no escaping needed).
         let v = vec![("ab\tc'd".to_string(), 1, 2)];
-        // The chrom "ab<tab>c'd" should be emitted as 'ab\tc\'d'
-        assert_eq!(
-            format_genomic_junction_tuple(&v),
-            "(('ab\\tc\\'d', 1, 2),)"
-        );
+        assert_eq!(format_genomic_junction_tuple(&v), "((1, 2),)");
     }
 
-    // ── round-trip: format → parse should give back original tuples ────────
+    // ── round-trip: format → parse loses chrom (by design) ─────────────────
 
     #[test]
-    fn format_then_parse_genomic_roundtrip() {
+    fn format_then_parse_genomic_roundtrip_pairs_only() {
+        // After v0.2.3 the serialized form drops chrom, so the round-trip
+        // returns just (start, end) pairs. The caller reconstructs full tuples
+        // by combining the per-row TargetChr with these pairs.
         let v = vec![
             ("chr22".to_string(), 100, 250),
             ("chrX".to_string(), 999, 1500),
         ];
         let s = format_genomic_junction_tuple(&v);
         let parsed = parse_genomic_junction_str(&s);
-        assert_eq!(parsed, v);
+        assert_eq!(parsed, vec![(100, 250), (999, 1500)]);
     }
 }

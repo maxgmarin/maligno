@@ -34,11 +34,11 @@ pub struct CompareStreamingArgs {
     pub readinfo_b: String,
 
     /// Label for dataset A (used as column suffix)
-    #[arg(long = "label-a", value_name = "LABEL", default_value = "RefA")]
+    #[arg(long = "label-a", value_name = "LABEL", default_value = "SetA")]
     pub label_a: String,
 
     /// Label for dataset B (used as column suffix)
-    #[arg(long = "label-b", value_name = "LABEL", default_value = "RefB")]
+    #[arg(long = "label-b", value_name = "LABEL", default_value = "SetB")]
     pub label_b: String,
 
     /// Output comparison TSV file ('.gz' for gzip)
@@ -479,15 +479,28 @@ pub fn run(args: &CompareStreamingArgs) -> Result<()> {
             let j_only_b_str = format_junction_tuple(&j_only_b_vec);
 
             // Genomic-junction set comparison (flag-gated).
-            // Cross-chromosome safety is automatic: chrom is part of each tuple element.
-            // `g_only_a_str` / `g_only_b_str` hold the appended-at-end object lists,
-            // populated only when the flag is set.
+            // The serialized form (v0.2.3+) drops chrom from each tuple; we
+            // reconstruct the full (chrom, start, end) in-memory tuples by combining
+            // the parsed (start, end) pairs with each side's TargetChr column. This
+            // keeps cross-chromosome safety in the set comparison: a pair (s, e) on
+            // chrA cannot accidentally match (s, e) on chrB because chrom is part of
+            // the hash key.
             let (g_matched, g_only_a, g_only_b, g_unmatched, g_only_a_str, g_only_b_str) =
                 if args.compare_genomic_junctions {
                     let a_genomic = reader_a.get_col("genomic_junctions").unwrap_or("");
                     let b_genomic = reader_b.get_col("genomic_junctions").unwrap_or("");
-                    let gj_a = parse_genomic_junction_str(a_genomic);
-                    let gj_b = parse_genomic_junction_str(b_genomic);
+                    let chrom_a = reader_a.get_col("TargetChr").unwrap_or("*").to_string();
+                    let chrom_b = reader_b.get_col("TargetChr").unwrap_or("*").to_string();
+                    let pairs_a = parse_genomic_junction_str(a_genomic);
+                    let pairs_b = parse_genomic_junction_str(b_genomic);
+                    let gj_a: Vec<(String, u64, u64)> = pairs_a
+                        .into_iter()
+                        .map(|(s, e)| (chrom_a.clone(), s, e))
+                        .collect();
+                    let gj_b: Vec<(String, u64, u64)> = pairs_b
+                        .into_iter()
+                        .map(|(s, e)| (chrom_b.clone(), s, e))
+                        .collect();
                     let (m, oa, ob) = genomic_junction_set_stats(&gj_a, &gj_b);
                     let (gj_only_a_vec, gj_only_b_vec) =
                         genomic_junction_set_diffs(&gj_a, &gj_b);

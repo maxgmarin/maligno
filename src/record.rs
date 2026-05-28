@@ -291,55 +291,38 @@ fn write_junction_tuple<W: Write>(w: &mut W, junctions: &[i64]) -> std::io::Resu
 
 /// Write genomic junctions in Python's `str(tuple of tuples)` format.
 ///
-/// Each inner tuple is `(chrom, start, end)` — chrom is embedded so cross-chromosome
-/// set comparisons don't accidentally match. Coordinates are 0-based half-open.
+/// As of v0.2.3 the chrom field is **dropped on serialization** — chrom is available
+/// per-row via the `Target_Name` (alninfo) / `TargetChr` (readinfo) sibling column,
+/// so embedding it in every tuple was redundant. The in-memory `AlnInfo` keeps the
+/// chrom (used by downstream set-comparison for cross-chrom safety); only the
+/// serialized form is shorter.
 ///
-/// | len | example                                     |
-/// |-----|---------------------------------------------|
-/// | 0   | `()`                                        |
-/// | 1   | `(('chr22', 100, 250),)`                    |
-/// | 2+  | `(('chr22', 100, 250), ('chr22', 400, 800))`|
+/// Coordinates are 0-based half-open.
 ///
-/// Single quotes match Python's default `repr()` for strings.
+/// | len | example                          |
+/// |-----|----------------------------------|
+/// | 0   | `()`                             |
+/// | 1   | `((100, 250),)`                  |
+/// | 2+  | `((100, 250), (400, 800))`       |
 fn write_genomic_junction_tuple<W: Write>(
     w: &mut W,
     juncs: &[(String, u64, u64)],
 ) -> std::io::Result<()> {
-    // The chrom string is wrapped in single quotes. If a chrom ever contained a single
-    // quote, backslash, tab, or newline we escape it. (Reference contig names in practice
-    // never contain these, but be defensive.)
-    fn write_chrom<W: Write>(w: &mut W, c: &str) -> std::io::Result<()> {
-        write!(w, "'")?;
-        for ch in c.chars() {
-            match ch {
-                '\\' => write!(w, "\\\\")?,
-                '\'' => write!(w, "\\'")?,
-                '\t' => write!(w, "\\t")?,
-                '\n' => write!(w, "\\n")?,
-                '\r' => write!(w, "\\r")?,
-                _ => write!(w, "{ch}")?,
-            }
-        }
-        write!(w, "'")
-    }
-
     match juncs.len() {
         0 => write!(w, "()"),
         1 => {
-            // Outer 1-tuple wrapping the inner (chrom, start, end) 3-tuple.
-            // Without the trailing comma, Python parses this as just the inner 3-tuple.
-            let (c, s, e) = &juncs[0];
-            write!(w, "((")?;
-            write_chrom(w, c)?;
-            write!(w, ", {s}, {e}),)")
+            // Outer 1-tuple wrapping the inner (start, end) 2-tuple.
+            // Without the trailing comma, Python parses this as just the inner 2-tuple.
+            let (_chrom, s, e) = &juncs[0];
+            write!(w, "(({s}, {e}),)")
         }
         _ => {
             write!(w, "(")?;
-            for (i, (c, s, e)) in juncs.iter().enumerate() {
-                if i > 0 { write!(w, ", ")?; }
-                write!(w, "(")?;
-                write_chrom(w, c)?;
-                write!(w, ", {s}, {e})")?;
+            for (i, (_chrom, s, e)) in juncs.iter().enumerate() {
+                if i > 0 {
+                    write!(w, ", ")?;
+                }
+                write!(w, "({s}, {e})")?;
             }
             write!(w, ")")
         }

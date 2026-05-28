@@ -164,11 +164,19 @@ in addition to) the query-coordinate metrics above. Pass `--compare-genomic-junc
 | `Genomic_N_Junctions_OnlyA`     | only in A |
 | `Genomic_N_Junctions_OnlyB`     | only in B |
 
-The `chrom` is embedded in each genomic-junction tuple, so cross-chromosome compares
-correctly produce zero overlap. The underlying column (`genomic_junctions`, always emitted
-by `paf2alninfo` and `readinfo`) uses 0-based half-open BED coordinates in
-`(('chrom', start, end), ...)` Python-tuple-of-tuples form, parseable with
-`ast.literal_eval`.
+The `genomic_junctions` column (always emitted by `paf2alninfo` and `readinfo`) uses
+0-based half-open BED coordinates in **`((start, end), ...)`** Python-tuple-of-tuples
+form, parseable with `ast.literal_eval`. The chromosome is **not** in each tuple — it's
+in the sibling `TargetChr` (alninfo) / `TargetChr_<label>` (compare) column. Cross-
+chromosome safety in the set comparison is still preserved: `compare` and
+`compare-junctions` reconstruct full `(chrom, start, end)` keys internally by combining
+each row's parsed pairs with its per-side `TargetChr`, so junctions on different contigs
+cannot accidentally match.
+
+> **Format change (v0.2.3).** The genomic-junction tuples used to include the chrom as
+> the first element (e.g. `(('chr22', 100, 250), …)`). That was redundant with the
+> `TargetChr` column, so it was dropped. Pre-v0.2.3 TSVs need to be regenerated from PAF
+> to be readable by `compare` / `compare-junctions`.
 
 **Strand tracking and renames (v0.2.1+).** Each side now carries a `Strand_<label>` data
 column (the best alignment's strand), and the comparison block starts with a `Strand_Match`
@@ -306,13 +314,23 @@ zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | cut -f 29 | sort | uni
 
 # Look at number of reads with non-concordant junction positions (query)
 zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $25 > 0' | wc -l 
-zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $25 > 0' | cut -f 1,9,18,24,25,26,27 | less -S
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $25 > 0' | cut -f 1,9,18,24,25,26,27,32,33 | less -S
+
+
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $25 > 0' | cut -f 1,3,4,12,13,9,18,24,25,26,27,32,33 | less -S
+
+
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $25 > 0' | cut -f 1,3,4,12,13,9,18,24,25,26,27,32,33,34,35 | less -S
+
 
 zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | cut -f 25 | sort | uniq -c 
 
 # Look at number of reads with non-concordant junction positions (GENOMIC)
 zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $29 > 0' | wc -l 
-zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $29 > 0' | cut -f 1,9,18,28,29,30,31 | less -S
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $29 > 0' | cut -f 1,9,18,28,29,30,31,34,35 | less -S
+
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $29 > 0' | cut -f 1,3,4,12,13,29,30,31,34,35 | less -S
+
 
 
 # Verify column counts (expect 36, 30, 82, 31)
