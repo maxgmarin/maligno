@@ -24,8 +24,9 @@ use anyhow::{Context, Result};
 use crate::compare_streaming::{ReadInfoReader, ReadKey};
 use crate::io_utils::{escape_tsv_field, fmt_float, open_output};
 use crate::junction::{
-    genomic_junction_set_stats, junction_set_stats, parse_genomic_junction_str,
-    parse_junction_str,
+    format_genomic_junction_tuple, format_junction_tuple, genomic_junction_set_diffs,
+    genomic_junction_set_stats, junction_set_diffs, junction_set_stats,
+    parse_genomic_junction_str, parse_junction_str,
 };
 
 // ── CLI args ─────────────────────────────────────────────────────────────────
@@ -81,6 +82,11 @@ const COMPARISON_COLS: &[&str] = &[
     "Genomic_N_Unmatched_Junctions",
     "Genomic_N_Junctions_OnlyA",
     "Genomic_N_Junctions_OnlyB",
+    // Object lists at the very end — actual non-overlapping junctions, not counts.
+    "Junctions_OnlyA",
+    "Junctions_OnlyB",
+    "Genomic_Junctions_OnlyA",
+    "Genomic_Junctions_OnlyB",
 ];
 
 // ── Main streaming comparison function ──────────────────────────────────────
@@ -192,6 +198,14 @@ pub fn run(args: &CompareJunctionsArgs) -> Result<()> {
             let (g_matched, g_only_a, g_only_b) = genomic_junction_set_stats(&gj_a, &gj_b);
             let g_unmatched = g_only_a + g_only_b;
 
+            // Object diff lists (actual A-only / B-only junctions for both coord systems).
+            let (j_only_a_vec, j_only_b_vec) = junction_set_diffs(&juncs_a, &juncs_b);
+            let (gj_only_a_vec, gj_only_b_vec) = genomic_junction_set_diffs(&gj_a, &gj_b);
+            let j_only_a_str = format_junction_tuple(&j_only_a_vec);
+            let j_only_b_str = format_junction_tuple(&j_only_b_vec);
+            let g_only_a_str = format_genomic_junction_tuple(&gj_only_a_vec);
+            let g_only_b_str = format_genomic_junction_tuple(&gj_only_b_vec);
+
             // Write the row.
             write!(out, "{}\t{}", key_a.name, key_a.len)?;
             for f in &a_raw {
@@ -206,6 +220,15 @@ pub fn run(args: &CompareJunctionsArgs) -> Result<()> {
                  \t{g_matched}\t{g_unmatched}\t{g_only_a}\t{g_only_b}",
                 fmt_float(seqid_diff),
                 fmt_float(qac_diff),
+            )?;
+            // Object-list columns at the end (escape defensively).
+            write!(
+                out,
+                "\t{}\t{}\t{}\t{}",
+                escape_tsv_field(&j_only_a_str),
+                escape_tsv_field(&j_only_b_str),
+                escape_tsv_field(&g_only_a_str),
+                escape_tsv_field(&g_only_b_str),
             )?;
             writeln!(out)?;
 

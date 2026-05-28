@@ -164,6 +164,125 @@ pub fn genomic_junction_set_stats(
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// Set-difference list helpers (return the actual non-overlapping junctions,
+// not just the counts). Both sides are deduplicated, and the resulting lists
+// are sorted for deterministic output.
+// ───────────────────────────────────────────────────────────────────────────
+
+/// Symmetric counterpart to `junction_set_stats`: return the actual
+/// `(only_a, only_b)` lists of query-coordinate junctions, sorted ascending.
+///
+/// `only_a` contains every value in A that is not in B (and vice versa). Both
+/// returned vecs are deduplicated, so their lengths match `n_only_a` /
+/// `n_only_b` from `junction_set_stats`.
+pub fn junction_set_diffs(a: &[i64], b: &[i64]) -> (Vec<i64>, Vec<i64>) {
+    use std::collections::HashSet;
+    let set_a: HashSet<i64> = a.iter().copied().collect();
+    let set_b: HashSet<i64> = b.iter().copied().collect();
+    let mut only_a: Vec<i64> = set_a.difference(&set_b).copied().collect();
+    let mut only_b: Vec<i64> = set_b.difference(&set_a).copied().collect();
+    only_a.sort();
+    only_b.sort();
+    (only_a, only_b)
+}
+
+/// Symmetric counterpart to `genomic_junction_set_stats`: return the actual
+/// `(only_a, only_b)` lists of genome-coordinate junction tuples, sorted by
+/// `(chrom, start, end)`.
+pub fn genomic_junction_set_diffs(
+    a: &[(String, u64, u64)],
+    b: &[(String, u64, u64)],
+) -> (Vec<(String, u64, u64)>, Vec<(String, u64, u64)>) {
+    use std::collections::HashSet;
+    let set_a: HashSet<&(String, u64, u64)> = a.iter().collect();
+    let set_b: HashSet<&(String, u64, u64)> = b.iter().collect();
+    let mut only_a: Vec<(String, u64, u64)> =
+        set_a.difference(&set_b).map(|t| (*t).clone()).collect();
+    let mut only_b: Vec<(String, u64, u64)> =
+        set_b.difference(&set_a).map(|t| (*t).clone()).collect();
+    only_a.sort();
+    only_b.sort();
+    (only_a, only_b)
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// String formatters — Python-tuple style, matching the per-side
+// `junctions` / `genomic_junctions` column format produced by record.rs.
+// ───────────────────────────────────────────────────────────────────────────
+
+/// Render `&[i64]` as a Python tuple-of-ints string:
+/// ```text
+///   []          → "()"
+///   [108]       → "(108,)"          (trailing comma — Python 1-tuple form)
+///   [108, 168]  → "(108, 168)"
+/// ```
+pub fn format_junction_tuple(juncs: &[i64]) -> String {
+    match juncs.len() {
+        0 => "()".to_string(),
+        1 => format!("({},)", juncs[0]),
+        _ => {
+            let mut s = String::from("(");
+            for (i, j) in juncs.iter().enumerate() {
+                if i > 0 {
+                    s.push_str(", ");
+                }
+                s.push_str(&j.to_string());
+            }
+            s.push(')');
+            s
+        }
+    }
+}
+
+/// Render `&[(String, u64, u64)]` as a Python tuple-of-tuples string:
+/// ```text
+///   []                              → "()"
+///   [("chr22", 100, 250)]           → "(('chr22', 100, 250),)"
+///   [(c1, s1, e1), (c2, s2, e2)]   → "(('c1', s1, e1), ('c2', s2, e2))"
+/// ```
+/// Chrom is single-quoted with `\\`, `\'`, `\t`, `\n`, `\r` escapes.
+pub fn format_genomic_junction_tuple(juncs: &[(String, u64, u64)]) -> String {
+    fn push_chrom(s: &mut String, c: &str) {
+        s.push('\'');
+        for ch in c.chars() {
+            match ch {
+                '\\' => s.push_str("\\\\"),
+                '\'' => s.push_str("\\'"),
+                '\t' => s.push_str("\\t"),
+                '\n' => s.push_str("\\n"),
+                '\r' => s.push_str("\\r"),
+                _ => s.push(ch),
+            }
+        }
+        s.push('\'');
+    }
+
+    match juncs.len() {
+        0 => "()".to_string(),
+        1 => {
+            let (c, st, en) = &juncs[0];
+            let mut s = String::from("((");
+            push_chrom(&mut s, c);
+            s.push_str(&format!(", {st}, {en}),)"));
+            s
+        }
+        _ => {
+            let mut s = String::from("(");
+            for (i, (c, st, en)) in juncs.iter().enumerate() {
+                if i > 0 {
+                    s.push_str(", ");
+                }
+                s.push('(');
+                push_chrom(&mut s, c);
+                s.push_str(&format!(", {st}, {en})"));
+            }
+            s.push(')');
+            s
+        }
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // Tests
 // ───────────────────────────────────────────────────────────────────────────
 
@@ -254,5 +373,137 @@ mod tests {
         let b: Vec<(String, u64, u64)> = vec![];
         assert_eq!(genomic_junction_set_stats(&a, &b), (0, 2, 0));
         assert_eq!(genomic_junction_set_stats(&b, &a), (0, 0, 2));
+    }
+
+    // ── junction_set_diffs ─────────────────────────────────────────────────
+
+    #[test]
+    fn junction_diffs_partial_overlap() {
+        // overlap {30, 50}; only_a {10}; only_b {70}
+        let (oa, ob) = junction_set_diffs(&[10, 30, 50], &[30, 50, 70]);
+        assert_eq!(oa, vec![10]);
+        assert_eq!(ob, vec![70]);
+    }
+
+    #[test]
+    fn junction_diffs_identical() {
+        let (oa, ob) = junction_set_diffs(&[1, 2, 3], &[1, 2, 3]);
+        assert!(oa.is_empty());
+        assert!(ob.is_empty());
+    }
+
+    #[test]
+    fn junction_diffs_disjoint_and_sorted() {
+        // Unsorted inputs → sorted outputs.
+        let (oa, ob) = junction_set_diffs(&[50, 10, 30], &[90, 70]);
+        assert_eq!(oa, vec![10, 30, 50]);
+        assert_eq!(ob, vec![70, 90]);
+    }
+
+    #[test]
+    fn junction_diffs_counts_match_set_stats() {
+        let a = [10, 30, 50, 70];
+        let b = [30, 50];
+        let (overlap, n_only_a, n_only_b) = junction_set_stats(&a, &b);
+        let (oa, ob) = junction_set_diffs(&a, &b);
+        assert_eq!(oa.len() as u64, n_only_a);
+        assert_eq!(ob.len() as u64, n_only_b);
+        assert_eq!(overlap, 2);
+    }
+
+    // ── genomic_junction_set_diffs ─────────────────────────────────────────
+
+    #[test]
+    fn genomic_diffs_cross_chrom_disjoint() {
+        // Same coordinates on different chromosomes must NOT match.
+        let a = vec![("chr1".into(), 100, 250)];
+        let b = vec![("chr2".into(), 100, 250)];
+        let (oa, ob) = genomic_junction_set_diffs(&a, &b);
+        assert_eq!(oa, vec![("chr1".into(), 100, 250)]);
+        assert_eq!(ob, vec![("chr2".into(), 100, 250)]);
+    }
+
+    #[test]
+    fn genomic_diffs_partial_overlap() {
+        let a = vec![
+            ("chr1".into(), 100, 200),
+            ("chr1".into(), 300, 400),
+        ];
+        let b = vec![
+            ("chr1".into(), 300, 400),
+            ("chr1".into(), 500, 600),
+        ];
+        let (oa, ob) = genomic_junction_set_diffs(&a, &b);
+        assert_eq!(oa, vec![("chr1".into(), 100, 200)]);
+        assert_eq!(ob, vec![("chr1".into(), 500, 600)]);
+    }
+
+    // ── format_junction_tuple ──────────────────────────────────────────────
+
+    #[test]
+    fn format_junction_empty() {
+        assert_eq!(format_junction_tuple(&[]), "()");
+    }
+
+    #[test]
+    fn format_junction_single_has_trailing_comma() {
+        assert_eq!(format_junction_tuple(&[108]), "(108,)");
+    }
+
+    #[test]
+    fn format_junction_multiple() {
+        assert_eq!(format_junction_tuple(&[108, 168, 359]), "(108, 168, 359)");
+    }
+
+    // ── format_genomic_junction_tuple ──────────────────────────────────────
+
+    #[test]
+    fn format_genomic_empty() {
+        let v: Vec<(String, u64, u64)> = vec![];
+        assert_eq!(format_genomic_junction_tuple(&v), "()");
+    }
+
+    #[test]
+    fn format_genomic_single_has_trailing_comma() {
+        let v = vec![("chr22".to_string(), 100, 250)];
+        assert_eq!(
+            format_genomic_junction_tuple(&v),
+            "(('chr22', 100, 250),)"
+        );
+    }
+
+    #[test]
+    fn format_genomic_multiple() {
+        let v = vec![
+            ("chr22".to_string(), 100, 250),
+            ("chr22".to_string(), 400, 800),
+        ];
+        assert_eq!(
+            format_genomic_junction_tuple(&v),
+            "(('chr22', 100, 250), ('chr22', 400, 800))"
+        );
+    }
+
+    #[test]
+    fn format_genomic_chrom_with_special_chars_escaped() {
+        let v = vec![("ab\tc'd".to_string(), 1, 2)];
+        // The chrom "ab<tab>c'd" should be emitted as 'ab\tc\'d'
+        assert_eq!(
+            format_genomic_junction_tuple(&v),
+            "(('ab\\tc\\'d', 1, 2),)"
+        );
+    }
+
+    // ── round-trip: format → parse should give back original tuples ────────
+
+    #[test]
+    fn format_then_parse_genomic_roundtrip() {
+        let v = vec![
+            ("chr22".to_string(), 100, 250),
+            ("chrX".to_string(), 999, 1500),
+        ];
+        let s = format_genomic_junction_tuple(&v);
+        let parsed = parse_genomic_junction_str(&s);
+        assert_eq!(parsed, v);
     }
 }

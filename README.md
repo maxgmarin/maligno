@@ -24,8 +24,8 @@
 |---------------|------------------------------------|-----------------------------------------|
 | `paf2alninfo` | PAF (`-i`, `.gz`/`-` ok)           | per-alignment info TSV (`-o`, 36 cols)  |
 | `readinfo`    | alninfo TSV (`-i`, `.gz`/`-` ok)   | per-read summary TSV (`-o`, 30 cols)    |
-| `compare`     | two readinfo TSVs (`-a`, `-b`)     | per-read comparison TSV (`-o`, 82 cols, +4 with `--compare-genomic-junctions`) |
-| `compare-junctions` | two readinfo TSVs (`-a`, `-b`) | streamlined splice-focused comparison TSV (`-o`, 31 cols) |
+| `compare`     | two readinfo TSVs (`-a`, `-b`)     | per-read comparison TSV (`-o`, 84 cols, +6 with `--compare-genomic-junctions`) |
+| `compare-junctions` | two readinfo TSVs (`-a`, `-b`) | streamlined splice-focused comparison TSV (`-o`, 35 cols) |
 | `sam2paf`     | SAM file or stdin (`-`)            | PAF written to stdout                   |
 
 All inputs/outputs transparently support gzip (`.gz` suffix) and stdin/stdout (`-`).
@@ -176,6 +176,15 @@ column (the best alignment's strand), and the comparison block starts with a `St
 `TargetRef_1st` has been renamed to `TargetChr` (suffixed in compare output as
 `TargetChr_<label>`).
 
+**Non-overlap junction objects (v0.2.2+).** In addition to the *counts* of non-overlapping
+junctions (`N_Junctions_OnlyA/B`, `Genomic_N_Junctions_OnlyA/B`), the comparison outputs
+now append the actual junction **objects** that failed to overlap at the very end of each
+row: `Junctions_OnlyA`, `Junctions_OnlyB` (query-coord tuples, always emitted) and
+`Genomic_Junctions_OnlyA`, `Genomic_Junctions_OnlyB` (genome-coord tuples, emitted with
+`--compare-genomic-junctions` in `compare`; always emitted in `compare-junctions`). These
+use the same Python tuple format as the per-side `junctions` / `genomic_junctions` data
+columns — parse with `ast.literal_eval` in Python.
+
 > **Migration note (column positions).** Schema growth has shifted column positions twice
 > in pre-1.0 development: first when `genomic_junctions` was added, then again when
 > `Strand` and `Strand_Match` were added (v0.2.1). Scripts that filter by column *number*
@@ -213,7 +222,7 @@ LC_ALL=C sort -t$'\t' -k1,1 -k2,2n input.readinfo.tsv   # keep header separately
 ### `compare-junctions`
 
 A **streamlined, splice-focused** variant of `compare`. Same streaming merge-join over two
-readinfo files, but emits only **31 columns** instead of 82–86 — useful when the question is
+readinfo files, but emits only **35 columns** instead of 84–90 — useful when the question is
 "how do the splice junctions for each read differ between two alignments?" rather than full
 score/indel/coverage diffs.
 
@@ -222,6 +231,7 @@ score/indel/coverage diffs.
 | 1–2  | `Read_Name`, `Read_Len` (join keys) |
 | 3–20 | 9 per-side data columns × 2 sides: `TargetChr, Strand, Num_Aln, JuncCount, seqid_Max, Query_Aln_Cov_Max, junctions, genomic_junctions, cs` |
 | 21–31| 11 comparison metrics: `Strand_Match` + `seqid_Diff` + `QueryAlnCov_Diff` + 4 query-junction set metrics (matched / unmatched / OnlyA / OnlyB) + 4 parallel `Genomic_*` set metrics |
+| 32–35| 4 object lists at the end: `Junctions_OnlyA`, `Junctions_OnlyB`, `Genomic_Junctions_OnlyA`, `Genomic_Junctions_OnlyB` — the actual tuples of junctions that failed to overlap (Python tuple format, parseable with `ast.literal_eval`) |
 
 Genomic-junction metrics are always emitted (no flag) — `chrom` is embedded in each
 genomic-junction tuple, so cross-chromosome compares correctly produce zero overlap.
@@ -275,17 +285,41 @@ time $BIN compare \
   -b /tmp/SpliceHQ.readinfo.tsv.gz --label-b SpliceHQ \
   -o /tmp/Splice_vs_SpliceHQ.compare.tsv.gz
 
+# Inspect the compare output header (column number → column name)
+zcat < /tmp/Splice_vs_SpliceHQ.compare.tsv.gz | head -1 | tr '\t' '\n' | nl
+
+
+
+# Streamlined splice-focused comparison (31 cols: per-side junction info + set-overlap metrics)
+time $BIN compare-junctions \
+  -a /tmp/Splice.readinfo.tsv.gz   --label-a Splice \
+  -b /tmp/SpliceHQ.readinfo.tsv.gz --label-b SpliceHQ \
+  -o /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz
+
+# Inspect the compare-junctions output header
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | head -1 | tr '\t' '\n' | nl
+
+# Check all unique values in columns 25 and 29 (Checking number of unmatched junctions from query and genome perspective)
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | cut -f 25 | sort | uniq -c 
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | cut -f 29 | sort | uniq -c 
+
+
 # Look at number of reads with non-concordant junction positions (query)
-zcat < /tmp/Splice_vs_SpliceHQ.compare.tsv.gz | awk -F'\t' 'NR==1 || $73 > 0' | wc -l 
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $25 > 0' | wc -l 
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $25 > 0' | cut -f 1,9,18,24,25,26,27 | less -S
 
-# Look at columns related to splice junction info (A vs B)
-zcat < /tmp/Splice_vs_SpliceHQ.compare.tsv.gz | awk -F'\t' 'NR==1 || $73 > 0' | cut -f 1,2,13,39,11,37,73  | less -S
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | cut -f 25 | sort | uniq -c 
+
+# Look at number of reads with non-concordant junction positions (GENOMIC)
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $29 > 0' | wc -l 
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $29 > 0' | cut -f 1,9,18,28,29,30,31 | less -S
 
 
-# Verify column counts (expect 36, 30, 82)
-zcat < /tmp/Splice.alninfo.tsv.gz              | awk -F'\t' '{print NF}' | sort | uniq -c
-zcat < /tmp/Splice.readinfo.tsv.gz             | awk -F'\t' '{print NF}' | sort | uniq -c
-zcat < /tmp/Splice_vs_SpliceHQ.compare.tsv.gz | awk -F'\t' '{print NF}' | sort | uniq -c
+# Verify column counts (expect 36, 30, 82, 31)
+zcat < /tmp/Splice.alninfo.tsv.gz                       | awk -F'\t' '{print NF}' | sort | uniq -c
+zcat < /tmp/Splice.readinfo.tsv.gz                      | awk -F'\t' '{print NF}' | sort | uniq -c
+zcat < /tmp/Splice_vs_SpliceHQ.compare.tsv.gz           | awk -F'\t' '{print NF}' | sort | uniq -c
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' '{print NF}' | sort | uniq -c
 ```
 
 ---
@@ -298,7 +332,7 @@ src/
 ├── paf2alninfo.rs          — PAF → per-alignment info TSV
 ├── readinfo.rs             — alninfo → per-read summary TSV
 ├── compare_streaming.rs    — streaming merge-join comparison (full)
-├── compare_junctions.rs    — streamlined splice-focused comparison (31 cols)
+├── compare_junctions.rs    — streamlined splice-focused comparison (35 cols)
 ├── record.rs               — AlnInfo struct + TSV serialisation
 ├── paf.rs                  — PAF record parser
 ├── cs_parser.rs            — cs-tag parser (PAF → stats + genomic junctions)

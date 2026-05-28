@@ -16,8 +16,9 @@ use anyhow::{Context, Result};
 
 use crate::io_utils::{escape_tsv_field, fmt_float, open_input, open_output};
 use crate::junction::{
-    genomic_junction_set_stats, junction_distance, junction_set_stats, parse_genomic_junction_str,
-    parse_junction_str,
+    format_genomic_junction_tuple, format_junction_tuple, genomic_junction_set_diffs,
+    genomic_junction_set_stats, junction_distance, junction_set_diffs, junction_set_stats,
+    parse_genomic_junction_str, parse_junction_str,
 };
 
 // ── CLI args ─────────────────────────────────────────────────────────────────
@@ -120,6 +121,12 @@ fn comparison_col_names(with_genomic: bool) -> Vec<&'static str> {
             "Genomic_N_Junctions_OnlyA",
             "Genomic_N_Junctions_OnlyB",
         ]);
+    }
+    // Object columns appended at the very end (the actual non-overlapping
+    // junctions, as opposed to just their counts above).
+    cols.extend_from_slice(&["Junctions_OnlyA", "Junctions_OnlyB"]);
+    if with_genomic {
+        cols.extend_from_slice(&["Genomic_Junctions_OnlyA", "Genomic_Junctions_OnlyB"]);
     }
     cols
 }
@@ -466,18 +473,30 @@ pub fn run(args: &CompareStreamingArgs) -> Result<()> {
             let (n_matched, n_only_a, n_only_b) = junction_set_stats(&juncs_a, &juncs_b); // 75/76/77
             let n_unmatched = n_only_a + n_only_b; // col 73 (REDEFINED: set symmetric difference)
 
+            // Object diff lists (the actual non-overlapping junctions, appended at row tail).
+            let (j_only_a_vec, j_only_b_vec) = junction_set_diffs(&juncs_a, &juncs_b);
+            let j_only_a_str = format_junction_tuple(&j_only_a_vec);
+            let j_only_b_str = format_junction_tuple(&j_only_b_vec);
+
             // Genomic-junction set comparison (flag-gated).
             // Cross-chromosome safety is automatic: chrom is part of each tuple element.
-            let (g_matched, g_only_a, g_only_b, g_unmatched) = if args.compare_genomic_junctions {
-                let a_genomic = reader_a.get_col("genomic_junctions").unwrap_or("");
-                let b_genomic = reader_b.get_col("genomic_junctions").unwrap_or("");
-                let gj_a = parse_genomic_junction_str(a_genomic);
-                let gj_b = parse_genomic_junction_str(b_genomic);
-                let (m, oa, ob) = genomic_junction_set_stats(&gj_a, &gj_b);
-                (m, oa, ob, oa + ob)
-            } else {
-                (0, 0, 0, 0)
-            };
+            // `g_only_a_str` / `g_only_b_str` hold the appended-at-end object lists,
+            // populated only when the flag is set.
+            let (g_matched, g_only_a, g_only_b, g_unmatched, g_only_a_str, g_only_b_str) =
+                if args.compare_genomic_junctions {
+                    let a_genomic = reader_a.get_col("genomic_junctions").unwrap_or("");
+                    let b_genomic = reader_b.get_col("genomic_junctions").unwrap_or("");
+                    let gj_a = parse_genomic_junction_str(a_genomic);
+                    let gj_b = parse_genomic_junction_str(b_genomic);
+                    let (m, oa, ob) = genomic_junction_set_stats(&gj_a, &gj_b);
+                    let (gj_only_a_vec, gj_only_b_vec) =
+                        genomic_junction_set_diffs(&gj_a, &gj_b);
+                    let oa_str = format_genomic_junction_tuple(&gj_only_a_vec);
+                    let ob_str = format_genomic_junction_tuple(&gj_only_b_vec);
+                    (m, oa, ob, oa + ob, oa_str, ob_str)
+                } else {
+                    (0, 0, 0, 0, String::new(), String::new())
+                };
 
             // Write output row
             write!(out, "{}\t{}", key_a.name, key_a.len)?;
@@ -512,6 +531,22 @@ pub fn run(args: &CompareStreamingArgs) -> Result<()> {
                 write!(
                     out,
                     "\t{g_matched}\t{g_unmatched}\t{g_only_a}\t{g_only_b}",
+                )?;
+            }
+            // Object-list columns (the actual A-only / B-only junctions), appended at end.
+            // Escape defensively in case any chrom string contains tab/newline.
+            write!(
+                out,
+                "\t{}\t{}",
+                escape_tsv_field(&j_only_a_str),
+                escape_tsv_field(&j_only_b_str),
+            )?;
+            if args.compare_genomic_junctions {
+                write!(
+                    out,
+                    "\t{}\t{}",
+                    escape_tsv_field(&g_only_a_str),
+                    escape_tsv_field(&g_only_b_str),
                 )?;
             }
             writeln!(out)?;
