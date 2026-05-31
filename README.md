@@ -342,6 +342,76 @@ zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' '{print NF}
 
 ---
 
+## Troubleshooting
+
+### "`compare` matched far fewer reads than I expected" — sort-order diagnostic
+
+`compare` and `compare-junctions` use a streaming merge-join keyed on
+`(Read_Name, Read_Len)`. The algorithm runs in O(1) memory and O(N+M) time,
+but it **assumes both readinfo files are sorted in the same byte-lexicographic
+order**. If they aren't, matches are silently missed and the `matched` count
+in the end-of-run stderr summary comes out lower than it should.
+
+Maligno's own pipeline (`paf2alninfo` → `readinfo`) emits consistently-sorted
+readinfo by construction, so this only bites you if you re-sorted a file
+externally (e.g. with a non-`LC_ALL=C` locale) or assembled the inputs from
+multiple sources.
+
+To check, compute the expected match count via a set intersection of the
+`(Read_Name, Read_Len)` keys. If the merge-join's `matched` count matches
+this number, you're fine — any low overlap is a property of the input data.
+If it's lower, the inputs aren't sorted consistently.
+
+**Inline one-liner** (works on plain or `.gz` readinfo TSVs):
+
+```bash
+# Expected match count = full-key set intersection
+LC_ALL=C comm -12 \
+  <(zcat -f a.readinfo.tsv.gz | tail -n +2 | awk -F'\t' '{print $1"\t"$2}' | LC_ALL=C sort -u) \
+  <(zcat -f b.readinfo.tsv.gz | tail -n +2 | awk -F'\t' '{print $1"\t"$2}' | LC_ALL=C sort -u) \
+  | wc -l
+```
+
+**Or use the bundled diagnostic script** at
+[`scripts/check-readinfo-overlap.sh`](scripts/check-readinfo-overlap.sh) — same
+calculation plus a Name-only intersection (to spot reads that share names but
+differ in `Read_Len`, e.g. due to soft-clip differences), and a printable
+report:
+
+```bash
+./scripts/check-readinfo-overlap.sh a.readinfo.tsv.gz b.readinfo.tsv.gz
+```
+
+Example output:
+
+```
+Sort/overlap diagnostic
+  A: a.readinfo.tsv.gz
+  B: b.readinfo.tsv.gz
+
+  rows in A (unique full-key):     466392
+  rows in B (unique full-key):     496164
+  intersection by (Name, Len):     1023
+  intersection by Name only:       1023
+
+  ⇒ `compare`'s 'matched' count should equal 1023. If maligno's reported
+    matched count is lower than that, the two readinfo files are not sorted
+    in the same byte-lexicographic order. Re-sort each with:
+
+        LC_ALL=C sort -t$'\t' -k1,1 -k2,2n input.readinfo.tsv > sorted.tsv
+        # (keep the header separately)
+
+    or rerun the maligno pipeline from PAF level — paf2alninfo + readinfo
+    produce consistently-sorted output by construction.
+```
+
+If `intersection by Name only` is larger than `intersection by (Name, Len)`,
+some reads share names but have different `Read_Len` between the two files
+(usually an upstream soft-clip / qlen difference). Those rows can't match
+in `compare` regardless of sort order.
+
+---
+
 ## Source layout
 
 ```
@@ -363,4 +433,7 @@ src/
     ├── cigar.rs            — CIGAR string parser
     ├── md.rs               — MD-tag iterator
     └── cs_generator.rs     — cs-tag generator (MD + CIGAR → cs string)
+
+scripts/
+└── check-readinfo-overlap.sh   — sort-order / overlap diagnostic for compare inputs
 ```
