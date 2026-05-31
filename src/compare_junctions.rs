@@ -61,12 +61,17 @@ const PER_SIDE_COLS: &[&str] = &[
     "TargetChr",
     "Strand",
     "Num_Aln",
+    "Num_Aln_MaxScore",
     "JuncCount",
     "seqid_Max",
     "Query_Aln_Cov_Max",
     "junctions",
     "genomic_junctions",
     "cs",
+    "Query_Start",
+    "Query_End",
+    "Target_Start",
+    "Target_End",
 ];
 
 /// Comparison metric column names (written as-is, no suffix).

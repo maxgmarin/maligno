@@ -47,8 +47,6 @@ pub struct AlnInfo {
     pub n_softclipped_bases_start: u64,
     pub n_softclipped_bases_end:   u64,
     pub n_softclipped_events:      u32,
-    /// Backwards-compat alias for N_Insertion_Bases.
-    pub num_bp_inserted:          u64,
     /// Splice junction query-coordinate positions, plus-strand adjusted, sorted ascending.
     pub junctions:                Vec<i64>,
     pub splice_junction_count:    usize,
@@ -164,7 +162,6 @@ impl AlnInfo {
             n_softclipped_bases_start: sc_start,
             n_softclipped_bases_end:   sc_end,
             n_softclipped_events,
-            num_bp_inserted:          cs_stats.n_insertion_bases,
             junctions,
             splice_junction_count,
             target_start_1based,
@@ -188,7 +185,7 @@ impl AlnInfo {
              N_Deletion_Events\tN_Deletion_Bases\t\
              N_Splice_Junction_Events\tN_Splice_Junction_Bases\t\
              N_SoftClipped_Bases_Start\tN_SoftClipped_Bases_End\t\
-             N_SoftClipped_Events\tnum_bp_inserted\t\
+             N_SoftClipped_Events\t\
              junctions\tsplice_junction_count\t\
              Target_Start_1based\tseqid\tQuery_Aln_Len\tQuery_Aln_Cov\t\
              genomic_junctions"
@@ -200,7 +197,7 @@ impl AlnInfo {
         let escaped_cs = escape_tsv_field(&self.cs);
         write!(w,
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
-             {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t",
+             {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t",
             self.query_name,
             self.query_len, self.query_start, self.query_end, self.strand,
             self.target_name,
@@ -214,7 +211,6 @@ impl AlnInfo {
             self.n_splice_junction_events, self.n_splice_junction_bases,
             self.n_softclipped_bases_start, self.n_softclipped_bases_end,
             self.n_softclipped_events,
-            self.num_bp_inserted,
         )?;
 
         // junctions: Python's str(tuple) format

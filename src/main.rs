@@ -2,11 +2,11 @@
 //!
 //! A single binary with four subcommands covering the full pipeline:
 //!
-//!   1. `paf2alninfo`        PAF                → per-alignment info TSV (36 cols)
-//!   2. `readinfo`           alninfo TSV        → per-read summary TSV   (30 cols)
-//!   3. `compare`            two readinfo TSVs  → per-read comparison TSV (84 cols by default;
-//!                                                90 with `--compare-genomic-junctions`)
-//!   4. `compare-junctions`  two readinfo TSVs  → streamlined splice-focused comparison (35 cols)
+//!   1. `paf2alninfo`        PAF                → per-alignment info TSV (35 cols)
+//!   2. `readinfo`           alninfo TSV        → per-read summary TSV   (32 cols)
+//!   3. `compare`            two readinfo TSVs  → per-read comparison TSV (86 cols by default;
+//!                                                92 with `--compare-genomic-junctions`)
+//!   4. `compare-junctions`  two readinfo TSVs  → streamlined splice-focused comparison (45 cols)
 //!   5. `sam2paf`            SAM                → PAF  (utility; use before paf2alninfo)
 //!
 //! Full pipeline (including optional SAM conversion):

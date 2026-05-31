@@ -22,10 +22,10 @@
 
 | Subcommand    | Input                              | Output                                  |
 |---------------|------------------------------------|-----------------------------------------|
-| `paf2alninfo` | PAF (`-i`, `.gz`/`-` ok)           | per-alignment info TSV (`-o`, 36 cols)  |
-| `readinfo`    | alninfo TSV (`-i`, `.gz`/`-` ok)   | per-read summary TSV (`-o`, 30 cols)    |
-| `compare`     | two readinfo TSVs (`-a`, `-b`)     | per-read comparison TSV (`-o`, 84 cols, +6 with `--compare-genomic-junctions`) |
-| `compare-junctions` | two readinfo TSVs (`-a`, `-b`) | streamlined splice-focused comparison TSV (`-o`, 35 cols) |
+| `paf2alninfo` | PAF (`-i`, `.gz`/`-` ok)           | per-alignment info TSV (`-o`, 35 cols)  |
+| `readinfo`    | alninfo TSV (`-i`, `.gz`/`-` ok)   | per-read summary TSV (`-o`, 33 cols)    |
+| `compare`     | two readinfo TSVs (`-a`, `-b`)     | per-read comparison TSV (`-o`, 86 cols, +6 with `--compare-genomic-junctions`) |
+| `compare-junctions` | two readinfo TSVs (`-a`, `-b`) | streamlined splice-focused comparison TSV (`-o`, 45 cols) |
 | `sam2paf`     | SAM file or stdin (`-`)            | PAF written to stdout                   |
 
 All inputs/outputs transparently support gzip (`.gz` suffix) and stdin/stdout (`-`).
@@ -79,7 +79,7 @@ BIN=./target/release/maligno
 samtools view -h refA.bam | $BIN sam2paf -U - | gzip > refA.paf.gz
 samtools view -h refB.bam | $BIN sam2paf -U - | gzip > refB.paf.gz
 
-# 1. PAF → alninfo  (one row per alignment, 36 cols)
+# 1. PAF → alninfo  (one row per alignment, 35 cols)
 $BIN paf2alninfo -i refA.paf.gz -o refA.alninfo.tsv.gz
 $BIN paf2alninfo -i refB.paf.gz -o refB.alninfo.tsv.gz
 
@@ -125,18 +125,34 @@ pipeline.
 Groups alninfo rows by `Query_Name` (contiguous in sorted input) and collapses each group
 to one summary row:
 
-- **Best alignment** is the row with the highest `ms`, ties broken by highest `AS`.
-- **Aggregates over all alignments of the read:** `AS_Max`/`AS_Min`, `ms_Max`/`ms_Min`,
-  `Query_Aln_Cov_Max`, `Query_Aln_Len_Max`, `seqid_Max`.
+- **Best alignment** is the row with the highest `ms`, ties broken by highest `AS`. Full
+  `(ms, AS)` ties fall through to alninfo input order (stable sort) — for the default sorted
+  pipeline, the alignment with the lowest `(Query_Start, Query_End)` wins.
+- **Aggregates over all alignments of the read:** `AS_Max`, `ms_Max`, `Query_Aln_Cov_Max`,
+  `Query_Aln_Len_Max`, `seqid_Max`.
 - `Num_Aln` counts only aligned rows (`Target_Name != "*"`), so a read that is present but
   entirely unaligned gets a row with `Num_Aln = 0` and zeroed stats.
+- `Num_Aln_MaxScore` counts alignments tied at the chosen-best sort key for this read —
+  i.e., tied at **both** `ms_Max` **and** the highest `AS` among ms-tied rows. This matches
+  the full `(ms desc, AS desc)` selection rule used to pick the best alignment.
+  `Num_Aln_MaxScore = 1` ⇒ a single unambiguous winner under the selection rule;
+  `> 1` ⇒ alignments remain indistinguishable on both `ms` and `AS`, and file order
+  broke the tie. Practical note: STAR-style aligners write `ms=0` for every alignment, so
+  `ms_Max = 0` and `AS` does the actual selection work — counting at `(ms, AS)` keeps
+  `Num_Aln_MaxScore` informative in that case (otherwise it would equal `Num_Aln`).
+- `Query_Start` / `Query_End` and `Target_Start` / `Target_End` carry the best alignment's
+  query-coordinate span on the read and target-coordinate span on the reference (both
+  0-based half-open, same convention as PAF / BED). Combined with `TargetChr` and `Strand`,
+  this gives each read a complete BED-style alignment interval — useful for downstream
+  genomic-region analysis (e.g., `bedtools merge` on filtered subsets of the compare output
+  to identify regions where SetA and SetB differ).
 
 ### `compare`
 
 A two-pointer **merge-join** over two sorted readinfo files, matching on
-**(Read_Name, Read_Len)**. For each matched read it emits the 26 data columns from each
-side (suffixed with `--label-a` / `--label-b`) plus 23 comparison metrics
-(`AS_Diff`, `ms_Ratio`, `seqid_Diff`, `Junction_Distance`, `N_Matched_Junctions`, …).
+**(Read_Name, Read_Len)**. For each matched read it emits the 30 data columns from each
+side (suffixed with `--label-a` / `--label-b`) plus 24 comparison/object columns
+(`AS_Diff`, `ms_Ratio`, `seqid_Diff`, `Junction_Distance`, `N_Matched_Junctions`, `Junctions_OnlyA`, …).
 
 **Junction set comparison.** Junctions are compared as **sets** of query coordinates
 (deduplicated on both sides):
@@ -230,16 +246,16 @@ LC_ALL=C sort -t$'\t' -k1,1 -k2,2n input.readinfo.tsv   # keep header separately
 ### `compare-junctions`
 
 A **streamlined, splice-focused** variant of `compare`. Same streaming merge-join over two
-readinfo files, but emits only **35 columns** instead of 84–90 — useful when the question is
+readinfo files, but emits only **45 columns** instead of 86–92 — useful when the question is
 "how do the splice junctions for each read differ between two alignments?" rather than full
 score/indel/coverage diffs.
 
 | Cols | Content |
 |------|---------|
-| 1–2  | `Read_Name`, `Read_Len` (join keys) |
-| 3–20 | 9 per-side data columns × 2 sides: `TargetChr, Strand, Num_Aln, JuncCount, seqid_Max, Query_Aln_Cov_Max, junctions, genomic_junctions, cs` |
-| 21–31| 11 comparison metrics: `Strand_Match` + `seqid_Diff` + `QueryAlnCov_Diff` + 4 query-junction set metrics (matched / unmatched / OnlyA / OnlyB) + 4 parallel `Genomic_*` set metrics |
-| 32–35| 4 object lists at the end: `Junctions_OnlyA`, `Junctions_OnlyB`, `Genomic_Junctions_OnlyA`, `Genomic_Junctions_OnlyB` — the actual tuples of junctions that failed to overlap (Python tuple format, parseable with `ast.literal_eval`) |
+| 1–2   | `Read_Name`, `Read_Len` (join keys) |
+| 3–30  | 14 per-side data columns × 2 sides: `TargetChr, Strand, Num_Aln, Num_Aln_MaxScore, JuncCount, seqid_Max, Query_Aln_Cov_Max, junctions, genomic_junctions, cs, Query_Start, Query_End, Target_Start, Target_End` |
+| 31–41 | 11 comparison metrics: `Strand_Match` + `seqid_Diff` + `QueryAlnCov_Diff` + 4 query-junction set metrics (matched / unmatched / OnlyA / OnlyB) + 4 parallel `Genomic_*` set metrics |
+| 42–45 | 4 object lists at the end: `Junctions_OnlyA`, `Junctions_OnlyB`, `Genomic_Junctions_OnlyA`, `Genomic_Junctions_OnlyB` — the actual tuples of junctions that failed to overlap (Python tuple format, parseable with `ast.literal_eval`) |
 
 Genomic-junction metrics are always emitted (no flag) — `chrom` is embedded in each
 genomic-junction tuple, so cross-chromosome compares correctly produce zero overlap.
@@ -298,7 +314,7 @@ zcat < /tmp/Splice_vs_SpliceHQ.compare.tsv.gz | head -1 | tr '\t' '\n' | nl
 
 
 
-# Streamlined splice-focused comparison (31 cols: per-side junction info + set-overlap metrics)
+# Streamlined splice-focused comparison (45 cols: per-side junction info + alignment span + set-overlap metrics)
 time $BIN compare-junctions \
   -a /tmp/Splice.readinfo.tsv.gz   --label-a Splice \
   -b /tmp/SpliceHQ.readinfo.tsv.gz --label-b SpliceHQ \
@@ -333,7 +349,7 @@ zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $
 
 
 
-# Verify column counts (expect 36, 30, 82, 31)
+# Verify column counts (expect 35, 32, 86, 45)
 zcat < /tmp/Splice.alninfo.tsv.gz                       | awk -F'\t' '{print NF}' | sort | uniq -c
 zcat < /tmp/Splice.readinfo.tsv.gz                      | awk -F'\t' '{print NF}' | sort | uniq -c
 zcat < /tmp/Splice_vs_SpliceHQ.compare.tsv.gz           | awk -F'\t' '{print NF}' | sort | uniq -c
@@ -420,7 +436,7 @@ src/
 ├── paf2alninfo.rs          — PAF → per-alignment info TSV
 ├── readinfo.rs             — alninfo → per-read summary TSV
 ├── compare_streaming.rs    — streaming merge-join comparison (full)
-├── compare_junctions.rs    — streamlined splice-focused comparison (35 cols)
+├── compare_junctions.rs    — streamlined splice-focused comparison (45 cols)
 ├── record.rs               — AlnInfo struct + TSV serialisation
 ├── paf.rs                  — PAF record parser
 ├── cs_parser.rs            — cs-tag parser (PAF → stats + genomic junctions)

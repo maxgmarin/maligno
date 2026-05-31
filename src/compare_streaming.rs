@@ -60,14 +60,13 @@ const READINFO_DATA_COLS: &[&str] = &[
     "TargetChr",
     "Strand",
     "AS_Max",
-    "AS_Min",
     "ms_Max",
-    "ms_Min",
     "Query_Aln_Cov_Max",
     "Query_Aln_Len_Max",
     "seqid_Max",
     "junctions",
     "Num_Aln",
+    "Num_Aln_MaxScore",
     "JuncCount",
     "N_Match_Events",
     "N_Match_Bases",
@@ -82,9 +81,12 @@ const READINFO_DATA_COLS: &[&str] = &[
     "N_SoftClipped_Bases_Start",
     "N_SoftClipped_Bases_End",
     "N_SoftClipped_Events",
-    "num_bp_inserted",
     "cs",
     "genomic_junctions",
+    "Query_Start",
+    "Query_End",
+    "Target_Start",
+    "Target_End",
 ];
 
 fn comparison_col_names(with_genomic: bool) -> Vec<&'static str> {
@@ -97,8 +99,6 @@ fn comparison_col_names(with_genomic: bool) -> Vec<&'static str> {
         "seqid_Diff",
         "QueryAlnLen_Diff",
         "QueryAlnCov_Diff",
-        "num_bp_inserted_Diff",
-        "num_bp_inserted_Ratio",
         "N_Insertion_Bases_Diff",
         "N_Insertion_Bases_Ratio",
         "N_Deletion_Bases_Diff",
@@ -346,11 +346,6 @@ pub fn run(args: &CompareStreamingArgs) -> Result<()> {
                 .unwrap_or("NaN")
                 .parse()
                 .unwrap_or(f64::NAN);
-            let a_num_bp_inserted: u64 = reader_a
-                .get_col("num_bp_inserted")
-                .unwrap_or("0")
-                .parse()
-                .unwrap_or(0);
             let a_n_ins_bases: u64 = reader_a
                 .get_col("N_Insertion_Bases")
                 .unwrap_or("0")
@@ -402,11 +397,6 @@ pub fn run(args: &CompareStreamingArgs) -> Result<()> {
                 .unwrap_or("NaN")
                 .parse()
                 .unwrap_or(f64::NAN);
-            let b_num_bp_inserted: u64 = reader_b
-                .get_col("num_bp_inserted")
-                .unwrap_or("0")
-                .parse()
-                .unwrap_or(0);
             let b_n_ins_bases: u64 = reader_b
                 .get_col("N_Insertion_Bases")
                 .unwrap_or("0")
@@ -449,8 +439,6 @@ pub fn run(args: &CompareStreamingArgs) -> Result<()> {
             let seqid_diff = b_seqid_max - a_seqid_max;
             let qal_diff = b_aln_len_max as i64 - a_aln_len_max as i64;
             let qac_diff = b_cov_max - a_cov_max;
-            let bp_ins_diff = b_num_bp_inserted as i64 - a_num_bp_inserted as i64;
-            let bp_ins_ratio = safe_ratio_u64(b_num_bp_inserted, a_num_bp_inserted);
             let n_ins_diff = b_n_ins_bases as i64 - a_n_ins_bases as i64;
             let n_ins_ratio = safe_ratio_u64(b_n_ins_bases, a_n_ins_bases);
             let n_del_diff = b_n_del_bases as i64 - a_n_del_bases as i64;
@@ -530,7 +518,6 @@ pub fn run(args: &CompareStreamingArgs) -> Result<()> {
                 out,
                 "\t{strand_match}\t\
                  {as_diff}\t{ms_diff}\t{as_ratio}\t{ms_ratio}\t{}\t{qal_diff}\t{}\t\
-                 {bp_ins_diff}\t{bp_ins_ratio}\t\
                  {n_ins_diff}\t{n_ins_ratio}\t\
                  {n_del_diff}\t{n_del_ratio}\t\
                  {n_sub_diff}\t{n_sub_ratio}\t\
