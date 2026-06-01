@@ -79,9 +79,15 @@ BIN=./target/release/maligno
 samtools view -h refA.bam | $BIN sam2paf -U - | gzip > refA.paf.gz
 samtools view -h refB.bam | $BIN sam2paf -U - | gzip > refB.paf.gz
 
-# 1. PAF → alninfo  (one row per alignment, 35 cols)
-$BIN paf2alninfo -i refA.paf.gz -o refA.alninfo.tsv.gz
-$BIN paf2alninfo -i refB.paf.gz -o refB.alninfo.tsv.gz
+# 0.5. Pre-sort each PAF by Query_Name (byte-lex). Skip if already byte-lex sorted.
+#      Required so downstream readinfo groups correctly and compare's merge-join
+#      sees byte-lex-sorted input. Unix `sort` uses external-sort → bounded memory.
+LC_ALL=C sort -t$'\t' -k1,1 <(gzcat refA.paf.gz) | gzip > refA.sorted.paf.gz
+LC_ALL=C sort -t$'\t' -k1,1 <(gzcat refB.paf.gz) | gzip > refB.sorted.paf.gz
+
+# 1. PAF → alninfo  (one row per alignment, 35 cols; pure streaming, constant memory)
+$BIN paf2alninfo -i refA.sorted.paf.gz -o refA.alninfo.tsv.gz
+$BIN paf2alninfo -i refB.sorted.paf.gz -o refB.alninfo.tsv.gz
 
 # 2. alninfo → readinfo  (one row per read; best alignment chosen by ms, then AS)
 $BIN readinfo -i refA.alninfo.tsv.gz -o refA.readinfo.tsv.gz
@@ -113,8 +119,19 @@ $BIN readinfo    -i refA.alninfo.tsv.gz -o refA.readinfo.tsv.gz
 Parses each PAF record (12 mandatory fields + `ms:i`, `AS:i`, `cs:Z` tags), walks the
 `cs` tag to accumulate match/substitution/insertion/deletion/splice statistics, computes
 soft-clip lengths, junction coordinates (strand-aware), and derived scalars
-(`seqid`, `Query_Aln_Len`, `Query_Aln_Cov`). Output is sorted by
-(Query_Name, Query_Start, Query_End) unless `--no-sort`.
+(`seqid`, `Query_Aln_Len`, `Query_Aln_Cov`).
+
+**Pure streaming, constant memory** (since v0.2.7). Each PAF line is parsed and written
+independently in input order — no internal collect-then-sort. For the standard pipeline
+(`paf2alninfo` → `readinfo` → `compare`), pre-sort the PAF by `Query_Name` once upstream:
+
+```bash
+LC_ALL=C sort -t$'\t' -k1,1 in.paf > sorted.paf
+```
+
+Unix `sort` does external-sort with bounded memory and handles files larger than RAM.
+The pre-sort satisfies both `readinfo`'s contiguity requirement and `compare`'s byte-lex
+sort requirement in one pass.
 
 **Unaligned reads are kept.** A PAF record with `Target_Name == "*"` produces a full row
 with zeroed alignment statistics, allowing unaligned reads to flow through the entire
@@ -126,8 +143,8 @@ Groups alninfo rows by `Query_Name` (contiguous in sorted input) and collapses e
 to one summary row:
 
 - **Best alignment** is the row with the highest `ms`, ties broken by highest `AS`. Full
-  `(ms, AS)` ties fall through to alninfo input order (stable sort) — for the default sorted
-  pipeline, the alignment with the lowest `(Query_Start, Query_End)` wins.
+  `(ms, AS)` ties fall through to alninfo input order (stable sort within each `Query_Name`
+  run) — typically the aligner's emission order for that read.
 - **Aggregates over all alignments of the read:** `AS_Max`, `ms_Max`, `Query_Aln_Cov_Max`,
   `Query_Aln_Len_Max`, `seqid_Max`.
 - `Num_Aln` counts only aligned rows (`Target_Name != "*"`), so a read that is present but
@@ -235,13 +252,60 @@ Read comparison summary:
   B-only (dropped, not in A): 7
 ```
 
-**Sorting requirement.** The merge-join requires both readinfo files to be sorted by
-(Read_Name, Read_Len). This is automatically satisfied when files come from this tool's
-`paf2alninfo → readinfo` chain. If sorting externally:
+**Sorting requirement.** The merge-join requires both readinfo files to be in the
+**same** `(Read_Name, Read_Len)` order — byte-lex order is the most convenient guarantee.
+As of v0.2.7, `paf2alninfo` no longer sorts internally (it's pure streaming, order-
+preserving). The cleanest fix is a one-time pre-sort upstream on the PAF, which carries
+through the entire chain:
 
 ```bash
-LC_ALL=C sort -t$'\t' -k1,1 -k2,2n input.readinfo.tsv   # keep header separately
+# Pre-sort PAF (plain or gzipped) by Query_Name.
+LC_ALL=C sort -t$'\t' -k1,1 in.paf > sorted.paf
+zcat in.paf.gz | LC_ALL=C sort -t$'\t' -k1,1 | gzip > sorted.paf.gz
 ```
+
+If you already have an unsorted **alninfo** TSV, sort it on `Query_Name` (col 1) with the
+header kept separately:
+
+```bash
+# alninfo: plain
+(head -1 in.alninfo.tsv;
+ tail -n +2 in.alninfo.tsv | LC_ALL=C sort -t$'\t' -k1,1) \
+  > sorted.alninfo.tsv
+
+# alninfo: gzipped
+( zcat in.alninfo.tsv.gz | head -1;
+  zcat in.alninfo.tsv.gz | tail -n +2 | LC_ALL=C sort -t$'\t' -k1,1
+) | gzip > sorted.alninfo.tsv.gz
+```
+
+If you already have an unsorted **readinfo** TSV, sort it on `(Read_Name, Read_Len)` —
+col 1 (string) then col 2 (numeric):
+
+```bash
+# readinfo: plain
+(head -1 in.readinfo.tsv;
+ tail -n +2 in.readinfo.tsv | LC_ALL=C sort -t$'\t' -k1,1 -k2,2n) \
+  > sorted.readinfo.tsv
+
+# readinfo: gzipped
+( zcat in.readinfo.tsv.gz | head -1;
+  zcat in.readinfo.tsv.gz | tail -n +2 | LC_ALL=C sort -t$'\t' -k1,1 -k2,2n
+) | gzip > sorted.readinfo.tsv.gz
+```
+
+Notes on the sort flags:
+- `LC_ALL=C` forces byte-lex order (locale-independent and deterministic).
+- `-t$'\t'` sets the field separator to TAB.
+- `-k1,1` sorts on column 1 as a string (`Query_Name` for alninfo, `Read_Name` for readinfo).
+- `-k2,2n` (readinfo only) breaks ties by `Read_Len` numerically.
+- `sort` uses external-sort under the hood, so memory stays bounded even on files larger
+  than RAM. Override its scratch directory and memory cap with `-T` and `-S` if needed
+  (e.g. `-T /scratch -S 8G`).
+
+`readinfo` emits a one-time WARNING on stderr if its input alninfo is not byte-lex
+sorted, flagging the most common foot-gun (a name-sorted-but-not-byte-lex aligner
+output like STAR's, or a shuffled multi-threaded aligner output).
 
 ### `compare-junctions`
 
@@ -368,8 +432,14 @@ but it **assumes both readinfo files are sorted in the same byte-lexicographic
 order**. If they aren't, matches are silently missed and the `matched` count
 in the end-of-run stderr summary comes out lower than it should.
 
-Maligno's own pipeline (`paf2alninfo` → `readinfo`) emits consistently-sorted
-readinfo by construction, so this only bites you if you re-sorted a file
+Since v0.2.7 `paf2alninfo` is pure streaming and **preserves input order** —
+sortedness must be supplied by you upstream of the pipeline (or recovered
+afterward, see Sorting requirement above). `readinfo` emits a one-time
+WARNING on stderr if it detects a byte-lex decrease in its input alninfo's
+`Query_Name` column, flagging the common foot-gun (a name-sorted-but-not-byte-lex
+aligner output like STAR's, or a shuffled multi-threaded aligner output).
+
+This diagnostic still bites you if you re-sorted a file
 externally (e.g. with a non-`LC_ALL=C` locale) or assembled the inputs from
 multiple sources.
 

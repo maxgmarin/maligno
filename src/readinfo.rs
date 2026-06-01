@@ -394,6 +394,11 @@ pub fn run(args: &ReadInfoArgs) -> Result<()> {
     let mut current_name: Option<String> = None;
     let mut group: Vec<AlnRow> = Vec::new();
 
+    // One-shot lex-decrease guardrail. Constant memory (one prev-name).
+    // Fires once on the first decrease and stays quiet thereafter so it
+    // doesn't spam the log on heavily-shuffled inputs.
+    let mut warned_unsorted: bool = false;
+
     for line_res in lines {
         let line = line_res?;
         if line.is_empty() {
@@ -409,6 +414,26 @@ pub fn run(args: &ReadInfoArgs) -> Result<()> {
 
         if let Some(ref cur) = current_name {
             if *cur != name {
+                // Lex-decrease check at run boundaries (cheaper than per-row).
+                if !warned_unsorted && name.as_bytes() < cur.as_bytes() {
+                    eprintln!(
+                        "WARNING: input alninfo is not byte-lex sorted by \
+                         Query_Name (saw {cur:?} then {name:?}). `readinfo` \
+                         groups by *contiguous* Query_Name runs and the \
+                         downstream `compare` step requires byte-lex sort. \
+                         If reads aren't contiguous, per-read summaries will \
+                         be wrong. To pre-sort, either sort the alninfo:\n\
+                         \n\
+                         \t(head -1 in.alninfo.tsv; tail -n +2 in.alninfo.tsv \
+                         | LC_ALL=C sort -t$'\\t' -k1,1) > sorted.alninfo.tsv\n\
+                         \n\
+                         or sort the PAF before paf2alninfo:\n\
+                         \n\
+                         \tLC_ALL=C sort -t$'\\t' -k1,1 in.paf | maligno \
+                         paf2alninfo -i - -o ...\n"
+                    );
+                    warned_unsorted = true;
+                }
                 // Flush group
                 flush_group(&mut group, no_sort, &mut *out)?;
                 group.clear();
