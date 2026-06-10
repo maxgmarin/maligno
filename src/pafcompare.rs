@@ -1,14 +1,14 @@
-//! Subcommand `pafcompare`: fused paired-PAF → comparison TSV in one pass.
+//! The primary `compare` command: fused paired-PAF → comparison TSV in one pass.
 //!
-//! Equivalent to the full discrete pipeline
-//! (`paf2alninfo | readinfo` on each side, then `compare`), but without
-//! materializing any intermediate files. Both PAFs are read in **lock-step**:
-//! one read's group is pulled from each side, collapsed to a `ReadInfoRow`, and
-//! emitted as a comparison row.
+//! This is the headline workflow — `compare -a A.paf -b B.paf -o out.tsv` — and
+//! is equivalent to the explicit path (`paf2tables` on each side, then
+//! `compare-readinfo`) but without materializing any intermediate files. Both
+//! PAFs are read in **lock-step**: one read's group is pulled from each side,
+//! collapsed to a `ReadInfoRow`, and emitted as a comparison row.
 //!
 //! ## Ordering contract
 //!
-//! By default `pafcompare` is strict: it requires that both PAFs list the
+//! By default `compare` is strict: it requires that both PAFs list the
 //! **same `Query_Names` in the same order**. On the first read-name mismatch
 //! — or if one side runs out of reads before the other — it prints an ERROR
 //! to stderr and stops with a non-zero exit.
@@ -18,10 +18,10 @@
 //! both PAFs to be lex-sorted by Query_Name. Unmatched reads are counted in
 //! the end-of-run summary.
 //!
-//! Output is byte-identical to the discrete pipeline because each side's
-//! `ReadInfoRow` is serialized to the exact readinfo-TSV line `readinfo` would
+//! Output is byte-identical to the explicit path because each side's
+//! `ReadInfoRow` is serialized to the exact readinfo-TSV line `paf2tables` would
 //! produce, then fed into the same `emit_compare_row` /
-//! `emit_compare_junctions_row` used by `compare` (`--mode full` / `junctions`).
+//! `emit_compare_junctions_row` used by `compare-readinfo` (`--mode full` / `junctions`).
 
 use std::collections::HashMap;
 
@@ -35,7 +35,7 @@ use crate::paf_groups::PafGroups;
 use crate::readinfo::{collapse_group, AlnRow, ReadInfoRow, READINFO_HEADER};
 
 #[derive(clap::Args, Debug)]
-pub struct PafCompareArgs {
+pub struct CompareArgs {
     /// PAF for dataset A. Use '-' for stdin; '.gz' auto-decompressed.
     #[arg(short = 'a', long = "paf-a", value_name = "a.paf")]
     paf_a: String,
@@ -91,7 +91,7 @@ fn drain<R: std::io::BufRead>(groups: &mut PafGroups<R>) -> Result<u64> {
     Ok(n)
 }
 
-pub fn run(args: &PafCompareArgs) -> Result<()> {
+pub fn run(args: &CompareArgs) -> Result<()> {
     eprintln!("[INFO] Opening PAF files...");
     eprintln!("  A: {}", args.paf_a);
     eprintln!("  B: {}", args.paf_b);

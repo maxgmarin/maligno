@@ -1,14 +1,15 @@
-/// Streaming merge-join comparison of two readinfo TSVs.
-///
-/// Memory usage: O(1) [constant, independent of file size]
-/// Time: O(|A| + |B|) [after sorting both files by (Read_Name, Read_Len)]
-///
-/// Algorithm: Two-pointer merge-join
-/// - Stream through both files simultaneously
-/// - When keys match, output comparison row
-/// - When keys don't match, advance the pointer with the smaller key
-///
-/// REQUIREMENT: Both input files must be sorted by (Read_Name, Read_Len)
+//! Provides the `compare-readinfo` command (two readinfo TSVs → comparison) and
+//! houses the shared comparison core reused by the primary `compare` command
+//! (`pafcompare.rs`) and the junction view (`compare_junctions.rs`): `ReadKey`,
+//! `ReadInfoReader`, `CompareMode`, `write_compare_header`, `emit_compare_row`,
+//! `comparison_col_names`, `READINFO_DATA_COLS`.
+//!
+//! Algorithm: streaming two-pointer merge-join, O(1) memory, O(|A|+|B|) time.
+//! - Stream through both files simultaneously; on key match, emit a row.
+//! - On mismatch: error by default, or (with `--ignore-row-mismatch`) advance the
+//!   pointer with the smaller key.
+//!
+//! REQUIREMENT: both input readinfo files must be sorted by (Read_Name, Read_Len).
 
 use std::io::{BufRead, Write};
 
@@ -24,8 +25,8 @@ use crate::junction::{
 
 // ── Comparison mode ───────────────────────────────────────────────────────────
 
-/// Which comparison view to emit. Shared by `compare` and `pafcompare` so the
-/// two commands expose an identical `--mode` surface.
+/// Which comparison view to emit. Shared by `compare` and `compare-readinfo` so
+/// the two commands expose an identical `--mode` surface.
 #[derive(Clone, Debug, Default, clap::ValueEnum)]
 pub(crate) enum CompareMode {
     /// All per-read metrics, including genomic-junction comparison (94 cols).
@@ -38,7 +39,7 @@ pub(crate) enum CompareMode {
 // ── CLI args ─────────────────────────────────────────────────────────────────
 
 #[derive(clap::Args, Debug)]
-pub struct CompareStreamingArgs {
+pub struct CompareReadinfoArgs {
     /// Readinfo TSV A (must be sorted by Read_Name, Read_Len)
     #[arg(short = 'a', long = "readinfo-a", value_name = "readinfo_a.tsv")]
     pub readinfo_a: String,
@@ -442,7 +443,7 @@ impl ReadInfoReader {
 
 // ── Main streaming comparison function ──────────────────────────────────────
 
-pub fn run(args: &CompareStreamingArgs) -> Result<()> {
+pub fn run(args: &CompareReadinfoArgs) -> Result<()> {
     eprintln!("[INFO] Opening readinfo files...");
     eprintln!("  A: {}", args.readinfo_a);
     eprintln!("  B: {}", args.readinfo_b);
