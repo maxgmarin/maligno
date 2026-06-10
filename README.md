@@ -23,13 +23,11 @@
 | Subcommand    | Input                              | Output                                  |
 |---------------|------------------------------------|-----------------------------------------|
 | **`paf2tables`** | PAF (`-i`, `.gz`/`-` ok)        | **alninfo TSV** (`--alninfo`, 35 cols) and/or **readinfo TSV** (`--readinfo`, 33 cols), in one pass — **the primary PAF entry point** |
-| `readinfo`    | alninfo TSV (`-i`, `.gz`/`-` ok)   | per-read summary TSV (`-o`, 33 cols)    |
+| `sam2paf`     | SAM file or stdin (`-`)            | PAF written to stdout                   |
 | `compare`     | two readinfo TSVs (`-a`, `-b`)     | per-read comparison TSV (`-o`, 88 cols, +6 with `--compare-genomic-junctions`) |
 | `compare-junctions` | two readinfo TSVs (`-a`, `-b`) | streamlined splice-focused comparison TSV (`-o`, 47 cols) |
-| `sam2paf`     | SAM file or stdin (`-`)            | PAF written to stdout                   |
 | `pafcompare`  | two PAFs (`-a`, `-b`)              | per-read comparison TSV (`-o`, 88 cols; `--junctions` → 47 cols) — **fused** full pipeline |
-| `paf2alninfo` *(deprecated)* | PAF (`-i`)          | alninfo TSV (`-o`) — alias for `paf2tables --alninfo` |
-| `paf2readinfo` *(deprecated)* | PAF (`-i`)         | readinfo TSV (`-o`) — alias for `paf2tables --readinfo` |
+| `utils-readinfo` | alninfo TSV (`-i`, `.gz`/`-` ok) | per-read summary TSV (`-o`, 33 cols) — low-level utility; most users want `paf2tables --readinfo` |
 
 All inputs/outputs transparently support gzip (`.gz` suffix) and stdin/stdout (`-`).
 
@@ -204,7 +202,7 @@ Parses each PAF record (12 mandatory fields + `ms:i`, `AS:i`, `cs:Z` tags), walk
 `cs` tag to accumulate match/substitution/insertion/deletion/splice statistics, computes
 soft-clip lengths, junction coordinates (strand-aware), and derived scalars
 (`seqid`, `Query_Aln_Len`, `Query_Aln_Cov`). This is the `--alninfo` output of
-`paf2tables` (and the deprecated `paf2alninfo` alias).
+`paf2tables`.
 
 **Pure streaming, constant memory** for the alninfo output. Each PAF line is parsed and
 written independently in input order — no internal collect-then-sort. For the standard
@@ -215,21 +213,26 @@ LC_ALL=C sort -t$'\t' -k1,1 in.paf > sorted.paf
 ```
 
 Unix `sort` does external-sort with bounded memory and handles files larger than RAM.
-The pre-sort satisfies both `readinfo`'s contiguity requirement and `compare`'s byte-lex
-sort requirement in one pass.
+The pre-sort satisfies both the `--readinfo` contiguity requirement and `compare`'s
+byte-lex sort requirement in one pass.
 
 **Unaligned reads are kept.** A PAF record with `Target_Name == "*"` produces a full row
 with zeroed alignment statistics, allowing unaligned reads to flow through the entire
 pipeline.
 
-### `readinfo`
+### `utils-readinfo`
+
+The per-read collapse step. **Most users don't call this directly** — `paf2tables --readinfo`
+produces the identical readinfo table straight from a PAF. `utils-readinfo` is the low-level
+utility for the case where you already have an `alninfo.tsv` (and not the PAF) and want to
+collapse it to readinfo.
 
 Groups alninfo rows by `Query_Name` (contiguous in sorted input) and collapses each group
 to one summary row:
 
-- **Best alignment** is the row with the highest `ms`, ties broken by highest `AS`. Full
-  `(ms, AS)` ties fall through to alninfo input order (stable sort within each `Query_Name`
-  run) — typically the aligner's emission order for that read.
+- **Best alignment** is the row with the highest `ms`, ties broken by highest `AS`, then by
+  highest `MQ`. Full `(ms, AS, MQ)` ties fall through to alninfo input order (stable sort
+  within each `Query_Name` run) — typically the aligner's emission order for that read.
 - **Aggregates over all alignments of the read:** `AS_Max`, `ms_Max`, `Query_Aln_Cov_Max`,
   `Query_Aln_Len_Max`, `seqid_Max`.
 - `Num_Aln` counts only aligned rows (`Target_Name != "*"`), so a read that is present but
@@ -287,7 +290,7 @@ in addition to) the query-coordinate metrics above. Pass `--compare-genomic-junc
 | `Genomic_N_Junctions_OnlyA`     | only in A |
 | `Genomic_N_Junctions_OnlyB`     | only in B |
 
-The `genomic_junctions` column (always emitted by `paf2alninfo` and `readinfo`) uses
+The `genomic_junctions` column (always emitted in the alninfo and readinfo tables) uses
 0-based half-open BED coordinates in **`((start, end), ...)`** Python-tuple-of-tuples
 form, parseable with `ast.literal_eval`. The chromosome is **not** in each tuple — it's
 in the sibling `TargetChr` (alninfo) / `TargetChr_<label>` (compare) column. Cross-
@@ -324,8 +327,8 @@ columns — parse with `ast.literal_eval` in Python.
 > ```bash
 > awk -F'\t' 'NR==1{for(i=1;i<=NF;i++)c[$i]=i;next} $c["N_Unmatched_Junctions"]>0'
 > ```
-> Also: if you have older readinfo TSVs with `TargetRef_1st`, rerun `readinfo` to get the
-> renamed column (or rename in your scripts).
+> Also: if you have older readinfo TSVs with `TargetRef_1st`, rerun `paf2tables --readinfo`
+> to get the renamed column (or rename in your scripts).
 
 **Join semantics — inner join.** Only reads present in **both** files produce an output
 row. Reads present in only one file are dropped but counted in the end-of-run summary
@@ -344,8 +347,8 @@ Read comparison summary:
 
 **Sorting requirement.** The merge-join requires both readinfo files to be in the
 **same** `(Read_Name, Read_Len)` order — byte-lex order is the most convenient guarantee.
-As of v0.2.7, `paf2alninfo` no longer sorts internally (it's pure streaming, order-
-preserving). The cleanest fix is a one-time pre-sort upstream on the PAF, which carries
+The `paf2tables` alninfo output is pure streaming and order-preserving (it does not sort
+internally). The cleanest fix is a one-time pre-sort upstream on the PAF, which carries
 through the entire chain:
 
 ```bash
@@ -393,7 +396,7 @@ Notes on the sort flags:
   than RAM. Override its scratch directory and memory cap with `-T` and `-S` if needed
   (e.g. `-T /scratch -S 8G`).
 
-`readinfo` emits a one-time WARNING on stderr if its input alninfo is not byte-lex
+The `--readinfo` collapse emits a one-time WARNING on stderr if its input is not byte-lex
 sorted, flagging the most common foot-gun (a name-sorted-but-not-byte-lex aligner
 output like STAR's, or a shuffled multi-threaded aligner output).
 
@@ -452,15 +455,20 @@ Key flags:
 ```bash
 BIN=./target/release/maligno
 
-time $BIN paf2alninfo -i test_data/Splice.AlnToHG38.PriAln.paf.gz   -o /tmp/Splice.alninfo.tsv.gz
-time $BIN paf2alninfo -i test_data/SpliceHQ.AlnToHG38.PriAln.paf.gz -o /tmp/SpliceHQ.alninfo.tsv.gz
+# PAF → readinfo in one pass (add --alninfo <path> to also keep the per-alignment table).
+time $BIN paf2tables -i test_data/Splice.AlnToHG38.PriAln.paf.gz   --readinfo /tmp/Splice.readinfo.tsv.gz
+time $BIN paf2tables -i test_data/SpliceHQ.AlnToHG38.PriAln.paf.gz --readinfo /tmp/SpliceHQ.readinfo.tsv.gz
 
-time $BIN readinfo -i /tmp/Splice.alninfo.tsv.gz   -o /tmp/Splice.readinfo.tsv.gz
-time $BIN readinfo -i /tmp/SpliceHQ.alninfo.tsv.gz -o /tmp/SpliceHQ.readinfo.tsv.gz
+# Sort each readinfo on (Read_Name, Read_Len) so the two files share byte-lex order
+# (compare is strict by default — it errors on a read-name mismatch unless inputs match).
+for S in Splice SpliceHQ; do
+  ( zcat < /tmp/$S.readinfo.tsv.gz | { IFS= read -r h; printf '%s\n' "$h"; \
+      LC_ALL=C sort -t$'\t' -k1,1 -k2,2n; } ) | gzip > /tmp/$S.readinfo.sorted.tsv.gz
+done
 
 time $BIN compare \
-  -a /tmp/Splice.readinfo.tsv.gz   --label-a Splice \
-  -b /tmp/SpliceHQ.readinfo.tsv.gz --label-b SpliceHQ \
+  -a /tmp/Splice.readinfo.sorted.tsv.gz   --label-a Splice \
+  -b /tmp/SpliceHQ.readinfo.sorted.tsv.gz --label-b SpliceHQ \
   -o /tmp/Splice_vs_SpliceHQ.compare.tsv.gz
 
 # Inspect the compare output header (column number → column name)
@@ -470,12 +478,17 @@ zcat < /tmp/Splice_vs_SpliceHQ.compare.tsv.gz | head -1 | tr '\t' '\n' | nl
 
 # Streamlined splice-focused comparison (47 cols: per-side junction info + alignment span + set-overlap metrics)
 time $BIN compare-junctions \
-  -a /tmp/Splice.readinfo.tsv.gz   --label-a Splice \
-  -b /tmp/SpliceHQ.readinfo.tsv.gz --label-b SpliceHQ \
+  -a /tmp/Splice.readinfo.sorted.tsv.gz   --label-a Splice \
+  -b /tmp/SpliceHQ.readinfo.sorted.tsv.gz --label-b SpliceHQ \
   -o /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz
 
 # Inspect the compare-junctions output header
 zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | head -1 | tr '\t' '\n' | nl
+
+# Tip: to skip the intermediate files entirely, `pafcompare` runs the whole
+# comparison in one pass (both PAFs must list reads in the same order):
+#   $BIN pafcompare -a sorted_Splice.paf.gz -b sorted_SpliceHQ.paf.gz \
+#     --label-a Splice --label-b SpliceHQ -o /tmp/Splice_vs_SpliceHQ.compare.tsv.gz
 
 # Check all unique values in columns 25 and 29 (Checking number of unmatched junctions from query and genome perspective)
 zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | cut -f 35 | sort | uniq -c 
@@ -523,13 +536,14 @@ zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' '{print NF}
 `compare` and `compare-junctions` use a streaming merge-join keyed on
 `(Read_Name, Read_Len)`. The algorithm runs in O(1) memory and O(N+M) time,
 but it **assumes both readinfo files are sorted in the same byte-lexicographic
-order**. If they aren't, matches are silently missed and the `matched` count
-in the end-of-run stderr summary comes out lower than it should.
+order**. By default a read-name mismatch is a hard error (non-zero exit) so you
+notice immediately; passing `--ignore-row-mismatch` reverts to skip-and-count,
+where unmatched reads are dropped and tallied in the end-of-run stderr summary.
 
-Since v0.2.7 `paf2alninfo` is pure streaming and **preserves input order** —
+The `paf2tables` alninfo output is pure streaming and **preserves input order** —
 sortedness must be supplied by you upstream of the pipeline (or recovered
-afterward, see Sorting requirement above). `readinfo` emits a one-time
-WARNING on stderr if it detects a byte-lex decrease in its input alninfo's
+afterward, see Sorting requirement above). The `--readinfo` collapse emits a
+one-time WARNING on stderr if it detects a byte-lex decrease in its input's
 `Query_Name` column, flagging the common foot-gun (a name-sorted-but-not-byte-lex
 aligner output like STAR's, or a shuffled multi-threaded aligner output).
 
@@ -581,8 +595,8 @@ Sort/overlap diagnostic
         LC_ALL=C sort -t$'\t' -k1,1 -k2,2n input.readinfo.tsv > sorted.tsv
         # (keep the header separately)
 
-    or rerun the maligno pipeline from PAF level — paf2alninfo + readinfo
-    produce consistently-sorted output by construction.
+    or pre-sort the PAF once (`LC_ALL=C sort -t$'\t' -k1,1`) and rerun
+    `paf2tables --readinfo` — both readinfo files then share byte-lex order.
 ```
 
 If `intersection by Name only` is larger than `intersection by (Name, Len)`,
@@ -598,13 +612,11 @@ in `compare` regardless of sort order.
 src/
 ├── main.rs                 — CLI dispatcher (clap subcommands)
 ├── paf2tables.rs           — PRIMARY PAF entry point: PAF → alninfo and/or readinfo (one pass)
-├── readinfo.rs             — alninfo → per-read summary TSV (collapse + best-alignment select)
+├── readinfo.rs             — collapse library (collapse_group/ReadInfoRow/AlnRow) + utils-readinfo entry point
 ├── compare_streaming.rs    — streaming comparison (full) + reusable emit/header
 ├── compare_junctions.rs    — streamlined splice-focused comparison (47 cols) + reusable emit/header
 ├── paf_groups.rs           — shared PAF → per-read group reader, with optional alninfo tee
 ├── pafcompare.rs           — fused paired-PAF → comparison (one pass; lock-step zip)
-├── paf2alninfo.rs          — deprecated alias → paf2tables::stream_alninfo
-├── paf2readinfo.rs         — deprecated alias → paf2tables::stream_readinfo
 ├── record.rs               — AlnInfo struct + TSV serialisation
 ├── paf.rs                  — PAF record parser
 ├── cs_parser.rs            — cs-tag parser (PAF → stats + genomic junctions)
