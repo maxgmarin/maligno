@@ -12,6 +12,7 @@ const COL_QUERY_LEN: usize = 1;
 const COL_QUERY_START: usize = 2;
 const COL_QUERY_END: usize = 3;
 const COL_STRAND: usize = 4;
+const COL_MQ: usize = 11;
 const COL_TARGET_NAME: usize = 5;
 const COL_TARGET_START: usize = 7;
 const COL_TARGET_END: usize = 8;
@@ -38,7 +39,7 @@ const COL_QUERY_ALN_COV: usize = 33;
 const COL_GENOMIC_JUNCTIONS: usize = 34;
 
 pub const READINFO_HEADER: &str = "Read_Name\tRead_Len\t\
-    TargetChr\tStrand\t\
+    TargetChr\tStrand\tMQ_Best\t\
     AS_Max\tms_Max\t\
     Query_Aln_Cov_Max\tQuery_Aln_Len_Max\t\
     seqid_Max\t\
@@ -68,6 +69,7 @@ pub struct ReadInfoRow {
     pub read_len: u64,
     pub target_chr: String,
     pub strand: char,
+    pub mapq_best: u32,
     pub as_max: i64,
     pub ms_max: i64,
     pub query_aln_cov_max: f64,
@@ -143,14 +145,23 @@ fn f64_min_ignore_nan(a: f64, b: f64) -> f64 {
 
 // ── Alninfo row (lightweight, strings only) ───────────────────────────────────
 
-struct AlnRow {
-    fields: Vec<String>,
-    ms: i64,
-    aln_score: i64,
-    is_aligned: bool, // Target_Name != "*"
+pub(crate) struct AlnRow {
+    pub(crate) fields: Vec<String>,
+    pub(crate) ms: i64,
+    pub(crate) aln_score: i64,
+    pub(crate) is_aligned: bool, // Target_Name != "*"
+    pub(crate) mapq: u32,        // parsed once; used as tertiary sort key
 }
 
-fn parse_aln_row(line: &str) -> Option<AlnRow> {
+impl AlnRow {
+    /// Query_Name (read ID) of this alignment row — used to detect group
+    /// boundaries when reading PAF straight into per-read groups.
+    pub(crate) fn query_name(&self) -> &str {
+        &self.fields[COL_QUERY_NAME]
+    }
+}
+
+pub(crate) fn parse_aln_row(line: &str) -> Option<AlnRow> {
     let fields: Vec<String> = line.split('\t').map(str::to_owned).collect();
     if fields.len() <= COL_GENOMIC_JUNCTIONS {
         return None;
@@ -158,20 +169,29 @@ fn parse_aln_row(line: &str) -> Option<AlnRow> {
     let ms: i64 = fields[COL_MS].parse().unwrap_or(0);
     let aln_score: i64 = fields[COL_AS].parse().unwrap_or(0);
     let is_aligned = fields[COL_TARGET_NAME] != "*";
+    let mapq: u32 = fields[COL_MQ].parse().unwrap_or(0);
     Some(AlnRow {
         fields,
         ms,
         aln_score,
         is_aligned,
+        mapq,
     })
 }
 
-fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
-    // Sort: ms desc, AS desc
+/// Collapse a group of alignment rows into a single per-read summary.
+///
+/// Sort order: ms desc → AS desc → MQ desc. The highest-scoring,
+/// highest-confidence alignment becomes the representative; all per-alignment
+/// columns (target, strand, junctions, cs, coordinates, event counts) come
+/// from that single row. Aggregate columns (Num_Aln, Num_Aln_MaxScore) are
+/// computed over the full group.
+pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
     rows.sort_by(|a, b| {
         b.ms
             .cmp(&a.ms)
             .then_with(|| b.aln_score.cmp(&a.aln_score))
+            .then_with(|| b.mapq.cmp(&a.mapq))
     });
 
     let best = &rows[0];
@@ -181,6 +201,7 @@ fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
     let read_len: u64 = bf[COL_QUERY_LEN].parse().unwrap_or(0);
     let target_chr = bf[COL_TARGET_NAME].clone();
     let strand: char = bf[COL_STRAND].chars().next().unwrap_or('*');
+    let mapq_best: u32 = best.mapq;
     // Best alignment's query span on the read and target span on the reference
     // (both 0-based half-open per PAF).
     let query_start: u64  = bf[COL_QUERY_START].parse().unwrap_or(0);
@@ -188,7 +209,7 @@ fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
     let target_start: u64 = bf[COL_TARGET_START].parse().unwrap_or(0);
     let target_end: u64   = bf[COL_TARGET_END].parse().unwrap_or(0);
 
-    // Best-alignment stats
+    // Per-alignment stats — all from the representative (best) alignment.
     let n_match_events: u64 = bf[COL_N_MATCH_EVENTS].parse().unwrap_or(0);
     let n_match_bases: u64 = bf[COL_N_MATCH_BASES].parse().unwrap_or(0);
     let n_sub_events: u64 = bf[COL_N_SUB_EVENTS].parse().unwrap_or(0);
@@ -207,7 +228,7 @@ fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
     let genomic_junctions = bf[COL_GENOMIC_JUNCTIONS].clone();
     let junc_count = junction_count_str(&junctions);
 
-    // Aggregates over all rows
+    // Aggregate stats over all rows in the group.
     let mut as_max = i64::MIN;
     let mut ms_max = i64::MIN;
     let mut query_aln_cov_max: f64 = f64::NAN;
@@ -219,9 +240,7 @@ fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
         let rf = &row.fields;
         let row_as: i64 = rf[COL_AS].parse().unwrap_or(0);
         let row_ms: i64 = rf[COL_MS].parse().unwrap_or(0);
-        let row_cov: f64 = rf[COL_QUERY_ALN_COV]
-            .parse()
-            .unwrap_or(f64::NAN);
+        let row_cov: f64 = rf[COL_QUERY_ALN_COV].parse().unwrap_or(f64::NAN);
         let row_aln_len: u64 = rf[COL_QUERY_ALN_LEN].parse().unwrap_or(0);
         let row_seqid: f64 = rf[COL_SEQID].parse().unwrap_or(f64::NAN);
 
@@ -242,7 +261,6 @@ fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
         }
     }
 
-    // Handle single-row edge cases for min/max
     if as_max == i64::MIN {
         as_max = 0;
     }
@@ -250,16 +268,9 @@ fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
         ms_max = 0;
     }
 
-    // Count of alignments tied at the chosen-best sort key — i.e., tied at
-    // BOTH ms_max AND the highest AS among ms-tied rows. This matches the
-    // full (ms desc, AS desc) selection rule used to pick the best alignment.
-    // Num_Aln_MaxScore = 1 ⇒ a single unambiguous winner; > 1 ⇒ file order
-    // ultimately broke the tie. Only aligned rows contribute, so unaligned
-    // reads (Num_Aln = 0) get Num_Aln_MaxScore = 0.
-    //
-    // Practical note: STAR-style data writes ms=0 for every alignment, so
-    // ms_max=0 and the AS tie-break does the real work. Counting at (ms, AS)
-    // makes Num_Aln_MaxScore meaningful in that case.
+    // Count alignments tied at the winning (ms, AS) score — i.e., tied before
+    // the MQ tiebreaker. Num_Aln_MaxScore = 1 means a single unambiguous winner
+    // on ms + AS; > 1 means MQ (and ultimately file order) broke the tie.
     let as_at_ms_max: i64 = rows
         .iter()
         .filter(|r| r.is_aligned && r.ms == ms_max)
@@ -275,6 +286,7 @@ fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
     let raw_fields: Vec<String> = vec![
         target_chr.clone(),
         strand.to_string(),
+        mapq_best.to_string(),
         as_max.to_string(),
         ms_max.to_string(),
         fmt_float(query_aln_cov_max),
@@ -310,6 +322,7 @@ fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
         read_len,
         target_chr,
         strand,
+        mapq_best,
         as_max,
         ms_max,
         query_aln_cov_max,
@@ -353,11 +366,6 @@ pub struct ReadInfoArgs {
     /// Output readinfo TSV file (default: stdout; '.gz' for gzip)
     #[arg(short = 'o', long = "output", value_name = "readinfo.tsv[.gz]")]
     pub output: Option<String>,
-
-    /// Skip sorting alignments within each read group by ms/AS (use when input
-    /// is already ms-sorted per group)
-    #[arg(long = "no-sort")]
-    pub no_sort: bool,
 }
 
 // ── Main entry point ─────────────────────────────────────────────────────────
@@ -390,13 +398,10 @@ pub fn run(args: &ReadInfoArgs) -> Result<()> {
         None => return Ok(()), // empty file
     }
 
-    let no_sort = args.no_sort;
     let mut current_name: Option<String> = None;
     let mut group: Vec<AlnRow> = Vec::new();
 
     // One-shot lex-decrease guardrail. Constant memory (one prev-name).
-    // Fires once on the first decrease and stays quiet thereafter so it
-    // doesn't spam the log on heavily-shuffled inputs.
     let mut warned_unsorted: bool = false;
 
     for line_res in lines {
@@ -435,7 +440,7 @@ pub fn run(args: &ReadInfoArgs) -> Result<()> {
                     warned_unsorted = true;
                 }
                 // Flush group
-                flush_group(&mut group, no_sort, &mut *out)?;
+                flush_group(&mut group, &mut *out)?;
                 group.clear();
                 current_name = Some(name);
             }
@@ -448,181 +453,17 @@ pub fn run(args: &ReadInfoArgs) -> Result<()> {
 
     // Flush last group
     if !group.is_empty() {
-        flush_group(&mut group, no_sort, &mut *out)?;
+        flush_group(&mut group, &mut *out)?;
     }
 
     out.flush()?;
     Ok(())
 }
 
-fn flush_group<W: Write + ?Sized>(
-    group: &mut Vec<AlnRow>,
-    no_sort: bool,
-    out: &mut W,
-) -> Result<()> {
+fn flush_group<W: Write + ?Sized>(group: &mut Vec<AlnRow>, out: &mut W) -> Result<()> {
     if group.is_empty() {
         return Ok(());
     }
-    if !no_sort {
-        // Sort handled inside collapse_group
-    }
-    let ri = if no_sort {
-        // When no_sort: first row is considered best (already ms-sorted)
-        collapse_group_nosort(group)
-    } else {
-        collapse_group(group)
-    };
-    ri.write(out)?;
+    collapse_group(group).write(out)?;
     Ok(())
-}
-
-fn collapse_group_nosort(rows: &[AlnRow]) -> ReadInfoRow {
-    // Same as collapse_group but don't sort; row[0] is best
-    let best = &rows[0];
-    let bf = &best.fields;
-
-    let read_name = bf[COL_QUERY_NAME].clone();
-    let read_len: u64 = bf[COL_QUERY_LEN].parse().unwrap_or(0);
-    let target_chr = bf[COL_TARGET_NAME].clone();
-    let strand: char = bf[COL_STRAND].chars().next().unwrap_or('*');
-    // Best alignment's query span on the read and target span on the reference
-    // (both 0-based half-open per PAF).
-    let query_start: u64  = bf[COL_QUERY_START].parse().unwrap_or(0);
-    let query_end: u64    = bf[COL_QUERY_END].parse().unwrap_or(0);
-    let target_start: u64 = bf[COL_TARGET_START].parse().unwrap_or(0);
-    let target_end: u64   = bf[COL_TARGET_END].parse().unwrap_or(0);
-
-    let n_match_events: u64 = bf[COL_N_MATCH_EVENTS].parse().unwrap_or(0);
-    let n_match_bases: u64 = bf[COL_N_MATCH_BASES].parse().unwrap_or(0);
-    let n_sub_events: u64 = bf[COL_N_SUB_EVENTS].parse().unwrap_or(0);
-    let n_sub_bases: u64 = bf[COL_N_SUB_BASES].parse().unwrap_or(0);
-    let n_ins_events: u64 = bf[COL_N_INS_EVENTS].parse().unwrap_or(0);
-    let n_ins_bases: u64 = bf[COL_N_INS_BASES].parse().unwrap_or(0);
-    let n_del_events: u64 = bf[COL_N_DEL_EVENTS].parse().unwrap_or(0);
-    let n_del_bases: u64 = bf[COL_N_DEL_BASES].parse().unwrap_or(0);
-    let n_splice_events: u64 = bf[COL_N_SPLICE_EVENTS].parse().unwrap_or(0);
-    let n_splice_bases: u64 = bf[COL_N_SPLICE_BASES].parse().unwrap_or(0);
-    let n_sc_start: u64 = bf[COL_N_SC_START].parse().unwrap_or(0);
-    let n_sc_end: u64 = bf[COL_N_SC_END].parse().unwrap_or(0);
-    let n_sc_events: u64 = bf[COL_N_SC_EVENTS].parse().unwrap_or(0);
-    let junctions = bf[COL_JUNCTIONS].clone();
-    let cs = bf[COL_CS].clone();
-    let genomic_junctions = bf[COL_GENOMIC_JUNCTIONS].clone();
-    let junc_count = junction_count_str(&junctions);
-
-    let mut as_max = i64::MIN;
-    let mut ms_max = i64::MIN;
-    let mut query_aln_cov_max: f64 = f64::NAN;
-    let mut query_aln_len_max: u64 = 0;
-    let mut seqid_max: f64 = f64::NAN;
-    let mut num_aln: u64 = 0;
-
-    for row in rows.iter() {
-        let rf = &row.fields;
-        let row_as: i64 = rf[COL_AS].parse().unwrap_or(0);
-        let row_ms: i64 = rf[COL_MS].parse().unwrap_or(0);
-        let row_cov: f64 = rf[COL_QUERY_ALN_COV].parse().unwrap_or(f64::NAN);
-        let row_aln_len: u64 = rf[COL_QUERY_ALN_LEN].parse().unwrap_or(0);
-        let row_seqid: f64 = rf[COL_SEQID].parse().unwrap_or(f64::NAN);
-
-        if row_as > as_max { as_max = row_as; }
-        if row_ms > ms_max { ms_max = row_ms; }
-        query_aln_cov_max = f64_max_ignore_nan(query_aln_cov_max, row_cov);
-        if row_aln_len > query_aln_len_max { query_aln_len_max = row_aln_len; }
-        seqid_max = f64_max_ignore_nan(seqid_max, row_seqid);
-        if row.is_aligned { num_aln += 1; }
-    }
-
-    if as_max == i64::MIN { as_max = 0; }
-    if ms_max == i64::MIN { ms_max = 0; }
-
-    // Count of alignments tied at the chosen-best sort key — i.e., tied at
-    // BOTH ms_max AND the highest AS among ms-tied rows. This matches the
-    // full (ms desc, AS desc) selection rule used to pick the best alignment.
-    // Num_Aln_MaxScore = 1 ⇒ a single unambiguous winner; > 1 ⇒ file order
-    // ultimately broke the tie. Only aligned rows contribute, so unaligned
-    // reads (Num_Aln = 0) get Num_Aln_MaxScore = 0.
-    //
-    // Practical note: STAR-style data writes ms=0 for every alignment, so
-    // ms_max=0 and the AS tie-break does the real work. Counting at (ms, AS)
-    // makes Num_Aln_MaxScore meaningful in that case.
-    let as_at_ms_max: i64 = rows
-        .iter()
-        .filter(|r| r.is_aligned && r.ms == ms_max)
-        .map(|r| r.aln_score)
-        .max()
-        .unwrap_or(0);
-    let num_aln_maxscore: u64 = rows
-        .iter()
-        .filter(|r| r.is_aligned && r.ms == ms_max && r.aln_score == as_at_ms_max)
-        .count() as u64;
-
-    let raw_fields: Vec<String> = vec![
-        target_chr.clone(),
-        strand.to_string(),
-        as_max.to_string(),
-        ms_max.to_string(),
-        fmt_float(query_aln_cov_max),
-        query_aln_len_max.to_string(),
-        fmt_float(seqid_max),
-        junctions.clone(),
-        num_aln.to_string(),
-        num_aln_maxscore.to_string(),
-        junc_count.to_string(),
-        n_match_events.to_string(),
-        n_match_bases.to_string(),
-        n_sub_events.to_string(),
-        n_sub_bases.to_string(),
-        n_ins_events.to_string(),
-        n_ins_bases.to_string(),
-        n_del_events.to_string(),
-        n_del_bases.to_string(),
-        n_splice_events.to_string(),
-        n_splice_bases.to_string(),
-        n_sc_start.to_string(),
-        n_sc_end.to_string(),
-        n_sc_events.to_string(),
-        cs.clone(),
-        genomic_junctions.clone(),
-        query_start.to_string(),
-        query_end.to_string(),
-        target_start.to_string(),
-        target_end.to_string(),
-    ];
-
-    ReadInfoRow {
-        read_name,
-        read_len,
-        target_chr,
-        strand,
-        as_max,
-        ms_max,
-        query_aln_cov_max,
-        query_aln_len_max,
-        seqid_max,
-        junctions,
-        num_aln,
-        num_aln_maxscore,
-        junc_count,
-        n_match_events,
-        n_match_bases,
-        n_sub_events,
-        n_sub_bases,
-        n_ins_events,
-        n_ins_bases,
-        n_del_events,
-        n_del_bases,
-        n_splice_events,
-        n_splice_bases,
-        n_sc_start,
-        n_sc_end,
-        n_sc_events,
-        cs,
-        genomic_junctions,
-        query_start,
-        query_end,
-        target_start,
-        target_end,
-        raw_fields,
-    }
 }
