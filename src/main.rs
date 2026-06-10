@@ -3,11 +3,17 @@
 //! A single binary with four subcommands covering the full pipeline:
 //!
 //!   1. `paf2alninfo`        PAF                → per-alignment info TSV (35 cols)
-//!   2. `readinfo`           alninfo TSV        → per-read summary TSV   (32 cols)
-//!   3. `compare`            two readinfo TSVs  → per-read comparison TSV (86 cols by default;
-//!                                                92 with `--compare-genomic-junctions`)
-//!   4. `compare-junctions`  two readinfo TSVs  → streamlined splice-focused comparison (45 cols)
+//!   2. `readinfo`           alninfo TSV        → per-read summary TSV   (33 cols)
+//!   3. `compare`            two readinfo TSVs  → per-read comparison TSV (88 cols by default;
+//!                                                94 with `--compare-genomic-junctions`)
+//!   4. `compare-junctions`  two readinfo TSVs  → streamlined splice-focused comparison (47 cols)
 //!   5. `sam2paf`            SAM                → PAF  (utility; use before paf2alninfo)
+//!
+//! Fused one-pass shortcuts (no intermediate files; byte-identical output):
+//!
+//!   6. `paf2readinfo`       PAF                → readinfo TSV   (= paf2alninfo | readinfo)
+//!   7. `pafcompare`         two PAFs           → comparison TSV (= the full pipeline below;
+//!                                                requires identical read-name order)
 //!
 //! Full pipeline (including optional SAM conversion):
 //!
@@ -30,6 +36,9 @@ mod io_utils;
 mod junction;
 mod paf;
 mod paf2alninfo;
+mod paf_groups;         // shared PAF → per-read group reader (paf2readinfo / pafcompare)
+mod paf2readinfo;       // fused PAF → readinfo (one pass)
+mod pafcompare;         // fused paired-PAF → comparison (one pass)
 mod readinfo;
 mod record;
 
@@ -42,6 +51,8 @@ use clap::{Parser, Subcommand};
 use compare_junctions::CompareJunctionsArgs;
 use compare_streaming::CompareStreamingArgs;
 use paf2alninfo::Paf2AlnInfoArgs;
+use paf2readinfo::Paf2ReadInfoArgs;
+use pafcompare::PafCompareArgs;
 use readinfo::ReadInfoArgs;
 use sam2paf::Sam2pafArgs;
 
@@ -65,15 +76,21 @@ enum Commands {
     CompareJunctions(CompareJunctionsArgs),
     /// SAM → PAF converter (utility; use before paf2alninfo to start the pipeline).
     Sam2paf(Sam2pafArgs),
+    /// Fused PAF → readinfo in one pass (= paf2alninfo | readinfo; identical output).
+    Paf2readinfo(Paf2ReadInfoArgs),
+    /// Fused paired-PAF → comparison in one pass (requires identical read-name order).
+    Pafcompare(PafCompareArgs),
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match &cli.command {
-        Commands::Paf2alninfo(args) => paf2alninfo::run(args),
-        Commands::Readinfo(args)    => readinfo::run(args),
+        Commands::Paf2alninfo(args)      => paf2alninfo::run(args),
+        Commands::Readinfo(args)         => readinfo::run(args),
         Commands::Compare(args)          => compare_streaming::run(args),
         Commands::CompareJunctions(args) => compare_junctions::run(args),
         Commands::Sam2paf(args)          => sam2paf::run(args),
+        Commands::Paf2readinfo(args)     => paf2readinfo::run(args),
+        Commands::Pafcompare(args)       => pafcompare::run(args),
     }
 }

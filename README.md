@@ -24,11 +24,40 @@
 |---------------|------------------------------------|-----------------------------------------|
 | `paf2alninfo` | PAF (`-i`, `.gz`/`-` ok)           | per-alignment info TSV (`-o`, 35 cols)  |
 | `readinfo`    | alninfo TSV (`-i`, `.gz`/`-` ok)   | per-read summary TSV (`-o`, 33 cols)    |
-| `compare`     | two readinfo TSVs (`-a`, `-b`)     | per-read comparison TSV (`-o`, 86 cols, +6 with `--compare-genomic-junctions`) |
-| `compare-junctions` | two readinfo TSVs (`-a`, `-b`) | streamlined splice-focused comparison TSV (`-o`, 45 cols) |
+| `compare`     | two readinfo TSVs (`-a`, `-b`)     | per-read comparison TSV (`-o`, 88 cols, +6 with `--compare-genomic-junctions`) |
+| `compare-junctions` | two readinfo TSVs (`-a`, `-b`) | streamlined splice-focused comparison TSV (`-o`, 47 cols) |
 | `sam2paf`     | SAM file or stdin (`-`)            | PAF written to stdout                   |
+| `paf2readinfo` | PAF (`-i`, `.gz`/`-` ok)           | per-read summary TSV (`-o`, 33 cols) — **fused** `paf2alninfo` + `readinfo`, no intermediate file |
+| `pafcompare`  | two PAFs (`-a`, `-b`)              | per-read comparison TSV (`-o`, 88 cols; `--junctions` → 47 cols) — **fused** full pipeline |
 
 All inputs/outputs transparently support gzip (`.gz` suffix) and stdin/stdout (`-`).
+
+### Fused one-pass shortcuts (v0.3.0)
+
+`paf2readinfo` and `pafcompare` collapse multiple pipeline stages into a single
+streaming pass that never materializes the intermediate `alninfo.tsv` /
+`readinfo.tsv` files. Their output is **byte-identical** to the discrete
+pipeline, because every record is routed through the exact same
+conversion + serialization code (`AlnInfo::from_paf` → `write_row`) before the
+unchanged collapse / comparison logic runs.
+
+```bash
+# Equivalent to:  paf2alninfo -i in.paf | readinfo -i - -o readinfo.tsv.gz
+maligno paf2readinfo -i in.paf -o readinfo.tsv.gz          # requires PAF grouped by Query_Name
+
+# Equivalent to the full 4-step pipeline, in one pass:
+maligno pafcompare -a A.paf -b B.paf --label-a A --label-b B -o compare.tsv.gz
+maligno pafcompare -a A.paf -b B.paf --junctions -o compare_junctions.tsv.gz   # 47-col variant
+```
+
+- **`paf2readinfo`** requires the input PAF be **grouped** by `Query_Name`
+  (each read's alignments contiguous) — the same precondition `readinfo` has.
+- **`pafcompare`** is a strict lock-step **zip**: it requires both PAFs to list
+  the **same `Query_Names` in the same order**. Unlike `compare` it does *not*
+  require byte-lex sorting — any shared ordering works (lex, natural, aligner
+  order …). On the first read-name mismatch, or if one side has extra reads, it
+  prints an ERROR and stops (non-zero exit). Ideal for comparing two parameter
+  sets / references run on the **same** read or transcript set.
 
 ---
 
@@ -157,6 +186,11 @@ to one summary row:
   broke the tie. Practical note: STAR-style aligners write `ms=0` for every alignment, so
   `ms_Max = 0` and `AS` does the actual selection work — counting at `(ms, AS)` keeps
   `Num_Aln_MaxScore` informative in that case (otherwise it would equal `Num_Aln`).
+- `MQ_Best` carries the mapping-quality (PAF col 12) of the best-scoring alignment — the
+  same alignment from which `TargetChr`, `Strand`, `cs`, `junctions`, etc. are taken. For
+  STAR-aligned data the common values are 255 (uniquely mapped), 3 (NH=2), 1 (NH=3), 0
+  (NH>3). A difference in `MQ_Best` between two readinfo files surfaces reads where the two
+  aligners (or parameter sets) disagree on mapping uniqueness.
 - `Query_Start` / `Query_End` and `Target_Start` / `Target_End` carry the best alignment's
   query-coordinate span on the read and target-coordinate span on the reference (both
   0-based half-open, same convention as PAF / BED). Combined with `TargetChr` and `Strand`,
@@ -167,7 +201,7 @@ to one summary row:
 ### `compare`
 
 A two-pointer **merge-join** over two sorted readinfo files, matching on
-**(Read_Name, Read_Len)**. For each matched read it emits the 30 data columns from each
+**(Read_Name, Read_Len)**. For each matched read it emits the 31 data columns from each
 side (suffixed with `--label-a` / `--label-b`) plus 24 comparison/object columns
 (`AS_Diff`, `ms_Ratio`, `seqid_Diff`, `Junction_Distance`, `N_Matched_Junctions`, `Junctions_OnlyA`, …).
 
@@ -317,7 +351,7 @@ score/indel/coverage diffs.
 | Cols | Content |
 |------|---------|
 | 1–2   | `Read_Name`, `Read_Len` (join keys) |
-| 3–30  | 14 per-side data columns × 2 sides: `TargetChr, Strand, Num_Aln, Num_Aln_MaxScore, JuncCount, seqid_Max, Query_Aln_Cov_Max, junctions, genomic_junctions, cs, Query_Start, Query_End, Target_Start, Target_End` |
+| 3–32  | 15 per-side data columns × 2 sides: `TargetChr, Strand, MQ_Best, Num_Aln, Num_Aln_MaxScore, JuncCount, seqid_Max, Query_Aln_Cov_Max, junctions, genomic_junctions, cs, Query_Start, Query_End, Target_Start, Target_End` |
 | 31–41 | 11 comparison metrics: `Strand_Match` + `seqid_Diff` + `QueryAlnCov_Diff` + 4 query-junction set metrics (matched / unmatched / OnlyA / OnlyB) + 4 parallel `Genomic_*` set metrics |
 | 42–45 | 4 object lists at the end: `Junctions_OnlyA`, `Junctions_OnlyB`, `Genomic_Junctions_OnlyA`, `Genomic_Junctions_OnlyB` — the actual tuples of junctions that failed to overlap (Python tuple format, parseable with `ast.literal_eval`) |
 
@@ -378,7 +412,7 @@ zcat < /tmp/Splice_vs_SpliceHQ.compare.tsv.gz | head -1 | tr '\t' '\n' | nl
 
 
 
-# Streamlined splice-focused comparison (45 cols: per-side junction info + alignment span + set-overlap metrics)
+# Streamlined splice-focused comparison (47 cols: per-side junction info + alignment span + set-overlap metrics)
 time $BIN compare-junctions \
   -a /tmp/Splice.readinfo.tsv.gz   --label-a Splice \
   -b /tmp/SpliceHQ.readinfo.tsv.gz --label-b SpliceHQ \
@@ -388,28 +422,32 @@ time $BIN compare-junctions \
 zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | head -1 | tr '\t' '\n' | nl
 
 # Check all unique values in columns 25 and 29 (Checking number of unmatched junctions from query and genome perspective)
-zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | cut -f 25 | sort | uniq -c 
-zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | cut -f 29 | sort | uniq -c 
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | cut -f 35 | sort | uniq -c 
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | cut -f 39 | sort | uniq -c 
 
 
 # Look at number of reads with non-concordant junction positions (query)
-zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $25 > 0' | wc -l 
-zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $25 > 0' | cut -f 1,9,18,24,25,26,27,32,33 | less -S
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $35 > 0' | wc -l 
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $35 > 0' | cut -f 1,9,18,24,25,26,27,32,33 | less -S
 
 
-zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $25 > 0' | cut -f 1,3,4,12,13,9,18,24,25,26,27,32,33 | less -S
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $35 > 0' | cut -f 1,3,4,12,13,9,18,24,25,26,27,32,33 | less -S
 
 
-zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $25 > 0' | cut -f 1,3,4,12,13,9,18,24,25,26,27,32,33,34,35 | less -S
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $35 > 0' | cut -f 1,3,10,13,14,34,35,36,42,43,44,45 | column -t -s $'\t' | less -S
 
 
-zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | cut -f 25 | sort | uniq -c 
+
+
+
+
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | cut -f 35 | sort | uniq -c 
 
 # Look at number of reads with non-concordant junction positions (GENOMIC)
-zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $29 > 0' | wc -l 
-zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $29 > 0' | cut -f 1,9,18,28,29,30,31,34,35 | less -S
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $39 > 0' | wc -l 
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $39 > 0' | cut -f 1,10,18,28,29,30,31,34,35 | column -t | less -S
 
-zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $29 > 0' | cut -f 1,3,4,12,13,29,30,31,34,35 | less -S
+zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' 'NR==1 || $39 > 0' | cut -f 1,3,4,12,13,29,30,31,34,35 | column -t | less -S
 
 
 
@@ -505,8 +543,11 @@ src/
 ├── main.rs                 — CLI dispatcher (clap subcommands)
 ├── paf2alninfo.rs          — PAF → per-alignment info TSV
 ├── readinfo.rs             — alninfo → per-read summary TSV
-├── compare_streaming.rs    — streaming merge-join comparison (full)
-├── compare_junctions.rs    — streamlined splice-focused comparison (45 cols)
+├── compare_streaming.rs    — streaming merge-join comparison (full) + reusable emit/header
+├── compare_junctions.rs    — streamlined splice-focused comparison (47 cols) + reusable emit/header
+├── paf_groups.rs           — shared PAF → per-read group reader (fused modules)
+├── paf2readinfo.rs         — fused PAF → readinfo (one pass; = paf2alninfo | readinfo)
+├── pafcompare.rs           — fused paired-PAF → comparison (one pass; lock-step zip)
 ├── record.rs               — AlnInfo struct + TSV serialisation
 ├── paf.rs                  — PAF record parser
 ├── cs_parser.rs            — cs-tag parser (PAF → stats + genomic junctions)

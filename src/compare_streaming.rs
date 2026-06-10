@@ -12,7 +12,7 @@
 
 use std::io::{BufRead, Write};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::io_utils::{escape_tsv_field, fmt_float, open_input, open_output};
 use crate::junction::{
@@ -52,6 +52,12 @@ pub struct CompareStreamingArgs {
     /// in each genomic-junction tuple.
     #[arg(long = "compare-genomic-junctions")]
     pub compare_genomic_junctions: bool,
+
+    /// Skip reads that appear in only one file instead of stopping with an error.
+    /// Both readinfo files must still be lex-sorted by Read_Name for the skip
+    /// heuristic to work correctly. Unmatched reads are counted in the summary.
+    #[arg(long = "ignore-row-mismatch")]
+    pub ignore_row_mismatch: bool,
 }
 
 // ── ReadInfo column indices (must match readinfo.rs) ──────────────────────────
@@ -59,6 +65,7 @@ pub struct CompareStreamingArgs {
 const READINFO_DATA_COLS: &[&str] = &[
     "TargetChr",
     "Strand",
+    "MQ_Best",
     "AS_Max",
     "ms_Max",
     "Query_Aln_Cov_Max",
@@ -129,6 +136,183 @@ fn comparison_col_names(with_genomic: bool) -> Vec<&'static str> {
         cols.extend_from_slice(&["Genomic_Junctions_OnlyA", "Genomic_Junctions_OnlyB"]);
     }
     cols
+}
+
+// ── Reusable header + row emitters (shared with `pafcompare`) ────────────────
+
+/// Write the `compare` output header: `Read_Name`, `Read_Len`, the per-side data
+/// columns (suffixed with each label), then the comparison/object columns.
+pub(crate) fn write_compare_header<W: Write>(
+    out: &mut W,
+    label_a: &str,
+    label_b: &str,
+    with_genomic: bool,
+) -> std::io::Result<()> {
+    write!(out, "Read_Name\tRead_Len")?;
+    for col in READINFO_DATA_COLS {
+        write!(out, "\t{col}_{label_a}")?;
+    }
+    for col in READINFO_DATA_COLS {
+        write!(out, "\t{col}_{label_b}")?;
+    }
+    for col in comparison_col_names(with_genomic) {
+        write!(out, "\t{col}")?;
+    }
+    writeln!(out)
+}
+
+/// Emit one comparison row given by-name column accessors for each side.
+///
+/// `get_a` / `get_b` return the readinfo column value (or `""` if absent) — the
+/// existing `.parse().unwrap_or(default)` calls below preserve identical
+/// defaults to the old `reader.get_col(c).unwrap_or(default)` form. This is the
+/// single source of truth for the `compare` row, shared by `compare::run`
+/// (reading from `ReadInfoReader`) and `pafcompare` (reading from in-memory
+/// `ReadInfoRow`s serialized to readinfo lines).
+pub(crate) fn emit_compare_row<'r, W, FA, FB>(
+    out: &mut W,
+    name: &str,
+    len: u64,
+    get_a: FA,
+    get_b: FB,
+    with_genomic: bool,
+) -> std::io::Result<()>
+where
+    W: Write,
+    FA: Fn(&str) -> &'r str,
+    FB: Fn(&str) -> &'r str,
+{
+    // Extract per-side passthrough fields.
+    let a_raw_fields: Vec<&str> = READINFO_DATA_COLS.iter().map(|c| get_a(c)).collect();
+    let b_raw_fields: Vec<&str> = READINFO_DATA_COLS.iter().map(|c| get_b(c)).collect();
+
+    // Parse typed values from A.
+    let a_as_max: i64 = get_a("AS_Max").parse().unwrap_or(0);
+    let a_ms_max: i64 = get_a("ms_Max").parse().unwrap_or(0);
+    let a_seqid_max: f64 = get_a("seqid_Max").parse().unwrap_or(f64::NAN);
+    let a_aln_len_max: u64 = get_a("Query_Aln_Len_Max").parse().unwrap_or(0);
+    let a_cov_max: f64 = get_a("Query_Aln_Cov_Max").parse().unwrap_or(f64::NAN);
+    let a_n_ins_bases: u64 = get_a("N_Insertion_Bases").parse().unwrap_or(0);
+    let a_n_del_bases: u64 = get_a("N_Deletion_Bases").parse().unwrap_or(0);
+    let a_n_sub_bases: u64 = get_a("N_Substitution_Bases").parse().unwrap_or(0);
+    let a_n_sc_start: u64 = get_a("N_SoftClipped_Bases_Start").parse().unwrap_or(0);
+    let a_n_sc_end: u64 = get_a("N_SoftClipped_Bases_End").parse().unwrap_or(0);
+    let a_junc_count: usize = get_a("JuncCount").parse().unwrap_or(0);
+    let a_junctions = get_a("junctions");
+    let a_strand = get_a("Strand");
+
+    // Parse typed values from B.
+    let b_as_max: i64 = get_b("AS_Max").parse().unwrap_or(0);
+    let b_ms_max: i64 = get_b("ms_Max").parse().unwrap_or(0);
+    let b_seqid_max: f64 = get_b("seqid_Max").parse().unwrap_or(f64::NAN);
+    let b_aln_len_max: u64 = get_b("Query_Aln_Len_Max").parse().unwrap_or(0);
+    let b_cov_max: f64 = get_b("Query_Aln_Cov_Max").parse().unwrap_or(f64::NAN);
+    let b_n_ins_bases: u64 = get_b("N_Insertion_Bases").parse().unwrap_or(0);
+    let b_n_del_bases: u64 = get_b("N_Deletion_Bases").parse().unwrap_or(0);
+    let b_n_sub_bases: u64 = get_b("N_Substitution_Bases").parse().unwrap_or(0);
+    let b_n_sc_start: u64 = get_b("N_SoftClipped_Bases_Start").parse().unwrap_or(0);
+    let b_n_sc_end: u64 = get_b("N_SoftClipped_Bases_End").parse().unwrap_or(0);
+    let b_junc_count: usize = get_b("JuncCount").parse().unwrap_or(0);
+    let b_junctions = get_b("junctions");
+    let b_strand = get_b("Strand");
+
+    // Compute metrics.
+    let strand_match = a_strand == b_strand;
+    let as_diff = b_as_max - a_as_max;
+    let ms_diff = b_ms_max - a_ms_max;
+    let as_ratio = safe_ratio_i64(b_as_max, a_as_max);
+    let ms_ratio = safe_ratio_i64(b_ms_max, a_ms_max);
+    let seqid_diff = b_seqid_max - a_seqid_max;
+    let qal_diff = b_aln_len_max as i64 - a_aln_len_max as i64;
+    let qac_diff = b_cov_max - a_cov_max;
+    let n_ins_diff = b_n_ins_bases as i64 - a_n_ins_bases as i64;
+    let n_ins_ratio = safe_ratio_u64(b_n_ins_bases, a_n_ins_bases);
+    let n_del_diff = b_n_del_bases as i64 - a_n_del_bases as i64;
+    let n_del_ratio = safe_ratio_u64(b_n_del_bases, a_n_del_bases);
+    let n_sub_diff = b_n_sub_bases as i64 - a_n_sub_bases as i64;
+    let n_sub_ratio = safe_ratio_u64(b_n_sub_bases, a_n_sub_bases);
+    let n_sc_start_diff = b_n_sc_start as i64 - a_n_sc_start as i64;
+    let n_sc_end_diff = b_n_sc_end as i64 - a_n_sc_end as i64;
+
+    // Junction metrics.
+    let juncs_a = parse_junction_str(a_junctions);
+    let juncs_b = parse_junction_str(b_junctions);
+    let junction_distance_val = junction_distance(&juncs_a, &juncs_b);
+
+    let n_junc_count_diff = (a_junc_count as i64 - b_junc_count as i64).unsigned_abs();
+    let junc_dist_v2 = 50 * n_junc_count_diff;
+
+    let (n_matched, n_only_a, n_only_b) = junction_set_stats(&juncs_a, &juncs_b);
+    let n_unmatched = n_only_a + n_only_b;
+
+    let (j_only_a_vec, j_only_b_vec) = junction_set_diffs(&juncs_a, &juncs_b);
+    let j_only_a_str = format_junction_tuple(&j_only_a_vec);
+    let j_only_b_str = format_junction_tuple(&j_only_b_vec);
+
+    // Genomic-junction set comparison (flag-gated).
+    let (g_matched, g_only_a, g_only_b, g_unmatched, g_only_a_str, g_only_b_str) = if with_genomic {
+        let a_genomic = get_a("genomic_junctions");
+        let b_genomic = get_b("genomic_junctions");
+        let chrom_a = get_a("TargetChr").to_string();
+        let chrom_b = get_b("TargetChr").to_string();
+        let pairs_a = parse_genomic_junction_str(a_genomic);
+        let pairs_b = parse_genomic_junction_str(b_genomic);
+        let gj_a: Vec<(String, u64, u64)> = pairs_a
+            .into_iter()
+            .map(|(s, e)| (chrom_a.clone(), s, e))
+            .collect();
+        let gj_b: Vec<(String, u64, u64)> = pairs_b
+            .into_iter()
+            .map(|(s, e)| (chrom_b.clone(), s, e))
+            .collect();
+        let (m, oa, ob) = genomic_junction_set_stats(&gj_a, &gj_b);
+        let (gj_only_a_vec, gj_only_b_vec) = genomic_junction_set_diffs(&gj_a, &gj_b);
+        let oa_str = format_genomic_junction_tuple(&gj_only_a_vec);
+        let ob_str = format_genomic_junction_tuple(&gj_only_b_vec);
+        (m, oa, ob, oa + ob, oa_str, ob_str)
+    } else {
+        (0, 0, 0, 0, String::new(), String::new())
+    };
+
+    // Write output row.
+    write!(out, "{name}\t{len}")?;
+    for f in &a_raw_fields {
+        write!(out, "\t{}", escape_tsv_field(f))?;
+    }
+    for f in &b_raw_fields {
+        write!(out, "\t{}", escape_tsv_field(f))?;
+    }
+    write!(
+        out,
+        "\t{strand_match}\t\
+         {as_diff}\t{ms_diff}\t{as_ratio}\t{ms_ratio}\t{}\t{qal_diff}\t{}\t\
+         {n_ins_diff}\t{n_ins_ratio}\t\
+         {n_del_diff}\t{n_del_ratio}\t\
+         {n_sub_diff}\t{n_sub_ratio}\t\
+         {n_sc_start_diff}\t{n_sc_end_diff}\t\
+         {junction_distance_val}\t{n_unmatched}\t{junc_dist_v2}\t{n_matched}\
+         \t{n_only_a}\t{n_only_b}",
+        fmt_float(seqid_diff),
+        fmt_float(qac_diff),
+    )?;
+    if with_genomic {
+        write!(out, "\t{g_matched}\t{g_unmatched}\t{g_only_a}\t{g_only_b}")?;
+    }
+    write!(
+        out,
+        "\t{}\t{}",
+        escape_tsv_field(&j_only_a_str),
+        escape_tsv_field(&j_only_b_str),
+    )?;
+    if with_genomic {
+        write!(
+            out,
+            "\t{}\t{}",
+            escape_tsv_field(&g_only_a_str),
+            escape_tsv_field(&g_only_b_str),
+        )?;
+    }
+    writeln!(out)
 }
 
 // ── ReadKey for sorting/comparison ──────────────────────────────────────────
@@ -278,20 +462,14 @@ pub fn run(args: &CompareStreamingArgs) -> Result<()> {
     let mut out = open_output(Some(&args.output))?;
 
     // Write header
-    write!(out, "Read_Name\tRead_Len")?;
-    for col in READINFO_DATA_COLS {
-        write!(out, "\t{col}_{}", args.label_a)?;
-    }
-    for col in READINFO_DATA_COLS {
-        write!(out, "\t{col}_{}", args.label_b)?;
-    }
-    for col in comparison_col_names(args.compare_genomic_junctions) {
-        write!(out, "\t{col}")?;
-    }
-    writeln!(out)?;
+    write_compare_header(
+        &mut out,
+        &args.label_a,
+        &args.label_b,
+        args.compare_genomic_junctions,
+    )?;
 
-    // Two-pointer merge-join
-    eprintln!("[INFO] Starting merge-join comparison...");
+    eprintln!("[INFO] Starting comparison...");
 
     let mut n_a_total: u64 = 0;
     let mut n_b_total: u64 = 0;
@@ -302,271 +480,47 @@ pub fn run(args: &CompareStreamingArgs) -> Result<()> {
         let key_b = ReadKey::from_fields(b_fields, idx_name_b, idx_len_b)?;
 
         if key_a == key_b {
-            // MATCH: compute and output comparison
             n_a_total += 1;
             n_b_total += 1;
 
-            // Extract A fields
-            let a_raw_fields: Vec<String> = READINFO_DATA_COLS
-                .iter()
-                .map(|col_name| {
-                    reader_a
-                        .get_col(col_name)
-                        .unwrap_or("")
-                        .to_string()
-                })
-                .collect();
-
-            // Extract B fields
-            let b_raw_fields: Vec<String> = READINFO_DATA_COLS
-                .iter()
-                .map(|col_name| {
-                    reader_b
-                        .get_col(col_name)
-                        .unwrap_or("")
-                        .to_string()
-                })
-                .collect();
-
-            // Parse typed values from A
-            let a_as_max: i64 = reader_a.get_col("AS_Max").unwrap_or("0").parse().unwrap_or(0);
-            let a_ms_max: i64 = reader_a.get_col("ms_Max").unwrap_or("0").parse().unwrap_or(0);
-            let a_seqid_max: f64 = reader_a
-                .get_col("seqid_Max")
-                .unwrap_or("NaN")
-                .parse()
-                .unwrap_or(f64::NAN);
-            let a_aln_len_max: u64 = reader_a
-                .get_col("Query_Aln_Len_Max")
-                .unwrap_or("0")
-                .parse()
-                .unwrap_or(0);
-            let a_cov_max: f64 = reader_a
-                .get_col("Query_Aln_Cov_Max")
-                .unwrap_or("NaN")
-                .parse()
-                .unwrap_or(f64::NAN);
-            let a_n_ins_bases: u64 = reader_a
-                .get_col("N_Insertion_Bases")
-                .unwrap_or("0")
-                .parse()
-                .unwrap_or(0);
-            let a_n_del_bases: u64 = reader_a
-                .get_col("N_Deletion_Bases")
-                .unwrap_or("0")
-                .parse()
-                .unwrap_or(0);
-            let a_n_sub_bases: u64 = reader_a
-                .get_col("N_Substitution_Bases")
-                .unwrap_or("0")
-                .parse()
-                .unwrap_or(0);
-            let a_n_sc_start: u64 = reader_a
-                .get_col("N_SoftClipped_Bases_Start")
-                .unwrap_or("0")
-                .parse()
-                .unwrap_or(0);
-            let a_n_sc_end: u64 = reader_a
-                .get_col("N_SoftClipped_Bases_End")
-                .unwrap_or("0")
-                .parse()
-                .unwrap_or(0);
-            let a_junc_count: usize = reader_a
-                .get_col("JuncCount")
-                .unwrap_or("0")
-                .parse()
-                .unwrap_or(0);
-            let a_junctions = reader_a.get_col("junctions").unwrap_or("");
-            let a_strand = reader_a.get_col("Strand").unwrap_or("*");
-
-            // Parse typed values from B
-            let b_as_max: i64 = reader_b.get_col("AS_Max").unwrap_or("0").parse().unwrap_or(0);
-            let b_ms_max: i64 = reader_b.get_col("ms_Max").unwrap_or("0").parse().unwrap_or(0);
-            let b_seqid_max: f64 = reader_b
-                .get_col("seqid_Max")
-                .unwrap_or("NaN")
-                .parse()
-                .unwrap_or(f64::NAN);
-            let b_aln_len_max: u64 = reader_b
-                .get_col("Query_Aln_Len_Max")
-                .unwrap_or("0")
-                .parse()
-                .unwrap_or(0);
-            let b_cov_max: f64 = reader_b
-                .get_col("Query_Aln_Cov_Max")
-                .unwrap_or("NaN")
-                .parse()
-                .unwrap_or(f64::NAN);
-            let b_n_ins_bases: u64 = reader_b
-                .get_col("N_Insertion_Bases")
-                .unwrap_or("0")
-                .parse()
-                .unwrap_or(0);
-            let b_n_del_bases: u64 = reader_b
-                .get_col("N_Deletion_Bases")
-                .unwrap_or("0")
-                .parse()
-                .unwrap_or(0);
-            let b_n_sub_bases: u64 = reader_b
-                .get_col("N_Substitution_Bases")
-                .unwrap_or("0")
-                .parse()
-                .unwrap_or(0);
-            let b_n_sc_start: u64 = reader_b
-                .get_col("N_SoftClipped_Bases_Start")
-                .unwrap_or("0")
-                .parse()
-                .unwrap_or(0);
-            let b_n_sc_end: u64 = reader_b
-                .get_col("N_SoftClipped_Bases_End")
-                .unwrap_or("0")
-                .parse()
-                .unwrap_or(0);
-            let b_junc_count: usize = reader_b
-                .get_col("JuncCount")
-                .unwrap_or("0")
-                .parse()
-                .unwrap_or(0);
-            let b_junctions = reader_b.get_col("junctions").unwrap_or("");
-            let b_strand = reader_b.get_col("Strand").unwrap_or("*");
-
-            // Compute metrics
-            let strand_match = a_strand == b_strand;
-            let as_diff = b_as_max - a_as_max;
-            let ms_diff = b_ms_max - a_ms_max;
-            let as_ratio = safe_ratio_i64(b_as_max, a_as_max);
-            let ms_ratio = safe_ratio_i64(b_ms_max, a_ms_max);
-            let seqid_diff = b_seqid_max - a_seqid_max;
-            let qal_diff = b_aln_len_max as i64 - a_aln_len_max as i64;
-            let qac_diff = b_cov_max - a_cov_max;
-            let n_ins_diff = b_n_ins_bases as i64 - a_n_ins_bases as i64;
-            let n_ins_ratio = safe_ratio_u64(b_n_ins_bases, a_n_ins_bases);
-            let n_del_diff = b_n_del_bases as i64 - a_n_del_bases as i64;
-            let n_del_ratio = safe_ratio_u64(b_n_del_bases, a_n_del_bases);
-            let n_sub_diff = b_n_sub_bases as i64 - a_n_sub_bases as i64;
-            let n_sub_ratio = safe_ratio_u64(b_n_sub_bases, a_n_sub_bases);
-            let n_sc_start_diff = b_n_sc_start as i64 - a_n_sc_start as i64;
-            let n_sc_end_diff = b_n_sc_end as i64 - a_n_sc_end as i64;
-
-            // Junction metrics
-            let juncs_a = parse_junction_str(a_junctions);
-            let juncs_b = parse_junction_str(b_junctions);
-            let junction_distance_val = junction_distance(&juncs_a, &juncs_b); // col 72 (unchanged)
-
-            // Count-difference kept ONLY to preserve Junc_Dist_V2's original values.
-            let n_junc_count_diff = (a_junc_count as i64 - b_junc_count as i64).unsigned_abs();
-            let junc_dist_v2 = 50 * n_junc_count_diff; // col 74 (unchanged)
-
-            // Set-based overlap stats (deduped both sides → internally consistent).
-            let (n_matched, n_only_a, n_only_b) = junction_set_stats(&juncs_a, &juncs_b); // 75/76/77
-            let n_unmatched = n_only_a + n_only_b; // col 73 (REDEFINED: set symmetric difference)
-
-            // Object diff lists (the actual non-overlapping junctions, appended at row tail).
-            let (j_only_a_vec, j_only_b_vec) = junction_set_diffs(&juncs_a, &juncs_b);
-            let j_only_a_str = format_junction_tuple(&j_only_a_vec);
-            let j_only_b_str = format_junction_tuple(&j_only_b_vec);
-
-            // Genomic-junction set comparison (flag-gated).
-            // The serialized form (v0.2.3+) drops chrom from each tuple; we
-            // reconstruct the full (chrom, start, end) in-memory tuples by combining
-            // the parsed (start, end) pairs with each side's TargetChr column. This
-            // keeps cross-chromosome safety in the set comparison: a pair (s, e) on
-            // chrA cannot accidentally match (s, e) on chrB because chrom is part of
-            // the hash key.
-            let (g_matched, g_only_a, g_only_b, g_unmatched, g_only_a_str, g_only_b_str) =
-                if args.compare_genomic_junctions {
-                    let a_genomic = reader_a.get_col("genomic_junctions").unwrap_or("");
-                    let b_genomic = reader_b.get_col("genomic_junctions").unwrap_or("");
-                    let chrom_a = reader_a.get_col("TargetChr").unwrap_or("*").to_string();
-                    let chrom_b = reader_b.get_col("TargetChr").unwrap_or("*").to_string();
-                    let pairs_a = parse_genomic_junction_str(a_genomic);
-                    let pairs_b = parse_genomic_junction_str(b_genomic);
-                    let gj_a: Vec<(String, u64, u64)> = pairs_a
-                        .into_iter()
-                        .map(|(s, e)| (chrom_a.clone(), s, e))
-                        .collect();
-                    let gj_b: Vec<(String, u64, u64)> = pairs_b
-                        .into_iter()
-                        .map(|(s, e)| (chrom_b.clone(), s, e))
-                        .collect();
-                    let (m, oa, ob) = genomic_junction_set_stats(&gj_a, &gj_b);
-                    let (gj_only_a_vec, gj_only_b_vec) =
-                        genomic_junction_set_diffs(&gj_a, &gj_b);
-                    let oa_str = format_genomic_junction_tuple(&gj_only_a_vec);
-                    let ob_str = format_genomic_junction_tuple(&gj_only_b_vec);
-                    (m, oa, ob, oa + ob, oa_str, ob_str)
-                } else {
-                    (0, 0, 0, 0, String::new(), String::new())
-                };
-
-            // Write output row
-            write!(out, "{}\t{}", key_a.name, key_a.len)?;
-
-            // A fields (with escaping for special characters)
-            for f in &a_raw_fields {
-                let escaped = escape_tsv_field(f);
-                write!(out, "\t{escaped}")?;
-            }
-            // B fields (with escaping for special characters)
-            for f in &b_raw_fields {
-                let escaped = escape_tsv_field(f);
-                write!(out, "\t{escaped}")?;
-            }
-
-            // Comparison metrics (Strand_Match first, then existing diffs/ratios)
-            write!(
-                out,
-                "\t{strand_match}\t\
-                 {as_diff}\t{ms_diff}\t{as_ratio}\t{ms_ratio}\t{}\t{qal_diff}\t{}\t\
-                 {n_ins_diff}\t{n_ins_ratio}\t\
-                 {n_del_diff}\t{n_del_ratio}\t\
-                 {n_sub_diff}\t{n_sub_ratio}\t\
-                 {n_sc_start_diff}\t{n_sc_end_diff}\t\
-                 {junction_distance_val}\t{n_unmatched}\t{junc_dist_v2}\t{n_matched}\
-                 \t{n_only_a}\t{n_only_b}",
-                fmt_float(seqid_diff),
-                fmt_float(qac_diff),
+            emit_compare_row(
+                &mut out,
+                &key_a.name,
+                key_a.len,
+                |c| reader_a.get_col(c).unwrap_or(""),
+                |c| reader_b.get_col(c).unwrap_or(""),
+                args.compare_genomic_junctions,
             )?;
-            if args.compare_genomic_junctions {
-                write!(
-                    out,
-                    "\t{g_matched}\t{g_unmatched}\t{g_only_a}\t{g_only_b}",
-                )?;
-            }
-            // Object-list columns (the actual A-only / B-only junctions), appended at end.
-            // Escape defensively in case any chrom string contains tab/newline.
-            write!(
-                out,
-                "\t{}\t{}",
-                escape_tsv_field(&j_only_a_str),
-                escape_tsv_field(&j_only_b_str),
-            )?;
-            if args.compare_genomic_junctions {
-                write!(
-                    out,
-                    "\t{}\t{}",
-                    escape_tsv_field(&g_only_a_str),
-                    escape_tsv_field(&g_only_b_str),
-                )?;
-            }
-            writeln!(out)?;
 
             n_merged += 1;
-
-            // Print progress
             if n_merged % 100000 == 0 {
                 eprintln!("[INFO] Processed {} matched records...", n_merged);
             }
 
-            // Advance both
             reader_a.advance()?;
             reader_b.advance()?;
         } else if key_a < key_b {
-            // A is behind: advance A
+            if !args.ignore_row_mismatch {
+                bail!(
+                    "read-name mismatch: A has {:?} but B has {:?} \
+                     (A row #{}, B row #{}). Both readinfo files must list reads \
+                     in the same order. Use --ignore-row-mismatch to skip \
+                     unmatched reads instead of stopping.",
+                    key_a.name, key_b.name, n_a_total + 1, n_b_total + 1
+                );
+            }
             n_a_total += 1;
             reader_a.advance()?;
         } else {
-            // B is behind: advance B
+            if !args.ignore_row_mismatch {
+                bail!(
+                    "read-name mismatch: B has {:?} but A has {:?} \
+                     (A row #{}, B row #{}). Both readinfo files must list reads \
+                     in the same order. Use --ignore-row-mismatch to skip \
+                     unmatched reads instead of stopping.",
+                    key_b.name, key_a.name, n_a_total + 1, n_b_total + 1
+                );
+            }
             n_b_total += 1;
             reader_b.advance()?;
         }
@@ -585,9 +539,6 @@ pub fn run(args: &CompareStreamingArgs) -> Result<()> {
     out.flush()?;
 
     // ── End-of-run summary ────────────────────────────────────────────────
-    // Inner join: only reads matched on (Read_Name, Read_Len) are written.
-    // Reads present in only one file are dropped here, but reported so the
-    // user knows how many rows were lost from each side.
     let a_only = n_a_total - n_merged; // in A, absent from B
     let b_only = n_b_total - n_merged; // in B, absent from A
     eprintln!("Read comparison summary:");
