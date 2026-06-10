@@ -28,10 +28,10 @@ use crate::junction::{
 /// two commands expose an identical `--mode` surface.
 #[derive(Clone, Debug, Default, clap::ValueEnum)]
 pub(crate) enum CompareMode {
-    /// All per-read metrics (88 cols; 94 with --compare-genomic-junctions).
+    /// All per-read metrics, including genomic-junction comparison (94 cols).
     #[default]
     Full,
-    /// Splice-junction-focused view (47 cols; genomic-junction metrics always on).
+    /// Splice-junction-focused view (47 cols).
     Junctions,
 }
 
@@ -59,23 +59,14 @@ pub struct CompareStreamingArgs {
     #[arg(short = 'o', long = "output", value_name = "compare.tsv[.gz]")]
     pub output: String,
 
-    /// Also emit set-based comparison metrics for genome-coordinate junctions.
-    /// Adds 4 columns at the end: Genomic_N_Matched_Junctions, Genomic_N_Unmatched_Junctions,
-    /// Genomic_N_Junctions_OnlyA, Genomic_N_Junctions_OnlyB.
-    /// Cross-chromosome compares are automatically disjoint because chrom is embedded
-    /// in each genomic-junction tuple.
-    #[arg(long = "compare-genomic-junctions")]
-    pub compare_genomic_junctions: bool,
-
     /// Skip reads that appear in only one file instead of stopping with an error.
     /// Both readinfo files must still be lex-sorted by Read_Name for the skip
     /// heuristic to work correctly. Unmatched reads are counted in the summary.
     #[arg(long = "ignore-row-mismatch")]
     pub ignore_row_mismatch: bool,
 
-    /// Comparison view: `full` (all per-read metrics) or `junctions`
-    /// (splice-junction-focused, 47 cols). `junctions` always includes the
-    /// genomic-junction metrics, so --compare-genomic-junctions is ignored there.
+    /// Comparison view: `full` (all per-read metrics incl. genomic-junction
+    /// comparison, 94 cols) or `junctions` (splice-junction-focused, 47 cols).
     #[arg(long = "mode", value_enum, default_value_t = CompareMode::Full)]
     pub mode: CompareMode,
 }
@@ -116,8 +107,8 @@ const READINFO_DATA_COLS: &[&str] = &[
     "Target_End",
 ];
 
-fn comparison_col_names(with_genomic: bool) -> Vec<&'static str> {
-    let mut cols = vec![
+fn comparison_col_names() -> Vec<&'static str> {
+    vec![
         "Strand_Match",
         "AS_Diff",
         "ms_Diff",
@@ -140,22 +131,17 @@ fn comparison_col_names(with_genomic: bool) -> Vec<&'static str> {
         "N_Matched_Junctions",
         "N_Junctions_OnlyA",
         "N_Junctions_OnlyB",
-    ];
-    if with_genomic {
-        cols.extend_from_slice(&[
-            "Genomic_N_Matched_Junctions",
-            "Genomic_N_Unmatched_Junctions",
-            "Genomic_N_Junctions_OnlyA",
-            "Genomic_N_Junctions_OnlyB",
-        ]);
-    }
-    // Object columns appended at the very end (the actual non-overlapping
-    // junctions, as opposed to just their counts above).
-    cols.extend_from_slice(&["Junctions_OnlyA", "Junctions_OnlyB"]);
-    if with_genomic {
-        cols.extend_from_slice(&["Genomic_Junctions_OnlyA", "Genomic_Junctions_OnlyB"]);
-    }
-    cols
+        "Genomic_N_Matched_Junctions",
+        "Genomic_N_Unmatched_Junctions",
+        "Genomic_N_Junctions_OnlyA",
+        "Genomic_N_Junctions_OnlyB",
+        // Object columns at the very end (the actual non-overlapping junctions,
+        // as opposed to just their counts above).
+        "Junctions_OnlyA",
+        "Junctions_OnlyB",
+        "Genomic_Junctions_OnlyA",
+        "Genomic_Junctions_OnlyB",
+    ]
 }
 
 // ── Reusable header + row emitters (shared with `pafcompare`) ────────────────
@@ -166,7 +152,6 @@ pub(crate) fn write_compare_header<W: Write>(
     out: &mut W,
     label_a: &str,
     label_b: &str,
-    with_genomic: bool,
 ) -> std::io::Result<()> {
     write!(out, "Read_Name\tRead_Len")?;
     for col in READINFO_DATA_COLS {
@@ -175,7 +160,7 @@ pub(crate) fn write_compare_header<W: Write>(
     for col in READINFO_DATA_COLS {
         write!(out, "\t{col}_{label_b}")?;
     }
-    for col in comparison_col_names(with_genomic) {
+    for col in comparison_col_names() {
         write!(out, "\t{col}")?;
     }
     writeln!(out)
@@ -195,7 +180,6 @@ pub(crate) fn emit_compare_row<'r, W, FA, FB>(
     len: u64,
     get_a: FA,
     get_b: FB,
-    with_genomic: bool,
 ) -> std::io::Result<()>
 where
     W: Write,
@@ -269,8 +253,8 @@ where
     let j_only_a_str = format_junction_tuple(&j_only_a_vec);
     let j_only_b_str = format_junction_tuple(&j_only_b_vec);
 
-    // Genomic-junction set comparison (flag-gated).
-    let (g_matched, g_only_a, g_only_b, g_unmatched, g_only_a_str, g_only_b_str) = if with_genomic {
+    // Genomic-junction set comparison (always emitted in `full` mode).
+    let (g_matched, g_only_a, g_only_b, g_unmatched, g_only_a_str, g_only_b_str) = {
         let a_genomic = get_a("genomic_junctions");
         let b_genomic = get_b("genomic_junctions");
         let chrom_a = get_a("TargetChr").to_string();
@@ -290,8 +274,6 @@ where
         let oa_str = format_genomic_junction_tuple(&gj_only_a_vec);
         let ob_str = format_genomic_junction_tuple(&gj_only_b_vec);
         (m, oa, ob, oa + ob, oa_str, ob_str)
-    } else {
-        (0, 0, 0, 0, String::new(), String::new())
     };
 
     // Write output row.
@@ -315,23 +297,19 @@ where
         fmt_float(seqid_diff),
         fmt_float(qac_diff),
     )?;
-    if with_genomic {
-        write!(out, "\t{g_matched}\t{g_unmatched}\t{g_only_a}\t{g_only_b}")?;
-    }
+    write!(out, "\t{g_matched}\t{g_unmatched}\t{g_only_a}\t{g_only_b}")?;
     write!(
         out,
         "\t{}\t{}",
         escape_tsv_field(&j_only_a_str),
         escape_tsv_field(&j_only_b_str),
     )?;
-    if with_genomic {
-        write!(
-            out,
-            "\t{}\t{}",
-            escape_tsv_field(&g_only_a_str),
-            escape_tsv_field(&g_only_b_str),
-        )?;
-    }
+    write!(
+        out,
+        "\t{}\t{}",
+        escape_tsv_field(&g_only_a_str),
+        escape_tsv_field(&g_only_b_str),
+    )?;
     writeln!(out)
 }
 
@@ -489,12 +467,7 @@ pub fn run(args: &CompareStreamingArgs) -> Result<()> {
     if junctions_mode {
         write_compare_junctions_header(&mut out, &args.label_a, &args.label_b)?;
     } else {
-        write_compare_header(
-            &mut out,
-            &args.label_a,
-            &args.label_b,
-            args.compare_genomic_junctions,
-        )?;
+        write_compare_header(&mut out, &args.label_a, &args.label_b)?;
     }
 
     eprintln!("[INFO] Starting comparison...");
@@ -526,7 +499,6 @@ pub fn run(args: &CompareStreamingArgs) -> Result<()> {
                     key_a.len,
                     |c| reader_a.get_col(c).unwrap_or(""),
                     |c| reader_b.get_col(c).unwrap_or(""),
-                    args.compare_genomic_junctions,
                 )?;
             }
 

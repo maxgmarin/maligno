@@ -10,9 +10,8 @@
 //!
 //!   2. `sam2paf`            SAM                → PAF  (utility; use before paf2tables)
 //!   3. `compare`            two readinfo TSVs  → per-read comparison TSV. `--mode full`
-//!                                                (default, 88 cols; 94 with
-//!                                                `--compare-genomic-junctions`) or
-//!                                                `--mode junctions` (47-col splice view)
+//!                                                (default, 94 cols incl. genomic-junction
+//!                                                comparison) or `--mode junctions` (47-col)
 //!   4. `pafcompare`         two PAFs           → comparison TSV (one pass; same `--mode`;
 //!                                                requires identical read-name order)
 //!   5. `utils-readinfo`     alninfo TSV        → per-read summary TSV (low-level utility;
