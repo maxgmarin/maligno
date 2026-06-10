@@ -21,14 +21,14 @@
 //! Output is byte-identical to the discrete pipeline because each side's
 //! `ReadInfoRow` is serialized to the exact readinfo-TSV line `readinfo` would
 //! produce, then fed into the same `emit_compare_row` /
-//! `emit_compare_junctions_row` used by `compare` / `compare-junctions`.
+//! `emit_compare_junctions_row` used by `compare` (`--mode full` / `junctions`).
 
 use std::collections::HashMap;
 
 use anyhow::{bail, Result};
 
 use crate::compare_junctions::{emit_compare_junctions_row, write_compare_junctions_header};
-use crate::compare_streaming::{emit_compare_row, write_compare_header};
+use crate::compare_streaming::{emit_compare_row, write_compare_header, CompareMode};
 use crate::io_utils::open_input;
 use crate::io_utils::open_output;
 use crate::paf_groups::PafGroups;
@@ -56,13 +56,14 @@ pub struct PafCompareArgs {
     #[arg(short = 'o', long = "output", value_name = "compare.tsv[.gz]")]
     output: String,
 
-    /// Emit the streamlined splice-focused comparison (47 cols, same schema as
-    /// `compare-junctions`) instead of the full comparison (88 cols).
-    #[arg(long = "junctions")]
-    junctions: bool,
+    /// Comparison view: `full` (88 cols) or `junctions` (47-col splice-focused).
+    /// Mirrors `compare --mode`. `junctions` always includes the genomic-junction
+    /// metrics, so --compare-genomic-junctions is ignored in that mode.
+    #[arg(long = "mode", value_enum, default_value_t = CompareMode::Full)]
+    mode: CompareMode,
 
     /// Also emit set-based genome-coordinate junction metrics (full mode only;
-    /// ignored with `--junctions`, which always includes them). Same as
+    /// ignored with `--mode junctions`, which always includes them). Same as
     /// `compare --compare-genomic-junctions`.
     #[arg(long = "compare-genomic-junctions")]
     compare_genomic_junctions: bool,
@@ -103,7 +104,7 @@ pub fn run(args: &PafCompareArgs) -> Result<()> {
 
     let mut out = open_output(Some(&args.output))?;
 
-    if args.junctions {
+    if matches!(args.mode, CompareMode::Junctions) {
         write_compare_junctions_header(&mut out, &args.label_a, &args.label_b)?;
     } else {
         write_compare_header(
@@ -179,7 +180,7 @@ pub fn run(args: &PafCompareArgs) -> Result<()> {
                     let map_b: HashMap<&str, &str> =
                         header_cols.iter().copied().zip(line_b.split('\t')).collect();
 
-                    if args.junctions {
+                    if matches!(args.mode, CompareMode::Junctions) {
                         emit_compare_junctions_row(
                             &mut out,
                             &ra.read_name,

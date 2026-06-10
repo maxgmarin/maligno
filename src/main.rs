@@ -9,12 +9,13 @@
 //! Comparison + utility subcommands:
 //!
 //!   2. `sam2paf`            SAM                → PAF  (utility; use before paf2tables)
-//!   3. `compare`            two readinfo TSVs  → per-read comparison TSV (88 cols by default;
-//!                                                94 with `--compare-genomic-junctions`)
-//!   4. `compare-junctions`  two readinfo TSVs  → streamlined splice-focused comparison (47 cols)
-//!   5. `pafcompare`         two PAFs           → comparison TSV (one pass; requires
-//!                                                identical read-name order)
-//!   6. `utils-readinfo`     alninfo TSV        → per-read summary TSV (low-level utility;
+//!   3. `compare`            two readinfo TSVs  → per-read comparison TSV. `--mode full`
+//!                                                (default, 88 cols; 94 with
+//!                                                `--compare-genomic-junctions`) or
+//!                                                `--mode junctions` (47-col splice view)
+//!   4. `pafcompare`         two PAFs           → comparison TSV (one pass; same `--mode`;
+//!                                                requires identical read-name order)
+//!   5. `utils-readinfo`     alninfo TSV        → per-read summary TSV (low-level utility;
 //!                                                most users want `paf2tables --readinfo`)
 //!
 //! Full pipeline (including optional SAM conversion):
@@ -31,7 +32,7 @@
 
 // ── Pipeline modules ──────────────────────────────────────────────────────────
 mod cigar_junctions;    // CIGAR-based intron extractor (utility; not yet wired in)
-mod compare_junctions;  // streamlined splice-focused comparison
+mod compare_junctions;  // junction-view header/row emitters (library; compare --mode junctions, pafcompare)
 mod compare_streaming;
 mod cs_parser;          // cs-tag parser  (PAF → alninfo path; also extracts genomic junctions)
 mod io_utils;
@@ -49,7 +50,6 @@ mod sam2paf; // SAM → PAF converter (self-contained; owns cigar/convert/cs_gen
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use compare_junctions::CompareJunctionsArgs;
 use compare_streaming::CompareStreamingArgs;
 use paf2tables::Paf2TablesArgs;
 use pafcompare::PafCompareArgs;
@@ -70,11 +70,9 @@ enum Commands {
     Paf2tables(Paf2TablesArgs),
     /// SAM → PAF converter (utility; use before paf2tables to start the pipeline).
     Sam2paf(Sam2pafArgs),
-    /// Streaming comparison of two readinfo TSVs (strict order by default; constant memory).
+    /// Compare two readinfo TSVs. --mode full (default) or junctions; strict order by default.
     Compare(CompareStreamingArgs),
-    /// Streamlined splice-junction-focused comparison (47 cols).
-    CompareJunctions(CompareJunctionsArgs),
-    /// Fused paired-PAF → comparison in one pass (requires identical read-name order).
+    /// Fused paired-PAF → comparison in one pass (--mode full|junctions; identical read-name order).
     Pafcompare(PafCompareArgs),
     /// [utility] alninfo TSV → per-read summary TSV. Most users want `paf2tables --readinfo`.
     #[command(name = "utils-readinfo")]
@@ -87,7 +85,6 @@ fn main() -> Result<()> {
         Commands::Paf2tables(args)       => paf2tables::run(args),
         Commands::Sam2paf(args)          => sam2paf::run(args),
         Commands::Compare(args)          => compare_streaming::run(args),
-        Commands::CompareJunctions(args) => compare_junctions::run(args),
         Commands::Pafcompare(args)       => pafcompare::run(args),
         Commands::UtilsReadinfo(args)    => readinfo::run(args),
     }

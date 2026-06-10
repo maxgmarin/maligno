@@ -24,9 +24,8 @@
 |---------------|------------------------------------|-----------------------------------------|
 | **`paf2tables`** | PAF (`-i`, `.gz`/`-` ok)        | **alninfo TSV** (`--alninfo`, 35 cols) and/or **readinfo TSV** (`--readinfo`, 33 cols), in one pass — **the primary PAF entry point** |
 | `sam2paf`     | SAM file or stdin (`-`)            | PAF written to stdout                   |
-| `compare`     | two readinfo TSVs (`-a`, `-b`)     | per-read comparison TSV (`-o`, 88 cols, +6 with `--compare-genomic-junctions`) |
-| `compare-junctions` | two readinfo TSVs (`-a`, `-b`) | streamlined splice-focused comparison TSV (`-o`, 47 cols) |
-| `pafcompare`  | two PAFs (`-a`, `-b`)              | per-read comparison TSV (`-o`, 88 cols; `--junctions` → 47 cols) — **fused** full pipeline |
+| `compare`     | two readinfo TSVs (`-a`, `-b`)     | per-read comparison TSV (`-o`); `--mode full` (default, 88 cols, +6 with `--compare-genomic-junctions`) or `--mode junctions` (47-col splice-focused view) |
+| `pafcompare`  | two PAFs (`-a`, `-b`)              | per-read comparison TSV (`-o`); same `--mode full`/`junctions` as `compare` — **fused** full pipeline |
 | `utils-readinfo` | alninfo TSV (`-i`, `.gz`/`-` ok) | per-read summary TSV (`-o`, 33 cols) — low-level utility; most users want `paf2tables --readinfo` |
 
 All inputs/outputs transparently support gzip (`.gz` suffix) and stdin/stdout (`-`).
@@ -104,7 +103,7 @@ alninfo never cares. Current behavior + the roadmap for richer handling
 
 ```bash
 maligno pafcompare -a A.paf -b B.paf --label-a A --label-b B -o compare.tsv.gz
-maligno pafcompare -a A.paf -b B.paf --junctions -o compare_junctions.tsv.gz   # 47-col variant
+maligno pafcompare -a A.paf -b B.paf --mode junctions -o compare_junctions.tsv.gz   # 47-col view
 ```
 
 It is a strict lock-step **zip**: it requires both PAFs to list the **same
@@ -294,15 +293,15 @@ The `genomic_junctions` column (always emitted in the alninfo and readinfo table
 0-based half-open BED coordinates in **`((start, end), ...)`** Python-tuple-of-tuples
 form, parseable with `ast.literal_eval`. The chromosome is **not** in each tuple — it's
 in the sibling `TargetChr` (alninfo) / `TargetChr_<label>` (compare) column. Cross-
-chromosome safety in the set comparison is still preserved: `compare` and
-`compare-junctions` reconstruct full `(chrom, start, end)` keys internally by combining
+chromosome safety in the set comparison is still preserved: both `compare` modes
+reconstruct full `(chrom, start, end)` keys internally by combining
 each row's parsed pairs with its per-side `TargetChr`, so junctions on different contigs
 cannot accidentally match.
 
 > **Format change (v0.2.3).** The genomic-junction tuples used to include the chrom as
 > the first element (e.g. `(('chr22', 100, 250), …)`). That was redundant with the
 > `TargetChr` column, so it was dropped. Pre-v0.2.3 TSVs need to be regenerated from PAF
-> to be readable by `compare` / `compare-junctions`.
+> to be readable by `compare`.
 
 **Strand tracking and renames (v0.2.1+).** Each side now carries a `Strand_<label>` data
 column (the best alignment's strand), and the comparison block starts with a `Strand_Match`
@@ -315,7 +314,7 @@ junctions (`N_Junctions_OnlyA/B`, `Genomic_N_Junctions_OnlyA/B`), the comparison
 now append the actual junction **objects** that failed to overlap at the very end of each
 row: `Junctions_OnlyA`, `Junctions_OnlyB` (query-coord tuples, always emitted) and
 `Genomic_Junctions_OnlyA`, `Genomic_Junctions_OnlyB` (genome-coord tuples, emitted with
-`--compare-genomic-junctions` in `compare`; always emitted in `compare-junctions`). These
+`--compare-genomic-junctions` in `--mode full`; always emitted in `--mode junctions`). These
 use the same Python tuple format as the per-side `junctions` / `genomic_junctions` data
 columns — parse with `ast.literal_eval` in Python.
 
@@ -400,33 +399,34 @@ The `--readinfo` collapse emits a one-time WARNING on stderr if its input is not
 sorted, flagging the most common foot-gun (a name-sorted-but-not-byte-lex aligner
 output like STAR's, or a shuffled multi-threaded aligner output).
 
-### `compare-junctions`
+### `compare --mode junctions`
 
-A **streamlined, splice-focused** variant of `compare`. Same streaming merge-join over two
-readinfo files, but emits only **45 columns** instead of 86–92 — useful when the question is
-"how do the splice junctions for each read differ between two alignments?" rather than full
-score/indel/coverage diffs.
+A **streamlined, splice-focused** view of `compare` (selected with `--mode junctions`). Same
+streaming merge-join over two readinfo files, but emits only **47 columns** instead of 88–94 —
+useful when the question is "how do the splice junctions for each read differ between two
+alignments?" rather than full score/indel/coverage diffs.
 
 | Cols | Content |
 |------|---------|
 | 1–2   | `Read_Name`, `Read_Len` (join keys) |
 | 3–32  | 15 per-side data columns × 2 sides: `TargetChr, Strand, MQ_Best, Num_Aln, Num_Aln_MaxScore, JuncCount, seqid_Max, Query_Aln_Cov_Max, junctions, genomic_junctions, cs, Query_Start, Query_End, Target_Start, Target_End` |
-| 31–41 | 11 comparison metrics: `Strand_Match` + `seqid_Diff` + `QueryAlnCov_Diff` + 4 query-junction set metrics (matched / unmatched / OnlyA / OnlyB) + 4 parallel `Genomic_*` set metrics |
-| 42–45 | 4 object lists at the end: `Junctions_OnlyA`, `Junctions_OnlyB`, `Genomic_Junctions_OnlyA`, `Genomic_Junctions_OnlyB` — the actual tuples of junctions that failed to overlap (Python tuple format, parseable with `ast.literal_eval`) |
+| 33–43 | 11 comparison metrics: `Strand_Match` + `seqid_Diff` + `QueryAlnCov_Diff` + 4 query-junction set metrics (matched / unmatched / OnlyA / OnlyB) + 4 parallel `Genomic_*` set metrics |
+| 44–47 | 4 object lists at the end: `Junctions_OnlyA`, `Junctions_OnlyB`, `Genomic_Junctions_OnlyA`, `Genomic_Junctions_OnlyB` — the actual tuples of junctions that failed to overlap (Python tuple format, parseable with `ast.literal_eval`) |
 
-Genomic-junction metrics are always emitted (no flag) — `chrom` is embedded in each
-genomic-junction tuple, so cross-chromosome compares correctly produce zero overlap.
+Genomic-junction metrics are always emitted in this mode (no flag) — `chrom` is embedded in
+each genomic-junction tuple, so cross-chromosome compares correctly produce zero overlap.
 
 ```bash
-$BIN compare-junctions \
+$BIN compare --mode junctions \
   -a refA.readinfo.tsv.gz --label-a RefA \
   -b refB.readinfo.tsv.gz --label-b RefB \
   -o RefA_vs_RefB.junctions.tsv.gz
 ```
 
-The metric values that overlap with the full `compare` output (the 8 set columns) are
-identical row-for-row — `compare-junctions` is purely a column-selection variant, not a
-different algorithm.
+The metric values that overlap with the full `--mode full` output (the shared set columns) are
+identical row-for-row — `--mode junctions` is purely a column-selection view of the same
+computation, not a different algorithm. `pafcompare --mode junctions` produces the same view
+directly from PAFs.
 
 ### `sam2paf`
 
@@ -477,12 +477,12 @@ zcat < /tmp/Splice_vs_SpliceHQ.compare.tsv.gz | head -1 | tr '\t' '\n' | nl
 
 
 # Streamlined splice-focused comparison (47 cols: per-side junction info + alignment span + set-overlap metrics)
-time $BIN compare-junctions \
+time $BIN compare --mode junctions \
   -a /tmp/Splice.readinfo.sorted.tsv.gz   --label-a Splice \
   -b /tmp/SpliceHQ.readinfo.sorted.tsv.gz --label-b SpliceHQ \
   -o /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz
 
-# Inspect the compare-junctions output header
+# Inspect the junction-view output header
 zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | head -1 | tr '\t' '\n' | nl
 
 # Tip: to skip the intermediate files entirely, `pafcompare` runs the whole
@@ -533,7 +533,7 @@ zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' '{print NF}
 
 ### "`compare` matched far fewer reads than I expected" — sort-order diagnostic
 
-`compare` and `compare-junctions` use a streaming merge-join keyed on
+`compare` (both `--mode` views) uses a streaming merge-join keyed on
 `(Read_Name, Read_Len)`. The algorithm runs in O(1) memory and O(N+M) time,
 but it **assumes both readinfo files are sorted in the same byte-lexicographic
 order**. By default a read-name mismatch is a hard error (non-zero exit) so you
@@ -614,7 +614,7 @@ src/
 ├── paf2tables.rs           — PRIMARY PAF entry point: PAF → alninfo and/or readinfo (one pass)
 ├── readinfo.rs             — collapse library (collapse_group/ReadInfoRow/AlnRow) + utils-readinfo entry point
 ├── compare_streaming.rs    — streaming comparison (full) + reusable emit/header
-├── compare_junctions.rs    — streamlined splice-focused comparison (47 cols) + reusable emit/header
+├── compare_junctions.rs    — junction-view (47-col) header/row emitters (library; used by compare --mode junctions + pafcompare)
 ├── paf_groups.rs           — shared PAF → per-read group reader, with optional alninfo tee
 ├── pafcompare.rs           — fused paired-PAF → comparison (one pass; lock-step zip)
 ├── record.rs               — AlnInfo struct + TSV serialisation
