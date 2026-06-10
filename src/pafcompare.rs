@@ -56,17 +56,11 @@ pub struct PafCompareArgs {
     #[arg(short = 'o', long = "output", value_name = "compare.tsv[.gz]")]
     output: String,
 
-    /// Comparison view: `full` (88 cols) or `junctions` (47-col splice-focused).
-    /// Mirrors `compare --mode`. `junctions` always includes the genomic-junction
-    /// metrics, so --compare-genomic-junctions is ignored in that mode.
+    /// Comparison view: `full` (all per-read metrics incl. genomic-junction
+    /// comparison, 94 cols) or `junctions` (47-col splice-focused). Mirrors
+    /// `compare --mode`.
     #[arg(long = "mode", value_enum, default_value_t = CompareMode::Full)]
     mode: CompareMode,
-
-    /// Also emit set-based genome-coordinate junction metrics (full mode only;
-    /// ignored with `--mode junctions`, which always includes them). Same as
-    /// `compare --compare-genomic-junctions`.
-    #[arg(long = "compare-genomic-junctions")]
-    compare_genomic_junctions: bool,
 
     /// Skip reads that appear in only one PAF instead of stopping with an error.
     /// Requires both PAFs to be lex-sorted by Query_Name for the skip heuristic
@@ -107,12 +101,7 @@ pub fn run(args: &PafCompareArgs) -> Result<()> {
     if matches!(args.mode, CompareMode::Junctions) {
         write_compare_junctions_header(&mut out, &args.label_a, &args.label_b)?;
     } else {
-        write_compare_header(
-            &mut out,
-            &args.label_a,
-            &args.label_b,
-            args.compare_genomic_junctions,
-        )?;
+        write_compare_header(&mut out, &args.label_a, &args.label_b)?;
     }
 
     // Lock-step zip needs only identical ordering, not byte-lex sort, so the
@@ -195,7 +184,6 @@ pub fn run(args: &PafCompareArgs) -> Result<()> {
                             ra.read_len,
                             |c| *map_a.get(c).unwrap_or(&""),
                             |c| *map_b.get(c).unwrap_or(&""),
-                            args.compare_genomic_junctions,
                         )?;
                     }
 

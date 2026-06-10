@@ -24,7 +24,7 @@
 |---------------|------------------------------------|-----------------------------------------|
 | **`paf2tables`** | PAF (`-i`, `.gz`/`-` ok)        | **alninfo TSV** (`--alninfo`, 35 cols) and/or **readinfo TSV** (`--readinfo`, 33 cols), in one pass — **the primary PAF entry point** |
 | `sam2paf`     | SAM file or stdin (`-`)            | PAF written to stdout                   |
-| `compare`     | two readinfo TSVs (`-a`, `-b`)     | per-read comparison TSV (`-o`); `--mode full` (default, 88 cols, +6 with `--compare-genomic-junctions`) or `--mode junctions` (47-col splice-focused view) |
+| `compare`     | two readinfo TSVs (`-a`, `-b`)     | per-read comparison TSV (`-o`); `--mode full` (default, 94 cols incl. genomic-junction comparison) or `--mode junctions` (47-col splice-focused view) |
 | `pafcompare`  | two PAFs (`-a`, `-b`)              | per-read comparison TSV (`-o`); same `--mode full`/`junctions` as `compare` — **fused** full pipeline |
 | `utils-readinfo` | alninfo TSV (`-i`, `.gz`/`-` ok) | per-read summary TSV (`-o`, 33 cols) — low-level utility; most users want `paf2tables --readinfo` |
 
@@ -277,10 +277,10 @@ These stay internally consistent: `N_Matched_Junctions + N_Junctions_OnlyA` equa
 junction count of A, and likewise for B. (`Junction_Distance` and `Junc_Dist_V2` are
 retained positional/legacy metrics.)
 
-**Genomic-junction comparison (`--compare-genomic-junctions`).** When both alignments are to
-the *same* reference, you can compare junctions in **reference coordinates** instead of (or
-in addition to) the query-coordinate metrics above. Pass `--compare-genomic-junctions` to
-`compare` and four additional columns appear at the end of the row:
+**Genomic-junction comparison.** When both alignments are to the *same* reference, junctions
+are also compared in **reference coordinates** in addition to the query-coordinate metrics
+above. These are **always emitted** (both `--mode full` and `--mode junctions`); four count
+columns appear in the comparison block:
 
 | Column                          | Meaning |
 |---------------------------------|---------|
@@ -314,7 +314,7 @@ junctions (`N_Junctions_OnlyA/B`, `Genomic_N_Junctions_OnlyA/B`), the comparison
 now append the actual junction **objects** that failed to overlap at the very end of each
 row: `Junctions_OnlyA`, `Junctions_OnlyB` (query-coord tuples, always emitted) and
 `Genomic_Junctions_OnlyA`, `Genomic_Junctions_OnlyB` (genome-coord tuples, emitted with
-`--compare-genomic-junctions` in `--mode full`; always emitted in `--mode junctions`). These
+always emitted in both `--mode full` and `--mode junctions`). These
 use the same Python tuple format as the per-side `junctions` / `genomic_junctions` data
 columns — parse with `ast.literal_eval` in Python.
 
@@ -402,7 +402,7 @@ output like STAR's, or a shuffled multi-threaded aligner output).
 ### `compare --mode junctions`
 
 A **streamlined, splice-focused** view of `compare` (selected with `--mode junctions`). Same
-streaming merge-join over two readinfo files, but emits only **47 columns** instead of 88–94 —
+streaming merge-join over two readinfo files, but emits only **47 columns** instead of 94 —
 useful when the question is "how do the splice junctions for each read differ between two
 alignments?" rather than full score/indel/coverage diffs.
 
