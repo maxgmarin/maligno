@@ -173,7 +173,7 @@ impl AlnInfo {
     }
 
     /// Write the TSV header row (column names).
-    pub fn write_header<W: Write>(w: &mut W) -> std::io::Result<()> {
+    pub fn write_header<W: Write + ?Sized>(w: &mut W) -> std::io::Result<()> {
         writeln!(w,
             "Query_Name\tQuery_Len\tQuery_Start\tQuery_End\tStrand\t\
              Target_Name\tTarget_Len\tTarget_Start\tTarget_End\t\

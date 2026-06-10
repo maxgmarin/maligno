@@ -21,11 +21,9 @@
 //! requirement and `compare`'s byte-lex sort requirement in one pass.
 
 use anyhow::Result;
-use std::io::{BufRead, Write};
 
 use crate::io_utils::{open_input, open_output};
-use crate::paf::parse_line;
-use crate::record::AlnInfo;
+use crate::paf2tables::stream_alninfo;
 
 #[derive(clap::Args, Debug)]
 pub struct Paf2AlnInfoArgs {
@@ -39,32 +37,12 @@ pub struct Paf2AlnInfoArgs {
 }
 
 pub fn run(args: &Paf2AlnInfoArgs) -> Result<()> {
+    eprintln!(
+        "NOTE: 'paf2alninfo' is deprecated; use 'paf2tables --alninfo <out>' instead."
+    );
     let mut reader = open_input(&args.input)?;
     let mut w = open_output(args.output.as_deref())?;
-    AlnInfo::write_header(&mut w)?;
-
-    let mut line = String::with_capacity(4096);
-    let mut lineno: u64 = 0;
-    loop {
-        line.clear();
-        let n = reader.read_line(&mut line)?;
-        if n == 0 {
-            break;
-        }
-        lineno += 1;
-        let trimmed = line.trim_end_matches(|c| c == '\n' || c == '\r');
-
-        // Skip blank/header lines (rare in PAF, but defensive).
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-
-        match parse_line(trimmed, lineno) {
-            Ok(rec) => AlnInfo::from_paf(&rec).write_row(&mut w)?,
-            Err(e) => eprintln!("WARNING: {e}"),
-        }
-    }
-
+    stream_alninfo(&mut reader, &mut w)?;
     w.flush()?;
     Ok(())
 }

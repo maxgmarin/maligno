@@ -17,9 +17,9 @@
 //! identical to the discrete `paf2alninfo | readinfo` pipeline — without ever
 //! materializing the intermediate alninfo file.
 //!
-//! Used by the fused `paf2readinfo` and `pafcompare` subcommands.
+//! Used by the `paf2tables`, `paf2readinfo`, and `pafcompare` subcommands.
 
-use std::io::BufRead;
+use std::io::{BufRead, Write};
 
 use anyhow::Result;
 
@@ -62,7 +62,12 @@ impl<R: BufRead> PafGroups<R> {
     /// Read the next PAF data line and convert it to an `AlnRow`.
     /// Returns `Ok(None)` at EOF. Malformed lines emit a WARNING and are skipped
     /// (same behavior as `paf2alninfo`).
-    fn next_row(&mut self) -> Result<Option<AlnRow>> {
+    ///
+    /// If `alninfo_out` is `Some`, the exact alninfo TSV bytes for this row (the
+    /// same bytes `paf2alninfo` would write) are tee'd to it before the row is
+    /// parsed. Every physical PAF line is read by exactly one `next_row` call,
+    /// so each alignment is tee'd exactly once, in input order.
+    fn next_row(&mut self, alninfo_out: &mut Option<&mut dyn Write>) -> Result<Option<AlnRow>> {
         loop {
             if self.eof {
                 return Ok(None);
@@ -90,6 +95,10 @@ impl<R: BufRead> PafGroups<R> {
             // PAF record → AlnInfo → exact alninfo TSV bytes → AlnRow.
             self.serialize_buf.clear();
             AlnInfo::from_paf(&rec).write_row(&mut self.serialize_buf)?;
+            // Tee the alninfo row bytes (including trailing newline) if requested.
+            if let Some(w) = alninfo_out.as_deref_mut() {
+                w.write_all(&self.serialize_buf)?;
+            }
             // write_row appends a trailing newline; trim it before parsing.
             let s = std::str::from_utf8(&self.serialize_buf)
                 .expect("alninfo serialization is valid UTF-8")
@@ -103,10 +112,21 @@ impl<R: BufRead> PafGroups<R> {
 
     /// Return the next contiguous-`Query_Name` group, or `None` at EOF.
     pub(crate) fn next_group(&mut self) -> Result<Option<Vec<AlnRow>>> {
+        let mut sink: Option<&mut dyn Write> = None;
+        self.next_group_tee(&mut sink)
+    }
+
+    /// Like [`next_group`](Self::next_group), but tees each alignment's alninfo
+    /// TSV bytes to `alninfo_out` as it is read. Used by `paf2tables` to produce
+    /// the alninfo and readinfo tables in a single pass.
+    pub(crate) fn next_group_tee(
+        &mut self,
+        alninfo_out: &mut Option<&mut dyn Write>,
+    ) -> Result<Option<Vec<AlnRow>>> {
         // Seed the group with the pending lookahead row, or the next read row.
         let first = match self.pending.take() {
             Some(r) => r,
-            None => match self.next_row()? {
+            None => match self.next_row(alninfo_out)? {
                 Some(r) => r,
                 None => return Ok(None),
             },
@@ -135,7 +155,7 @@ impl<R: BufRead> PafGroups<R> {
         let mut group: Vec<AlnRow> = vec![first];
 
         loop {
-            match self.next_row()? {
+            match self.next_row(alninfo_out)? {
                 Some(row) => {
                     if row.query_name() == group_name {
                         group.push(row);

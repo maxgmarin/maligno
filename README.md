@@ -13,51 +13,109 @@
 ## Pipeline
 
 ```
-  SAM/BAM ──sam2paf──▶ PAF ──paf2alninfo──▶ alninfo.tsv ──readinfo──▶ readinfo.tsv ─┐
-                            (ref A)                                                 │
-                                                                                    ├─ compare ─▶ compare.tsv
-  SAM/BAM ──sam2paf──▶ PAF ──paf2alninfo──▶ alninfo.tsv ──readinfo──▶ readinfo.tsv ─┘            
-                            (ref B)                                              
+  SAM/BAM ──sam2paf──▶ PAF ──paf2tables──▶ alninfo.tsv + readinfo.tsv ─┐
+                            (ref A)                                     │
+                                                                        ├─ compare ─▶ compare.tsv
+  SAM/BAM ──sam2paf──▶ PAF ──paf2tables──▶ alninfo.tsv + readinfo.tsv ─┘
+                            (ref B)
 ```
 
 | Subcommand    | Input                              | Output                                  |
 |---------------|------------------------------------|-----------------------------------------|
-| `paf2alninfo` | PAF (`-i`, `.gz`/`-` ok)           | per-alignment info TSV (`-o`, 35 cols)  |
+| **`paf2tables`** | PAF (`-i`, `.gz`/`-` ok)        | **alninfo TSV** (`--alninfo`, 35 cols) and/or **readinfo TSV** (`--readinfo`, 33 cols), in one pass — **the primary PAF entry point** |
 | `readinfo`    | alninfo TSV (`-i`, `.gz`/`-` ok)   | per-read summary TSV (`-o`, 33 cols)    |
 | `compare`     | two readinfo TSVs (`-a`, `-b`)     | per-read comparison TSV (`-o`, 88 cols, +6 with `--compare-genomic-junctions`) |
 | `compare-junctions` | two readinfo TSVs (`-a`, `-b`) | streamlined splice-focused comparison TSV (`-o`, 47 cols) |
 | `sam2paf`     | SAM file or stdin (`-`)            | PAF written to stdout                   |
-| `paf2readinfo` | PAF (`-i`, `.gz`/`-` ok)           | per-read summary TSV (`-o`, 33 cols) — **fused** `paf2alninfo` + `readinfo`, no intermediate file |
 | `pafcompare`  | two PAFs (`-a`, `-b`)              | per-read comparison TSV (`-o`, 88 cols; `--junctions` → 47 cols) — **fused** full pipeline |
+| `paf2alninfo` *(deprecated)* | PAF (`-i`)          | alninfo TSV (`-o`) — alias for `paf2tables --alninfo` |
+| `paf2readinfo` *(deprecated)* | PAF (`-i`)         | readinfo TSV (`-o`) — alias for `paf2tables --readinfo` |
 
 All inputs/outputs transparently support gzip (`.gz` suffix) and stdin/stdout (`-`).
 
-### Fused one-pass shortcuts (v0.3.0)
+### Working with PAF files: `paf2tables` (start here)
 
-`paf2readinfo` and `pafcompare` collapse multiple pipeline stages into a single
-streaming pass that never materializes the intermediate `alninfo.tsv` /
-`readinfo.tsv` files. Their output is **byte-identical** to the discrete
-pipeline, because every record is routed through the exact same
-conversion + serialization code (`AlnInfo::from_paf` → `write_row`) before the
-unchanged collapse / comparison logic runs.
+`paf2tables` is the one command that turns a PAF into the downstream tables. Give
+it the output path(s) you want — it writes the **alninfo** table, the **readinfo**
+table, or **both in a single pass** (reading the PAF only once):
 
 ```bash
-# Equivalent to:  paf2alninfo -i in.paf | readinfo -i - -o readinfo.tsv.gz
-maligno paf2readinfo -i in.paf -o readinfo.tsv.gz          # requires PAF grouped by Query_Name
+# Both tables in one pass (reads the PAF once):
+maligno paf2tables -i in.paf --alninfo alninfo.tsv.gz --readinfo readinfo.tsv.gz
 
-# Equivalent to the full 4-step pipeline, in one pass:
+# Just the per-alignment table (no grouping required; works on unsorted PAF):
+maligno paf2tables -i in.paf --alninfo alninfo.tsv.gz
+
+# Just the per-read summary (best alignment per read):
+maligno paf2tables -i in.paf --readinfo readinfo.tsv.gz
+```
+
+At least one of `--alninfo` / `--readinfo` must be given. The output is
+**byte-identical** to the older two-command flow because every record is routed
+through the exact same conversion + serialization code
+(`AlnInfo::from_paf` → `write_row`) before the unchanged collapse logic runs;
+when both outputs are requested the alninfo rows are simply *tee'd* off the same
+stream that feeds readinfo grouping.
+
+**Grouping requirement.** The `--readinfo` output requires the PAF be **grouped**
+by `Query_Name` (each read's alignments contiguous); `--alninfo` never cares
+about order. By default `paf2tables` groups contiguous runs and prints a one-shot
+warning if the input isn't byte-lex sorted. Add **`--strict-grouping`** to turn a
+silently-wrong non-grouped input into a hard error — it tracks completed read
+names (memory ∝ number of distinct reads) and aborts if a `Query_Name` reappears
+non-contiguously:
+
+```bash
+maligno paf2tables -i in.paf --readinfo readinfo.tsv.gz --strict-grouping
+```
+
+The standard way to guarantee grouping (and satisfy the downstream `compare`
+byte-lex requirement at the same time) is a single up-front sort:
+
+```bash
+LC_ALL=C sort -t$'\t' -k1,1 in.paf | maligno paf2tables -i - --readinfo readinfo.tsv.gz
+```
+
+#### Handling non-grouped input — current behavior and roadmap
+
+readinfo correctness depends on every read's alignments being **contiguous**;
+alninfo never cares. Current behavior + the roadmap for richer handling
+(cheapest → most robust):
+
+1. **Contiguous streaming + one-shot lex-decrease warning** *(current default,
+   O(1) memory).* Fast, but silently wrong if a read's alignments are scattered
+   and no lex-decrease trips the warning.
+2. **`--strict-grouping` seen-set guard** *(now; O(#distinct reads) memory).*
+   Hard-errors on non-contiguous reappearance — turns "silently wrong" into
+   "loudly wrong" without buffering alignments.
+3. **`--unsorted` full in-memory grouping** *(future; O(file) memory).* Buffer
+   all alignments into a `HashMap<Query_Name, …>`, then collapse — order-
+   independent; fine for small/medium PAFs.
+4. **Internal external-sort fallback** *(future; bounded memory, any size).*
+   Spill to temp files and merge-sort by `Query_Name` before grouping.
+5. **Two-pass offset index on seekable input** *(future; bounded memory).* Pass 1
+   indexes `Query_Name → byte offsets`; pass 2 seeks per read (regular files only).
+6. **Actionable auto-detect error** *(future).* On detecting unsorted input, print
+   the exact tailored `LC_ALL=C sort … | maligno paf2tables …` command to run.
+7. **`--assume-grouped` fast-path** *(future).* Skip all checks for maximum
+   throughput when the caller guarantees grouping.
+
+### One-pass paired comparison: `pafcompare`
+
+`pafcompare` collapses the full 4-step pipeline into one streaming pass:
+
+```bash
 maligno pafcompare -a A.paf -b B.paf --label-a A --label-b B -o compare.tsv.gz
 maligno pafcompare -a A.paf -b B.paf --junctions -o compare_junctions.tsv.gz   # 47-col variant
 ```
 
-- **`paf2readinfo`** requires the input PAF be **grouped** by `Query_Name`
-  (each read's alignments contiguous) — the same precondition `readinfo` has.
-- **`pafcompare`** is a strict lock-step **zip**: it requires both PAFs to list
-  the **same `Query_Names` in the same order**. Unlike `compare` it does *not*
-  require byte-lex sorting — any shared ordering works (lex, natural, aligner
-  order …). On the first read-name mismatch, or if one side has extra reads, it
-  prints an ERROR and stops (non-zero exit). Ideal for comparing two parameter
-  sets / references run on the **same** read or transcript set.
+It is a strict lock-step **zip**: it requires both PAFs to list the **same
+`Query_Names` in the same order**. Unlike `compare` it does *not* require
+byte-lex sorting — any shared ordering works. On the first read-name mismatch (or
+if one side has extra reads) it prints an ERROR and stops; pass
+`--ignore-row-mismatch` to skip reads present in only one PAF instead (requires
+lex-sorted PAFs). Ideal for comparing two parameter sets / references run on the
+**same** read or transcript set.
 
 ---
 
@@ -114,45 +172,43 @@ samtools view -h refB.bam | $BIN sam2paf -U - | gzip > refB.paf.gz
 LC_ALL=C sort -t$'\t' -k1,1 <(gzcat refA.paf.gz) | gzip > refA.sorted.paf.gz
 LC_ALL=C sort -t$'\t' -k1,1 <(gzcat refB.paf.gz) | gzip > refB.sorted.paf.gz
 
-# 1. PAF → alninfo  (one row per alignment, 35 cols; pure streaming, constant memory)
-$BIN paf2alninfo -i refA.sorted.paf.gz -o refA.alninfo.tsv.gz
-$BIN paf2alninfo -i refB.sorted.paf.gz -o refB.alninfo.tsv.gz
+# 1. PAF → readinfo  (one row per read; best alignment chosen by ms, then AS, then MQ).
+#    Add --alninfo <path> to also emit the 35-col per-alignment table in the same pass.
+$BIN paf2tables -i refA.sorted.paf.gz --readinfo refA.readinfo.tsv.gz
+$BIN paf2tables -i refB.sorted.paf.gz --readinfo refB.readinfo.tsv.gz
 
-# 2. alninfo → readinfo  (one row per read; best alignment chosen by ms, then AS)
-$BIN readinfo -i refA.alninfo.tsv.gz -o refA.readinfo.tsv.gz
-$BIN readinfo -i refB.alninfo.tsv.gz -o refB.readinfo.tsv.gz
-
-# 3. Compare the two readinfo files (streaming merge-join, constant memory)
+# 2. Compare the two readinfo files (streaming, constant memory; strict order by default)
 $BIN compare \
   -a refA.readinfo.tsv.gz --label-a RefA \
   -b refB.readinfo.tsv.gz --label-b RefB \
   -o RefA_vs_RefB.compare.tsv.gz
 ```
 
-### Starting from PAF directly
+### One-pass paired comparison straight from PAF
 
 ```bash
 BIN=./target/release/maligno
 
-$BIN paf2alninfo -i refA.paf -o refA.alninfo.tsv.gz
-$BIN readinfo    -i refA.alninfo.tsv.gz -o refA.readinfo.tsv.gz
-# ... same compare step as above
+# Skip the intermediate files entirely (both PAFs must list reads in the same order):
+$BIN pafcompare -a refA.sorted.paf.gz -b refB.sorted.paf.gz \
+  --label-a RefA --label-b RefB -o RefA_vs_RefB.compare.tsv.gz
 ```
 
 ---
 
 ## How each step works
 
-### `paf2alninfo`
+### `paf2tables` (alninfo conversion)
 
 Parses each PAF record (12 mandatory fields + `ms:i`, `AS:i`, `cs:Z` tags), walks the
 `cs` tag to accumulate match/substitution/insertion/deletion/splice statistics, computes
 soft-clip lengths, junction coordinates (strand-aware), and derived scalars
-(`seqid`, `Query_Aln_Len`, `Query_Aln_Cov`).
+(`seqid`, `Query_Aln_Len`, `Query_Aln_Cov`). This is the `--alninfo` output of
+`paf2tables` (and the deprecated `paf2alninfo` alias).
 
-**Pure streaming, constant memory** (since v0.2.7). Each PAF line is parsed and written
-independently in input order — no internal collect-then-sort. For the standard pipeline
-(`paf2alninfo` → `readinfo` → `compare`), pre-sort the PAF by `Query_Name` once upstream:
+**Pure streaming, constant memory** for the alninfo output. Each PAF line is parsed and
+written independently in input order — no internal collect-then-sort. For the standard
+pipeline (`paf2tables` → `compare`), pre-sort the PAF by `Query_Name` once upstream:
 
 ```bash
 LC_ALL=C sort -t$'\t' -k1,1 in.paf > sorted.paf
@@ -541,13 +597,14 @@ in `compare` regardless of sort order.
 ```
 src/
 ├── main.rs                 — CLI dispatcher (clap subcommands)
-├── paf2alninfo.rs          — PAF → per-alignment info TSV
-├── readinfo.rs             — alninfo → per-read summary TSV
-├── compare_streaming.rs    — streaming merge-join comparison (full) + reusable emit/header
+├── paf2tables.rs           — PRIMARY PAF entry point: PAF → alninfo and/or readinfo (one pass)
+├── readinfo.rs             — alninfo → per-read summary TSV (collapse + best-alignment select)
+├── compare_streaming.rs    — streaming comparison (full) + reusable emit/header
 ├── compare_junctions.rs    — streamlined splice-focused comparison (47 cols) + reusable emit/header
-├── paf_groups.rs           — shared PAF → per-read group reader (fused modules)
-├── paf2readinfo.rs         — fused PAF → readinfo (one pass; = paf2alninfo | readinfo)
+├── paf_groups.rs           — shared PAF → per-read group reader, with optional alninfo tee
 ├── pafcompare.rs           — fused paired-PAF → comparison (one pass; lock-step zip)
+├── paf2alninfo.rs          — deprecated alias → paf2tables::stream_alninfo
+├── paf2readinfo.rs         — deprecated alias → paf2tables::stream_readinfo
 ├── record.rs               — AlnInfo struct + TSV serialisation
 ├── paf.rs                  — PAF record parser
 ├── cs_parser.rs            — cs-tag parser (PAF → stats + genomic junctions)
