@@ -14,12 +14,26 @@ use std::io::{BufRead, Write};
 
 use anyhow::{bail, Context, Result};
 
+use crate::compare_junctions::{emit_compare_junctions_row, write_compare_junctions_header};
 use crate::io_utils::{escape_tsv_field, fmt_float, open_input, open_output};
 use crate::junction::{
     format_genomic_junction_tuple, format_junction_tuple, genomic_junction_set_diffs,
     genomic_junction_set_stats, junction_distance, junction_set_diffs, junction_set_stats,
     parse_genomic_junction_str, parse_junction_str,
 };
+
+// ── Comparison mode ───────────────────────────────────────────────────────────
+
+/// Which comparison view to emit. Shared by `compare` and `pafcompare` so the
+/// two commands expose an identical `--mode` surface.
+#[derive(Clone, Debug, Default, clap::ValueEnum)]
+pub(crate) enum CompareMode {
+    /// All per-read metrics (88 cols; 94 with --compare-genomic-junctions).
+    #[default]
+    Full,
+    /// Splice-junction-focused view (47 cols; genomic-junction metrics always on).
+    Junctions,
+}
 
 // ── CLI args ─────────────────────────────────────────────────────────────────
 
@@ -58,6 +72,12 @@ pub struct CompareStreamingArgs {
     /// heuristic to work correctly. Unmatched reads are counted in the summary.
     #[arg(long = "ignore-row-mismatch")]
     pub ignore_row_mismatch: bool,
+
+    /// Comparison view: `full` (all per-read metrics) or `junctions`
+    /// (splice-junction-focused, 47 cols). `junctions` always includes the
+    /// genomic-junction metrics, so --compare-genomic-junctions is ignored there.
+    #[arg(long = "mode", value_enum, default_value_t = CompareMode::Full)]
+    pub mode: CompareMode,
 }
 
 // ── ReadInfo column indices (must match readinfo.rs) ──────────────────────────
@@ -461,13 +481,21 @@ pub fn run(args: &CompareStreamingArgs) -> Result<()> {
     // Open output
     let mut out = open_output(Some(&args.output))?;
 
+    // `junctions` mode emits the splice-focused 47-col view (genomic-junction
+    // metrics always on); `full` mode emits the full per-read comparison.
+    let junctions_mode = matches!(args.mode, CompareMode::Junctions);
+
     // Write header
-    write_compare_header(
-        &mut out,
-        &args.label_a,
-        &args.label_b,
-        args.compare_genomic_junctions,
-    )?;
+    if junctions_mode {
+        write_compare_junctions_header(&mut out, &args.label_a, &args.label_b)?;
+    } else {
+        write_compare_header(
+            &mut out,
+            &args.label_a,
+            &args.label_b,
+            args.compare_genomic_junctions,
+        )?;
+    }
 
     eprintln!("[INFO] Starting comparison...");
 
@@ -483,14 +511,24 @@ pub fn run(args: &CompareStreamingArgs) -> Result<()> {
             n_a_total += 1;
             n_b_total += 1;
 
-            emit_compare_row(
-                &mut out,
-                &key_a.name,
-                key_a.len,
-                |c| reader_a.get_col(c).unwrap_or(""),
-                |c| reader_b.get_col(c).unwrap_or(""),
-                args.compare_genomic_junctions,
-            )?;
+            if junctions_mode {
+                emit_compare_junctions_row(
+                    &mut out,
+                    &key_a.name,
+                    key_a.len,
+                    |c| reader_a.get_col(c).unwrap_or(""),
+                    |c| reader_b.get_col(c).unwrap_or(""),
+                )?;
+            } else {
+                emit_compare_row(
+                    &mut out,
+                    &key_a.name,
+                    key_a.len,
+                    |c| reader_a.get_col(c).unwrap_or(""),
+                    |c| reader_b.get_col(c).unwrap_or(""),
+                    args.compare_genomic_junctions,
+                )?;
+            }
 
             n_merged += 1;
             if n_merged % 100000 == 0 {

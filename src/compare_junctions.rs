@@ -1,64 +1,24 @@
-//! Streamlined splice-junction comparison subcommand (`compare-junctions`).
+//! Splice-junction-focused comparison view (the `--mode junctions` output).
 //!
-//! A slim variant of `compare` focused on per-read splice-junction differences.
-//! Emits 28 columns total:
+//! This module is a **library**: it provides the header + row emitters for the
+//! 47-column junction-focused comparison, reused by both `compare --mode
+//! junctions` (`compare_streaming::run`) and `pafcompare --mode junctions`
+//! (`pafcompare::run`). It no longer owns a subcommand of its own.
 //!
-//!   - 2 join keys: `Read_Name`, `Read_Len`
-//!   - 8 per-side data columns × 2 sides (suffixed with `--label-a` / `--label-b`):
-//!     `TargetRef_1st, Num_Aln, JuncCount, seqid_Max, Query_Aln_Cov_Max,
-//!      junctions, genomic_junctions, cs`
-//!   - 10 comparison metrics (no suffix):
-//!     `seqid_Diff, QueryAlnCov_Diff,
-//!      N_Matched_Junctions, N_Unmatched_Junctions, N_Junctions_OnlyA, N_Junctions_OnlyB,
-//!      Genomic_N_Matched_Junctions, Genomic_N_Unmatched_Junctions,
-//!      Genomic_N_Junctions_OnlyA, Genomic_N_Junctions_OnlyB`
-//!
-//! Same streaming merge-join algorithm and inner-join semantics as `compare`. The
-//! genomic-junction set metrics are always emitted here (no flag) because this whole
-//! subcommand is about junction differences.
+//! The view is a slim subset of the full `compare` output: a 15-column per-side
+//! block (target/strand/MQ + junction/coverage fields, dropping the AS/ms scores
+//! and cs-derived event counts) plus junction set-overlap metrics. The
+//! genomic-junction set metrics are **always** emitted here (no flag), because
+//! this view is entirely about junction differences.
 
 use std::io::Write;
 
-use anyhow::{bail, Context, Result};
-
-use crate::compare_streaming::{ReadInfoReader, ReadKey};
-use crate::io_utils::{escape_tsv_field, fmt_float, open_output};
+use crate::io_utils::{escape_tsv_field, fmt_float};
 use crate::junction::{
     format_genomic_junction_tuple, format_junction_tuple, genomic_junction_set_diffs,
     genomic_junction_set_stats, junction_set_diffs, junction_set_stats,
     parse_genomic_junction_str, parse_junction_str,
 };
-
-// ── CLI args ─────────────────────────────────────────────────────────────────
-
-#[derive(clap::Args, Debug)]
-pub struct CompareJunctionsArgs {
-    /// Readinfo TSV A (must be sorted by Read_Name, Read_Len)
-    #[arg(short = 'a', long = "readinfo-a", value_name = "readinfo_a.tsv")]
-    pub readinfo_a: String,
-
-    /// Readinfo TSV B (must be sorted by Read_Name, Read_Len)
-    #[arg(short = 'b', long = "readinfo-b", value_name = "readinfo_b.tsv")]
-    pub readinfo_b: String,
-
-    /// Label for dataset A (used as per-side column suffix)
-    #[arg(long = "label-a", value_name = "LABEL", default_value = "SetA")]
-    pub label_a: String,
-
-    /// Label for dataset B (used as per-side column suffix)
-    #[arg(long = "label-b", value_name = "LABEL", default_value = "SetB")]
-    pub label_b: String,
-
-    /// Output comparison TSV file ('.gz' for gzip)
-    #[arg(short = 'o', long = "output", value_name = "compare_junctions.tsv[.gz]")]
-    pub output: String,
-
-    /// Skip reads that appear in only one file instead of stopping with an error.
-    /// Both readinfo files must still be lex-sorted by Read_Name for the skip
-    /// heuristic to work correctly. Unmatched reads are counted in the summary.
-    #[arg(long = "ignore-row-mismatch")]
-    pub ignore_row_mismatch: bool,
-}
 
 // ── Column schemas ──────────────────────────────────────────────────────────
 
@@ -213,115 +173,4 @@ where
         escape_tsv_field(&g_only_b_str),
     )?;
     writeln!(out)
-}
-
-// ── Main streaming comparison function ──────────────────────────────────────
-
-pub fn run(args: &CompareJunctionsArgs) -> Result<()> {
-    eprintln!("[INFO] Opening readinfo files...");
-    eprintln!("  A: {}", args.readinfo_a);
-    eprintln!("  B: {}", args.readinfo_b);
-
-    let mut reader_a = ReadInfoReader::new(&args.readinfo_a)?;
-    let mut reader_b = ReadInfoReader::new(&args.readinfo_b)?;
-
-    let idx_name_a = reader_a
-        .get_col_idx("Read_Name")
-        .context("missing Read_Name in A")?;
-    let idx_len_a = reader_a
-        .get_col_idx("Read_Len")
-        .context("missing Read_Len in A")?;
-    let idx_name_b = reader_b
-        .get_col_idx("Read_Name")
-        .context("missing Read_Name in B")?;
-    let idx_len_b = reader_b
-        .get_col_idx("Read_Len")
-        .context("missing Read_Len in B")?;
-
-    let mut out = open_output(Some(&args.output))?;
-
-    // Write header.
-    write_compare_junctions_header(&mut out, &args.label_a, &args.label_b)?;
-
-    eprintln!("[INFO] Starting merge-join comparison...");
-
-    let mut n_a_total: u64 = 0;
-    let mut n_b_total: u64 = 0;
-    let mut n_merged: u64 = 0;
-
-    while let (Some(a_fields), Some(b_fields)) = (reader_a.current(), reader_b.current()) {
-        let key_a = ReadKey::from_fields(a_fields, idx_name_a, idx_len_a)?;
-        let key_b = ReadKey::from_fields(b_fields, idx_name_b, idx_len_b)?;
-
-        if key_a == key_b {
-            n_a_total += 1;
-            n_b_total += 1;
-
-            emit_compare_junctions_row(
-                &mut out,
-                &key_a.name,
-                key_a.len,
-                |c| reader_a.get_col(c).unwrap_or(""),
-                |c| reader_b.get_col(c).unwrap_or(""),
-            )?;
-
-            n_merged += 1;
-            if n_merged % 100_000 == 0 {
-                eprintln!("[INFO] Processed {} matched records...", n_merged);
-            }
-
-            reader_a.advance()?;
-            reader_b.advance()?;
-        } else if key_a < key_b {
-            if !args.ignore_row_mismatch {
-                bail!(
-                    "read-name mismatch: A has {:?} but B has {:?} \
-                     (A row #{}, B row #{}). Both readinfo files must list reads \
-                     in the same order. Use --ignore-row-mismatch to skip \
-                     unmatched reads instead of stopping.",
-                    key_a.name, key_b.name, n_a_total + 1, n_b_total + 1
-                );
-            }
-            n_a_total += 1;
-            reader_a.advance()?;
-        } else {
-            if !args.ignore_row_mismatch {
-                bail!(
-                    "read-name mismatch: B has {:?} but A has {:?} \
-                     (A row #{}, B row #{}). Both readinfo files must list reads \
-                     in the same order. Use --ignore-row-mismatch to skip \
-                     unmatched reads instead of stopping.",
-                    key_b.name, key_a.name, n_a_total + 1, n_b_total + 1
-                );
-            }
-            n_b_total += 1;
-            reader_b.advance()?;
-        }
-    }
-
-    // Drain remaining unmatched on either side.
-    while reader_a.current().is_some() {
-        n_a_total += 1;
-        reader_a.advance()?;
-    }
-    while reader_b.current().is_some() {
-        n_b_total += 1;
-        reader_b.advance()?;
-    }
-
-    out.flush()?;
-
-    // End-of-run summary on stderr.
-    let a_only = n_a_total - n_merged;
-    let b_only = n_b_total - n_merged;
-    eprintln!("Junction comparison summary:");
-    eprintln!("  Label A: {}", args.label_a);
-    eprintln!("  Label B: {}", args.label_b);
-    eprintln!("  rows in A (readinfo-a):     {n_a_total}");
-    eprintln!("  rows in B (readinfo-b):     {n_b_total}");
-    eprintln!("  matched (in both, written): {n_merged}");
-    eprintln!("  A-only (dropped, not in B): {a_only}");
-    eprintln!("  B-only (dropped, not in A): {b_only}");
-
-    Ok(())
 }
