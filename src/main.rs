@@ -1,34 +1,35 @@
 //! maligno — unified PAF alignment-comparison toolkit.
 //!
 //! Two ways to get from a pair of PAFs (sample A and B) to a per-read comparison
-//! table — both produce **identical** results:
+//! table — both produce **identical** comparison results:
 //!
-//!   1. One-pass (primary):
-//!        `maligno compare -a A.paf -b B.paf -o compare.tsv.gz`
-//!      Does everything internally; no intermediate files.
+//!   1. On-rails (primary) — `compare`:
+//!        `maligno compare -a A.paf -b B.paf --outdir results/ --prefix AvsB`
+//!      Sorts both PAFs (consistent order), verifies they share the same read-ID
+//!      set, then writes the per-set alninfo + readinfo tables AND the comparison
+//!      table. Makes the key assumptions for you and does them well.
 //!
-//!   2. Explicit intermediates (useful when you also want the per-file tables):
-//!        `maligno paf2tables -i A.paf --readinfo A.readinfo.tsv.gz`
-//!        `maligno paf2tables -i B.paf --readinfo B.readinfo.tsv.gz`
+//!   2. Manual building blocks (full control):
+//!        `maligno paf2tables -i A.sorted.paf --alninfo A.alninfo.tsv.gz --readinfo A.readinfo.tsv.gz`
+//!        (same for B), then
 //!        `maligno compare-readinfo -a A.readinfo.tsv.gz -b B.readinfo.tsv.gz -o compare.tsv.gz`
 //!
 //! Commands:
 //!
-//!   1. `compare`            two PAFs           → per-read comparison TSV (one pass). PRIMARY.
-//!                                                `--mode full` (default, 94 cols incl.
-//!                                                genomic-junction comparison) or
-//!                                                `--mode junctions` (47-col splice view).
+//!   1. `compare`            two PAFs → a results directory (sorted-then-compared,
+//!                                      on-rails). PRIMARY. `--mode full` (default,
+//!                                      94 cols) or `--mode junctions` (47-col view).
 //!   2. `paf2tables`         PAF                → alninfo TSV (35 cols) and/or readinfo TSV (33 cols)
 //!   3. `compare-readinfo`   two readinfo TSVs  → per-read comparison TSV (same `--mode`)
 //!   4. `sam2paf`            SAM                → PAF  (utility; use before paf2tables/compare)
 //!   5. `utils-readinfo`     alninfo TSV        → per-read summary TSV (low-level utility;
 //!                                                most users want `paf2tables --readinfo`)
 //!
-//! Comparison is a streaming merge-join (constant memory): only reads present in
-//! BOTH inputs (matched on Read_Name + Read_Len) produce an output row. By default
-//! a read-name mismatch is an error; `--ignore-row-mismatch` skips reads present
-//! in only one input (counted in the end-of-run summary). Unaligned reads still
-//! appear (with Num_Aln=0), so they DO get compared.
+//! The comparison itself is a streaming merge-join (constant memory): only reads
+//! present in BOTH inputs (matched on Read_Name + Read_Len) produce an output row.
+//! `compare` guarantees the inputs are sorted and share the same read-ID set
+//! (erroring otherwise, unless `--allow-id-mismatch`); the plumbing commands trust
+//! the caller and use `--ignore-row-mismatch` for the lenient path.
 
 // ── Pipeline modules ──────────────────────────────────────────────────────────
 mod cigar_junctions;    // CIGAR-based intron extractor (utility; not yet wired in)
@@ -38,9 +39,10 @@ mod cs_parser;          // cs-tag parser  (PAF → alninfo path; also extracts g
 mod io_utils;
 mod junction;
 mod paf;
+mod compare;            // primary `compare` command (on-rails: sort → tables → compare)
+mod external_sort;      // in-process PAF sort (ext-sort) + read-ID set check
 mod paf2tables;         // PAF → alninfo and/or readinfo, one pass
 mod paf_groups;         // shared PAF → per-read group reader (paf2tables / compare)
-mod pafcompare;         // primary `compare` command (paired-PAF → comparison, one pass)
 mod readinfo;           // shared collapse library + utils-readinfo entry point
 mod record;
 
@@ -50,9 +52,9 @@ mod sam2paf; // SAM → PAF converter (self-contained; owns cigar/convert/cs_gen
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+use compare::CompareArgs;
 use compare_streaming::CompareReadinfoArgs;
 use paf2tables::Paf2TablesArgs;
-use pafcompare::CompareArgs;
 use readinfo::ReadInfoArgs;
 use sam2paf::Sam2pafArgs;
 
@@ -66,7 +68,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Two PAFs → per-read comparison TSV in one pass. The primary entry point.
+    /// Two PAFs → sorted, verified, and compared into a results directory. The primary entry point.
     Compare(CompareArgs),
     /// PAF → alninfo (35 cols) and/or readinfo (33 cols).
     Paf2tables(Paf2TablesArgs),
@@ -82,7 +84,7 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match &cli.command {
-        Commands::Compare(args)          => pafcompare::run(args),
+        Commands::Compare(args)          => compare::run(args),
         Commands::Paf2tables(args)       => paf2tables::run(args),
         Commands::CompareReadinfo(args)  => compare_streaming::run(args),
         Commands::Sam2paf(args)          => sam2paf::run(args),

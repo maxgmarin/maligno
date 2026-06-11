@@ -13,17 +13,25 @@
 ## Two ways to compare two PAFs
 
 Both start from PAFs for sample A and B and produce the **identical** comparison
-table. Pick based on whether you also want the intermediate per-file tables.
+table. Use `compare` for the safe, do-it-all path; drop to the subcommands when
+you want manual control.
 
-**1. One pass (primary) — `compare`:**
+**1. On-rails (primary) — `compare`:** one command that sorts both PAFs (so
+grouping/order are guaranteed, not trusted), verifies they carry the same read-ID
+set, and writes a results directory with the per-set alninfo + readinfo tables
+and the comparison table.
 
 ```
-  A.paf ─┐
-         ├─ compare ─▶ compare.tsv      maligno compare -a A.paf -b B.paf -o compare.tsv.gz
-  B.paf ─┘
+  A.paf ─┐                                            results/AvsB.{A,B}.alninfo.tsv.gz
+         ├─ compare (sort → verify → tables) ─▶       results/AvsB.{A,B}.readinfo.tsv.gz
+  B.paf ─┘                                            results/AvsB.compare.tsv.gz
+```
+```bash
+maligno compare -a A.paf -b B.paf --label-a A --label-b B --outdir results/ --prefix AvsB
 ```
 
-**2. Explicit intermediates — `paf2tables` then `compare-readinfo`:**
+**2. Manual building blocks — `paf2tables` then `compare-readinfo`:** full
+control (you sort and pick exactly what to produce).
 
 ```
   A.paf ──paf2tables──▶ A.readinfo.tsv ─┐
@@ -31,14 +39,15 @@ table. Pick based on whether you also want the intermediate per-file tables.
   B.paf ──paf2tables──▶ B.readinfo.tsv ─┘
 ```
 ```bash
-maligno paf2tables -i A.paf --readinfo A.readinfo.tsv.gz
-maligno paf2tables -i B.paf --readinfo B.readinfo.tsv.gz
+LC_ALL=C sort -t$'\t' -k1,1 <(gzcat A.paf.gz) | gzip > A.sorted.paf.gz   # (and B)
+maligno paf2tables -i A.sorted.paf.gz --readinfo A.readinfo.tsv.gz
+maligno paf2tables -i B.sorted.paf.gz --readinfo B.readinfo.tsv.gz
 maligno compare-readinfo -a A.readinfo.tsv.gz -b B.readinfo.tsv.gz -o compare.tsv.gz
 ```
 
 | Subcommand    | Input                              | Output                                  |
 |---------------|------------------------------------|-----------------------------------------|
-| **`compare`** | two PAFs (`-a`, `-b`)              | **per-read comparison TSV** (`-o`), one pass — **the primary entry point**; `--mode full` (default, 94 cols) or `--mode junctions` (47-col splice view) |
+| **`compare`** | two PAFs (`-a`, `-b`)              | **a results directory** (`--outdir`/`--prefix`): per-set alninfo + readinfo for A and B, plus the comparison TSV — **the primary entry point**. Sorts inputs and verifies read-ID sets match. `--mode full` (default, 94 cols) or `--mode junctions` (47-col view) |
 | `paf2tables`  | PAF (`-i`, `.gz`/`-` ok)           | **alninfo TSV** (`--alninfo`, 35 cols) and/or **readinfo TSV** (`--readinfo`, 33 cols), in one pass |
 | `compare-readinfo` | two readinfo TSVs (`-a`, `-b`) | per-read comparison TSV (`-o`); same `--mode full`/`junctions` as `compare` |
 | `sam2paf`     | SAM file or stdin (`-`)            | PAF written to stdout                   |
@@ -113,22 +122,37 @@ alninfo never cares. Current behavior + the roadmap for richer handling
 7. **`--assume-grouped` fast-path** *(future).* Skip all checks for maximum
    throughput when the caller guarantees grouping.
 
-### Primary: one-pass `compare`
+### Primary: on-rails `compare`
 
-`compare` collapses the whole pipeline into one streaming pass over the two PAFs:
+`compare` runs the whole pipeline for you and **owns its preconditions** — you
+don't have to pre-sort or worry about ordering:
 
 ```bash
-maligno compare -a A.paf -b B.paf --label-a A --label-b B -o compare.tsv.gz
-maligno compare -a A.paf -b B.paf --mode junctions -o compare_junctions.tsv.gz   # 47-col view
+maligno compare -a A.paf -b B.paf --label-a A --label-b B --outdir results/ --prefix AvsB
+maligno compare -a A.paf -b B.paf --outdir results/ --prefix AvsB --mode junctions   # 47-col view
 ```
 
-It is a strict lock-step **zip**: it requires both PAFs to list the **same
-`Query_Names` in the same order**. Unlike `compare-readinfo` it does *not* require
-byte-lex sorting — any shared ordering works. On the first read-name mismatch (or
-if one side has extra reads) it prints an ERROR and stops; pass
-`--ignore-row-mismatch` to skip reads present in only one PAF instead (requires
-lex-sorted PAFs). Ideal for comparing two parameter sets / references run on the
-**same** read or transcript set.
+What it does, in order:
+1. **Sorts** both PAFs by `Query_Name` (byte-lex) with an in-process external sort
+   (`ext-sort`: buffers up to `--mem`, default 1G, spilling to temp files under
+   `--tmp-dir`, default `--outdir`). This guarantees grouping and a consistent
+   matching order — it can't silently mis-compare unsorted input.
+2. **Verifies** both PAFs carry the **same `Query_Name` set** (O(1) memory). By
+   default it **errors** if they differ, reporting how many IDs are shared / only
+   in A / only in B (with examples). Pass `--allow-id-mismatch` to compare the
+   shared intersection instead.
+3. **Writes** the per-set `alninfo` + `readinfo` tables and the comparison table:
+   ```
+   {prefix}.{label_a}.alninfo.tsv.gz    {prefix}.{label_b}.alninfo.tsv.gz
+   {prefix}.{label_a}.readinfo.tsv.gz   {prefix}.{label_b}.readinfo.tsv.gz
+   {prefix}.compare.tsv.gz              (or {prefix}.compare.junctions.tsv.gz)
+   ```
+   The sorted PAFs are scratch (removed unless `--keep-sorted`).
+
+Ideal for comparing two parameter sets / references run on the **same** read or
+transcript set. **Precondition:** a `Query_Name` identifies one read/sequence
+(maligno sorts by name only). The comparison table is identical to the manual
+`paf2tables` → `compare-readinfo` path on the same inputs.
 
 ---
 
@@ -170,7 +194,7 @@ binary use the musl cross-build above.
 
 ## Usage
 
-### Primary: one-pass `compare` from BAM/PAF
+### Primary: on-rails `compare` from BAM/PAF
 
 ```bash
 BIN=./target/release/maligno
@@ -179,13 +203,13 @@ BIN=./target/release/maligno
 samtools view -h refA.bam | $BIN sam2paf -U - | gzip > refA.paf.gz
 samtools view -h refB.bam | $BIN sam2paf -U - | gzip > refB.paf.gz
 
-# 0.5. Pre-sort each PAF by Query_Name (byte-lex), so both list reads in the same order.
-LC_ALL=C sort -t$'\t' -k1,1 <(gzcat refA.paf.gz) | gzip > refA.sorted.paf.gz
-LC_ALL=C sort -t$'\t' -k1,1 <(gzcat refB.paf.gz) | gzip > refB.sorted.paf.gz
-
-# 1. Compare the two PAFs in one pass (no intermediate files).
-$BIN compare -a refA.sorted.paf.gz -b refB.sorted.paf.gz \
-  --label-a RefA --label-b RefB -o RefA_vs_RefB.compare.tsv.gz
+# 1. Compare — sorts both PAFs, checks read-ID sets match, writes the results dir.
+#    No pre-sorting needed; compare does it (--mem caps the in-RAM sort buffer).
+$BIN compare -a refA.paf.gz -b refB.paf.gz \
+  --label-a RefA --label-b RefB --outdir results/ --prefix RefA_vs_RefB --mem 2G
+# → results/RefA_vs_RefB.{RefA,RefB}.alninfo.tsv.gz
+#   results/RefA_vs_RefB.{RefA,RefB}.readinfo.tsv.gz
+#   results/RefA_vs_RefB.compare.tsv.gz
 ```
 
 ### Explicit intermediates: `paf2tables` then `compare-readinfo`
@@ -443,9 +467,9 @@ $BIN compare-readinfo --mode junctions \
   -b refB.readinfo.tsv.gz --label-b RefB \
   -o RefA_vs_RefB.junctions.tsv.gz
 
-# …or directly from PAFs in one pass:
-$BIN compare --mode junctions -a refA.sorted.paf.gz -b refB.sorted.paf.gz \
-  --label-a RefA --label-b RefB -o RefA_vs_RefB.junctions.tsv.gz
+# …or straight from PAFs via the on-rails `compare` (writes a results dir):
+$BIN compare --mode junctions -a refA.paf.gz -b refB.paf.gz \
+  --label-a RefA --label-b RefB --outdir results/ --prefix RefA_vs_RefB
 ```
 
 The metric values that overlap with the `--mode full` output (the shared set columns) are
@@ -509,10 +533,10 @@ time $BIN compare-readinfo --mode junctions \
 # Inspect the junction-view output header
 zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | head -1 | tr '\t' '\n' | nl
 
-# Tip: to skip the intermediate files entirely, the primary `compare` runs the whole
-# comparison in one pass (both PAFs must list reads in the same order):
-#   $BIN compare -a sorted_Splice.paf.gz -b sorted_SpliceHQ.paf.gz \
-#     --label-a Splice --label-b SpliceHQ -o /tmp/Splice_vs_SpliceHQ.compare.tsv.gz
+# Tip: the primary on-rails `compare` does all of the above (sort + per-set tables +
+# comparison) in one command, writing everything to a results directory:
+#   $BIN compare -a Splice.paf.gz -b SpliceHQ.paf.gz \
+#     --label-a Splice --label-b SpliceHQ --outdir results/ --prefix Splice_vs_SpliceHQ
 
 # Check all unique values in columns 25 and 29 (Checking number of unmatched junctions from query and genome perspective)
 zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | cut -f 35 | sort | uniq -c 
@@ -636,7 +660,8 @@ in the comparison regardless of sort order.
 ```
 src/
 ├── main.rs                 — CLI dispatcher (clap subcommands)
-├── pafcompare.rs           — PRIMARY `compare` command: paired-PAF → comparison (one pass; lock-step zip)
+├── compare.rs              — PRIMARY `compare` command (on-rails: sort → verify read-IDs → tables → compare)
+├── external_sort.rs        — in-process PAF external sort (ext-sort) + O(1) read-ID set check
 ├── paf2tables.rs           — PAF → alninfo and/or readinfo (one pass)
 ├── compare_streaming.rs    — `compare-readinfo` command + shared comparison core (emit/header/ReadKey/CompareMode)
 ├── compare_junctions.rs    — junction-view (47-col) header/row emitters (library; used by --mode junctions)
