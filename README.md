@@ -141,13 +141,20 @@ What it does, in order:
    default it **errors** if they differ, reporting how many IDs are shared / only
    in A / only in B (with examples). Pass `--allow-id-mismatch` to compare the
    shared intersection instead.
-3. **Writes** the per-set `alninfo` + `readinfo` tables and the comparison table:
+3. In a **single in-memory pass**, collapses both sorted PAFs in lock-step and
+   feeds the merge-join directly (no readinfo written-then-reread), teeing out the
+   per-set `alninfo` + `readinfo` tables and writing the comparison table:
    ```
    {prefix}.{label_a}.alninfo.tsv.gz    {prefix}.{label_b}.alninfo.tsv.gz
    {prefix}.{label_a}.readinfo.tsv.gz   {prefix}.{label_b}.readinfo.tsv.gz
    {prefix}.compare.tsv.gz              (or {prefix}.compare.junctions.tsv.gz)
    ```
    The sorted PAFs are scratch (removed unless `--keep-sorted`).
+
+Pass **`--no-alninfo`** and/or **`--no-readinfo`** to skip writing those per-set
+tables entirely (no file is created — the bytes are never serialized/compressed;
+`--no-alninfo` is the biggest time/disk saver since alninfo is the largest output).
+The comparison itself is unaffected.
 
 Ideal for comparing two parameter sets / references run on the **same** read or
 transcript set. **Precondition:** a `Query_Name` identifies one read/sequence
