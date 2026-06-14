@@ -1,6 +1,6 @@
 [package]
 name = "maligno-rs"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 
 [[bin]]
@@ -8,9 +8,10 @@ name = "maligno"
 path = "src/main.rs"
 
 [dependencies]
-clap   = { version = "4", features = ["derive"] }
-anyhow = "1"
-flate2 = "1"
+clap     = { version = "4", features = ["derive"] }
+anyhow   = "1"
+flate2   = "1"
+ext-sort = { version = "0.1", features = ["memory-limit"] }
 
 [profile.release]
 opt-level = 3

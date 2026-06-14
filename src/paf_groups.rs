@@ -110,15 +110,10 @@ impl<R: BufRead> PafGroups<R> {
         }
     }
 
-    /// Return the next contiguous-`Query_Name` group, or `None` at EOF.
-    pub(crate) fn next_group(&mut self) -> Result<Option<Vec<AlnRow>>> {
-        let mut sink: Option<&mut dyn Write> = None;
-        self.next_group_tee(&mut sink)
-    }
-
-    /// Like [`next_group`](Self::next_group), but tees each alignment's alninfo
-    /// TSV bytes to `alninfo_out` as it is read. Used by `paf2tables` to produce
-    /// the alninfo and readinfo tables in a single pass.
+    /// Return the next contiguous-`Query_Name` group as a `Vec<AlnRow>`, or
+    /// `None` at EOF, teeing each alignment's alninfo TSV bytes to `alninfo_out`
+    /// as it is read (pass `&mut None` to skip the tee). Used by `paf2tables` to
+    /// produce the alninfo and readinfo tables in a single pass.
     pub(crate) fn next_group_tee(
         &mut self,
         alninfo_out: &mut Option<&mut dyn Write>,
