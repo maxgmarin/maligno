@@ -20,7 +20,7 @@ use crate::io_utils::{open_input, open_output};
 pub(crate) fn parse_mem(s: &str) -> Result<u64> {
     let s = s.trim();
     if s.is_empty() {
-        bail!("empty --mem value");
+        bail!("empty --sort-mem value");
     }
     let last = s.chars().last().unwrap();
     let (num, mult) = match last {
@@ -28,12 +28,12 @@ pub(crate) fn parse_mem(s: &str) -> Result<u64> {
         'm' | 'M' => (&s[..s.len() - 1], 1024 * 1024),
         'g' | 'G' => (&s[..s.len() - 1], 1024 * 1024 * 1024),
         '0'..='9' => (s, 1u64),
-        c => bail!("invalid --mem suffix '{c}' (use K/M/G, or plain bytes)"),
+        c => bail!("invalid --sort-mem suffix '{c}' (use K/M/G, or plain bytes)"),
     };
     let n: u64 = num
         .trim()
         .parse()
-        .with_context(|| format!("invalid --mem value '{s}'"))?;
+        .with_context(|| format!("invalid --sort-mem value '{s}'"))?;
     Ok(n * mult)
 }
 

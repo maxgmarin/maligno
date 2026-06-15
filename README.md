@@ -134,7 +134,7 @@ maligno compare -a A.paf -b B.paf --outdir results/ --prefix AvsB --mode junctio
 
 What it does, in order:
 1. **Sorts** both PAFs by `Query_Name` (byte-lex) with an in-process external sort
-   (`ext-sort`: buffers up to `--mem`, default 1G, spilling to temp files under
+   (`ext-sort`: buffers up to `--sort-mem`, default 1G, spilling to temp files under
    `--tmp-dir`, default `--outdir`). This guarantees grouping and a consistent
    matching order — it can't silently mis-compare unsorted input.
 2. **Verifies** both PAFs carry the **same `Query_Name` set** (O(1) memory). By
@@ -149,7 +149,7 @@ What it does, in order:
    {prefix}.{label_a}.readinfo.tsv.gz   {prefix}.{label_b}.readinfo.tsv.gz
    {prefix}.compare.tsv.gz              (or {prefix}.compare.junctions.tsv.gz)
    ```
-   The sorted PAFs are scratch (removed unless `--keep-sorted`).
+   The sorted PAFs are scratch (removed unless `--keep-sorted-paf`).
 
 Pass **`--no-alninfo`** and/or **`--no-readinfo`** to skip writing those per-set
 tables entirely (no file is created — the bytes are never serialized/compressed;
@@ -163,7 +163,7 @@ relative order**, grouped by `Query_Name` — *any* consistent ordering works (e
 set-check, the single compare pass verifies the two files line up read-for-read
 and **errors on the first divergence** (leaving no partial output). Because nothing
 is sorted, `--presorted` cannot be combined with `--allow-id-mismatch` (computing a
-shared intersection needs a known sort order) or `--keep-sorted` (no temp files are
+shared intersection needs a known sort order) or `--keep-sorted-paf` (no temp files are
 created). Use it to avoid the sort cost when you trust your inputs are aligned.
 
 Ideal for comparing two parameter sets / references run on the **same** read or
@@ -221,9 +221,9 @@ samtools view -h refA.bam | $BIN sam2paf -U - | gzip > refA.paf.gz
 samtools view -h refB.bam | $BIN sam2paf -U - | gzip > refB.paf.gz
 
 # 1. Compare — sorts both PAFs, checks read-ID sets match, writes the results dir.
-#    No pre-sorting needed; compare does it (--mem caps the in-RAM sort buffer).
+#    No pre-sorting needed; compare does it (--sort-mem caps the in-RAM sort buffer).
 $BIN compare -a refA.paf.gz -b refB.paf.gz \
-  --label-a RefA --label-b RefB --outdir results/ --prefix RefA_vs_RefB --mem 2G
+  --label-a RefA --label-b RefB --outdir results/ --prefix RefA_vs_RefB --sort-mem 2G
 # → results/RefA_vs_RefB.{RefA,RefB}.alninfo.tsv.gz
 #   results/RefA_vs_RefB.{RefA,RefB}.readinfo.tsv.gz
 #   results/RefA_vs_RefB.compare.tsv.gz
