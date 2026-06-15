@@ -8,14 +8,21 @@
 
 **maligno** is a toolkit for comparing two sets of alignments read-by-read. The
 primary command, **`maligno compare`**, takes two PAF files for the same set of reads
-and produces a per-read comparison table — scores, coverage, indels,
-and splice-junction agreement — in a single command. This is useful for comparing alignments of the same set of reads across various conditions, which includes:
-1) Comparing different aligners
-2) Alignment results for different parameters of the same aligner
-3) Reads aligned to different reference genomes
+and produces a per-read comparison table (alignment scores, coverage, indels,
+and splice-junction agreement) in a single command. This is useful for comparing alignments of the same set of reads across various conditions, which includes:
+1) Comparing different aligners (`minimap2` versus `bwa mem`)
+2) Alignment results for different parameters of the same aligner (`splice` vs `splice:hq` for transcript alignment w. `minimap2`
+3) Reads aligned to different reference genomes (`GRCh38` vs `CHM13`)
 
+The key idea of maligno is to make it easy to systematically compare alignments of the same set of reads across varying conditions. 
+The final comparison table output by `maligno` has detailed alignment information across all reads. The alignment information (strand, alignment score, `cs` tag, mismatches, indels, soft-clipping, junctions, etc) are provided for each read as well as a column of the difference for 
 
-The key idea of maligno is to make it easy to systematically compare alignments of the same set of reads across varying conditions. The goal is to make it easy to identify exactly which reads have differing alignments and how they differ.
+This makes it easy compare two sets of alignment results (A & B) and to ask questions like: 
+- "How many reads aligned exactly the same?" or "What are the exact read IDs that differ in their alignment at all between set A or B?"
+- "How many reads improved their alignment score by X points?"
+- "How do the splice junctions differ in either query (read) coordinate space or genomic coordinate space?"
+  
+In summary, `maligno` provides an efficient framework to produce detailed comparisons of alignment results across varying conditions: `paramters`, `aligners`, and `references`.
 
 
 ---
@@ -37,7 +44,7 @@ A static Linux (musl) build for HPC is described in the
 ## Quick start
 
 Compare the two bundled test PAFs (the same `GRCh38-Gencode-Chr22` transcripts aligned with
-differing minimap2 paramters. (`--x splice` vs `--x splice:hq`).
+differing minimap2 paramters. (`--x splice` vs `--x splice:hq`). This test dataset includes all GENCODE reference transcripts from human chromosome 22 aligned with different `minimap2` alignment parameters. The set of sequenced aligned (ReadIDs) are identical between the two PAF files.
 
 ```bash
 maligno compare \
