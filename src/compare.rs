@@ -54,8 +54,8 @@ pub struct CompareArgs {
     #[arg(long = "label-b", value_name = "LABEL", default_value = "SetB")]
     label_b: String,
 
-    /// Output directory (created if missing). All artifacts are written here.
-    #[arg(long = "outdir", value_name = "DIR")]
+    /// Output directory.
+    #[arg(short = 'o', long = "outdir", value_name = "DIR")]
     outdir: String,
 
     /// Filename prefix for all outputs.
@@ -67,16 +67,16 @@ pub struct CompareArgs {
     mode: CompareMode,
 
     /// In-memory sort buffer per file (K/M/G suffix, or plain bytes).
-    #[arg(long = "mem", value_name = "SIZE", default_value = "1G")]
-    mem: String,
+    #[arg(long = "sort-mem", value_name = "SIZE", default_value = "1G")]
+    sort_mem: String,
 
     /// Temp directory for sort spill files (default: --outdir).
     #[arg(long = "tmp-dir", value_name = "DIR")]
     tmp_dir: Option<String>,
 
     /// Number of sort threads (default: 1).
-    #[arg(long = "threads", value_name = "N", default_value_t = 1)]
-    threads: usize,
+    #[arg(long = "sort-threads", value_name = "N", default_value_t = 1)]
+    sort_threads: usize,
 
     /// Compare the shared intersection instead of erroring when the two PAFs do
     /// not carry the exact same Query_Name set.
@@ -84,15 +84,15 @@ pub struct CompareArgs {
     allow_id_mismatch: bool,
 
     /// Keep the intermediate sorted PAFs instead of deleting them at the end.
-    #[arg(long = "keep-sorted")]
-    keep_sorted: bool,
+    #[arg(long = "keep-sorted-paf")]
+    keep_sorted_paf: bool,
 
     /// Skip the internal sort: assume both PAFs already contain the same reads,
     /// grouped by Query_Name and in the same relative order (any ordering, e.g.
     /// `samtools sort -n`; byte-lex not required). The same-order requirement is
     /// verified during the compare pass, which errors on the first divergence.
-    /// Not combinable with --allow-id-mismatch or --keep-sorted.
-    #[arg(long = "presorted", conflicts_with_all = ["allow_id_mismatch", "keep_sorted"])]
+    /// Not combinable with --allow-id-mismatch or --keep-sorted-paf.
+    #[arg(long = "presorted", conflicts_with_all = ["allow_id_mismatch", "keep_sorted_paf"])]
     presorted: bool,
 
     /// Do not write the per-set alninfo (35-col) tables.
@@ -115,7 +115,7 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| outdir.to_path_buf());
     let _ = fs::create_dir_all(&tmp_dir);
-    let mem = parse_mem(&args.mem)?;
+    let mem = parse_mem(&args.sort_mem)?;
     let junctions = matches!(args.mode, CompareMode::Junctions);
 
     let path = |name: String| outdir.join(name).to_string_lossy().into_owned();
@@ -150,9 +150,9 @@ pub fn run(args: &CompareArgs) -> Result<()> {
             mem,
             tmp_dir.display()
         );
-        sort_paf_to_file(&args.paf_a, &a_sorted, mem, &tmp_dir, Some(args.threads))
+        sort_paf_to_file(&args.paf_a, &a_sorted, mem, &tmp_dir, Some(args.sort_threads))
             .with_context(|| format!("sorting PAF A ({})", args.paf_a))?;
-        sort_paf_to_file(&args.paf_b, &b_sorted, mem, &tmp_dir, Some(args.threads))
+        sort_paf_to_file(&args.paf_b, &b_sorted, mem, &tmp_dir, Some(args.sort_threads))
             .with_context(|| format!("sorting PAF B ({})", args.paf_b))?;
 
         // ── Step 2: read-ID set-equality check (O(1) memory), before any output ─
@@ -164,7 +164,7 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         );
         if chk.only_a > 0 || chk.only_b > 0 {
             if !args.allow_id_mismatch {
-                if !args.keep_sorted {
+                if !args.keep_sorted_paf {
                     let _ = fs::remove_file(&a_sorted);
                     let _ = fs::remove_file(&b_sorted);
                 }
@@ -224,7 +224,7 @@ pub fn run(args: &CompareArgs) -> Result<()> {
                 let _ = fs::remove_file(&a_readinfo);
                 let _ = fs::remove_file(&b_readinfo);
             }
-            if !args.presorted && !args.keep_sorted {
+            if !args.presorted && !args.keep_sorted_paf {
                 let _ = fs::remove_file(&a_sorted);
                 let _ = fs::remove_file(&b_sorted);
             }
@@ -241,7 +241,7 @@ pub fn run(args: &CompareArgs) -> Result<()> {
     };
 
     // ── cleanup + summary ─────────────────────────────────────────────────────
-    if !args.presorted && !args.keep_sorted {
+    if !args.presorted && !args.keep_sorted_paf {
         let _ = fs::remove_file(&a_sorted);
         let _ = fs::remove_file(&b_sorted);
     }
@@ -259,7 +259,7 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         eprintln!("  {b_readinfo}");
     }
     eprintln!("  {compare_out}");
-    if args.keep_sorted {
+    if args.keep_sorted_paf {
         eprintln!("  {a_sorted}");
         eprintln!("  {b_sorted}");
     }
