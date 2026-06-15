@@ -74,9 +74,9 @@ pub struct CompareArgs {
     #[arg(long = "tmp-dir", value_name = "DIR")]
     tmp_dir: Option<String>,
 
-    /// Number of sort threads (default: ext-sort's default).
-    #[arg(long = "threads", value_name = "N")]
-    threads: Option<usize>,
+    /// Number of sort threads (default: 1).
+    #[arg(long = "threads", value_name = "N", default_value_t = 1)]
+    threads: usize,
 
     /// Compare the shared intersection instead of erroring when the two PAFs do
     /// not carry the exact same Query_Name set.
@@ -150,9 +150,9 @@ pub fn run(args: &CompareArgs) -> Result<()> {
             mem,
             tmp_dir.display()
         );
-        sort_paf_to_file(&args.paf_a, &a_sorted, mem, &tmp_dir, args.threads)
+        sort_paf_to_file(&args.paf_a, &a_sorted, mem, &tmp_dir, Some(args.threads))
             .with_context(|| format!("sorting PAF A ({})", args.paf_a))?;
-        sort_paf_to_file(&args.paf_b, &b_sorted, mem, &tmp_dir, args.threads)
+        sort_paf_to_file(&args.paf_b, &b_sorted, mem, &tmp_dir, Some(args.threads))
             .with_context(|| format!("sorting PAF B ({})", args.paf_b))?;
 
         // ── Step 2: read-ID set-equality check (O(1) memory), before any output ─
