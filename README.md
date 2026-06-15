@@ -15,7 +15,7 @@ and splice-junction agreement) in a single command. This is useful for comparing
 3) Reads aligned to different reference genomes (`GRCh38` vs `CHM13`)
 
 The key idea of maligno is to make it easy to systematically compare alignments of the same set of reads across varying conditions. 
-The final comparison table output by `maligno` has detailed alignment information across all reads. The alignment information (strand, alignment score, `cs` tag, mismatches, indels, soft-clipping, junctions, etc) are provided for each read as well as a column of the difference for 
+The final comparison table output by `maligno` has detailed alignment information across each read. The alignment information (strand, alignment score, `cs` tag, mismatches, indels, soft-clipping, junctions, etc) are provided for each read as well as a column of the difference for 
 
 This makes it easy compare two sets of alignment results (A & B) and to ask questions like: 
 - "How many reads aligned exactly the same?" or "What are the exact read IDs that differ in their alignment at all between set A or B?"
