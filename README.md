@@ -7,14 +7,16 @@
 # maligno
 
 **maligno** is a toolkit for comparing two sets of alignments read-by-read. The
-headline command, **`maligno compare`**, takes two PAF files for the same reads
-(e.g. the same transcripts aligned with two parameter sets, or against two
-references) and produces a per-read comparison table — scores, coverage, indels,
-and splice-junction agreement — in a single command.
+primary command, **`maligno compare`**, takes two PAF files for the same set of reads
+and produces a per-read comparison table — scores, coverage, indels,
+and splice-junction agreement — in a single command. This is useful for comparing alignments of the same set of reads across various conditions, which includes:
+1) Comparing different aligners
+2) Alignment results for different parameters of the same aligner
+3) Reads aligned to different reference genomes
 
-It owns its preconditions: it sorts the inputs, verifies they describe the same
-reads, and does the comparison in one pass, so you can't accidentally mis-compare
-unsorted or mismatched files.
+
+The key idea of maligno is to make it easy to systematically compare alignments of the same set of reads across varying conditions. The goal is to make it easy to identify exactly which reads have differing alignments and how they differ.
+
 
 ---
 
@@ -34,8 +36,8 @@ A static Linux (musl) build for HPC is described in the
 
 ## Quick start
 
-Compare the two bundled test PAFs (the same Chr22 transcripts aligned with
-minimap2 `--x splice` vs `--x splice:hq`):
+Compare the two bundled test PAFs (the same `GRCh38-Gencode-Chr22` transcripts aligned with
+differing minimap2 paramters. (`--x splice` vs `--x splice:hq`).
 
 ```bash
 maligno compare \
@@ -68,16 +70,18 @@ All inputs/outputs transparently support gzip (`.gz`) and stdin/stdout (`-`).
 
 ## The `compare` command
 
-`compare` runs the whole pipeline in three steps:
+`compare` runs the whole pipeline in three main steps:
 
-1. **Sort** both PAFs by `Query_Name` with an in-process external sort (bounded
-   memory — buffers up to `--sort-mem`, spilling to temp files), guaranteeing the
-   grouping and matching order rather than trusting the input.
+1. **Sort** both PAFs by `Query_Name` 
 2. **Verify** both PAFs carry the **same read-ID set**. By default it **errors**
    if they differ, reporting how many IDs are shared / only in A / only in B.
-3. **Compare** in a single pass: it picks the best alignment per read (by `ms`,
-   then `AS`, then `MQ`), then merge-joins the two sides to write the comparison
-   table, teeing out the per-set tables as it goes.
+3. **Compare** the representative alignment for each readID between sets A and B.
+For each read to be compared, the following is done.
+  - Select representative alignment for each read (in cases where a read has multiple alignments reported)
+    - The best alignment per read is selected by the following alignment scores: `ms` tag, `AS` tag, alignment `MQ`), 
+  - The selected alignments for each read are then systematically compared and results are written to a final "compare.tsv" that keep track of each alignments info and differences between them.
+
+
 
 | Flag | Purpose |
 |------|---------|
@@ -93,9 +97,6 @@ All inputs/outputs transparently support gzip (`.gz`) and stdin/stdout (`-`).
 | `--no-alninfo`, `--no-readinfo` | skip writing those per-set tables |
 | `--keep-sorted-paf` | keep the intermediate sorted PAFs |
 
-> Prefer to drive each step yourself (`paf2tables` → `compare-readinfo`)? The
-> manual building blocks produce the identical comparison table and are
-> documented in the [reference](docs/REFERENCE.md).
 
 ---
 
@@ -146,29 +147,31 @@ details, and schema-migration notes, see the [reference](docs/REFERENCE.md#compa
 `test_data/` holds two Chr22-scale PAFs (~0.5 MB each) — the same 11,578
 transcripts aligned with minimap2 `--x splice` vs `--x splice:hq`.
 
+Run from the repo root; outputs go to `test_data/test_results/` (gitignored):
+
 ```bash
 # Full comparison (sort → verify read-IDs → per-set tables + comparison table).
 maligno compare \
   -a test_data/Splice.AlnToHG38.PriAln.paf.gz   --label-a Splice \
   -b test_data/SpliceHQ.AlnToHG38.PriAln.paf.gz --label-b SpliceHQ \
-  -o results/ --prefix Splice_vs_SpliceHQ
+  -o test_data/test_results/ --prefix Splice_vs_SpliceHQ
 
 # Splice-focused (47-col) view.
 maligno compare --mode junctions \
   -a test_data/Splice.AlnToHG38.PriAln.paf.gz   --label-a Splice \
   -b test_data/SpliceHQ.AlnToHG38.PriAln.paf.gz --label-b SpliceHQ \
-  -o results/ --prefix Splice_vs_SpliceHQ
+  -o test_data/test_results/ --prefix Splice_vs_SpliceHQ
 
 # Inspect a comparison header (column number → name).
-zcat < results/Splice_vs_SpliceHQ.compare.tsv.gz | head -1 | tr '\t' '\n' | nl
+zcat < test_data/test_results/Splice_vs_SpliceHQ.compare.tsv.gz | head -1 | tr '\t' '\n' | nl
 
 # Sanity-check column counts (expect 35, 33, 94, 47).
-for f in results/Splice_vs_SpliceHQ.*.tsv.gz; do
+for f in test_data/test_results/Splice_vs_SpliceHQ.*.tsv.gz; do
   printf '%s\t' "$f"; zcat < "$f" | awk -F'\t' '{print NF}' | sort -u | paste -sd, -
 done
 
 # Count reads whose query-coordinate junctions don't all agree between the two sets.
-zcat < results/Splice_vs_SpliceHQ.compare.tsv.gz \
+zcat < test_data/test_results/Splice_vs_SpliceHQ.compare.tsv.gz \
   | awk -F'\t' 'NR==1{for(i=1;i<=NF;i++)c[$i]=i;next} $c["N_Unmatched_Junctions"]>0' | wc -l
 ```
 

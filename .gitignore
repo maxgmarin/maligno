@@ -18,6 +18,9 @@ debug/
 *.bam
 *.bam.bai
 
+# Outputs from running the README test-data example
+test_data/test_results/
+
 # ── macOS ─────────────────────────────────────────────────────────────────────
 .DS_Store
 .DS_Store?
