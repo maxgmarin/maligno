@@ -156,6 +156,16 @@ tables entirely (no file is created — the bytes are never serialized/compresse
 `--no-alninfo` is the biggest time/disk saver since alninfo is the largest output).
 The comparison itself is unaffected.
 
+**`--presorted`** skips the internal sort (Step 1) when your inputs are already
+prepared. It only requires that both PAFs contain the **same reads in the same
+relative order**, grouped by `Query_Name` — *any* consistent ordering works (e.g.
+`samtools sort -n` output; byte-lex is **not** required). Instead of the upfront
+set-check, the single compare pass verifies the two files line up read-for-read
+and **errors on the first divergence** (leaving no partial output). Because nothing
+is sorted, `--presorted` cannot be combined with `--allow-id-mismatch` (computing a
+shared intersection needs a known sort order) or `--keep-sorted` (no temp files are
+created). Use it to avoid the sort cost when you trust your inputs are aligned.
+
 Ideal for comparing two parameter sets / references run on the **same** read or
 transcript set. **Precondition:** a `Query_Name` identifies one read/sequence
 (maligno sorts by name only). The comparison table is identical to the manual

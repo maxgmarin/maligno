@@ -87,6 +87,14 @@ pub struct CompareArgs {
     #[arg(long = "keep-sorted")]
     keep_sorted: bool,
 
+    /// Skip the internal sort: assume both PAFs already contain the same reads,
+    /// grouped by Query_Name and in the same relative order (any ordering, e.g.
+    /// `samtools sort -n`; byte-lex not required). The same-order requirement is
+    /// verified during the compare pass, which errors on the first divergence.
+    /// Not combinable with --allow-id-mismatch or --keep-sorted.
+    #[arg(long = "presorted", conflicts_with_all = ["allow_id_mismatch", "keep_sorted"])]
+    presorted: bool,
+
     /// Do not write the per-set alninfo (35-col) tables.
     #[arg(long = "no-alninfo")]
     no_alninfo: bool,
@@ -123,54 +131,73 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         if junctions { ".junctions" } else { "" }
     ));
 
-    // ── Step 1: sort both PAFs by Query_Name (consistent rule) ────────────────
-    eprintln!(
-        "[INFO] Step 1/3 — sorting both PAFs by Query_Name (mem={} bytes, tmp={})",
-        mem,
-        tmp_dir.display()
-    );
-    sort_paf_to_file(&args.paf_a, &a_sorted, mem, &tmp_dir, args.threads)
-        .with_context(|| format!("sorting PAF A ({})", args.paf_a))?;
-    sort_paf_to_file(&args.paf_b, &b_sorted, mem, &tmp_dir, args.threads)
-        .with_context(|| format!("sorting PAF B ({})", args.paf_b))?;
+    // Inputs fed to the compare pass: the freshly sorted temp files by default,
+    // or the user's PAFs directly under --presorted (no sort, no set-check).
+    let (a_in, b_in): (String, String) = if args.presorted {
+        // ── --presorted: skip sort (Step 1) and set-check (Step 2) ────────────
+        // The lex set-check assumes byte-lex order, which we don't require here;
+        // instead the lock-step compare pass verifies the two PAFs carry the same
+        // reads in the same order, erroring on the first divergence.
+        eprintln!(
+            "[INFO] --presorted: skipping sort and read-ID set-check; \
+             same read order is verified during the compare pass."
+        );
+        (args.paf_a.clone(), args.paf_b.clone())
+    } else {
+        // ── Step 1: sort both PAFs by Query_Name (consistent rule) ────────────
+        eprintln!(
+            "[INFO] Step 1/3 — sorting both PAFs by Query_Name (mem={} bytes, tmp={})",
+            mem,
+            tmp_dir.display()
+        );
+        sort_paf_to_file(&args.paf_a, &a_sorted, mem, &tmp_dir, args.threads)
+            .with_context(|| format!("sorting PAF A ({})", args.paf_a))?;
+        sort_paf_to_file(&args.paf_b, &b_sorted, mem, &tmp_dir, args.threads)
+            .with_context(|| format!("sorting PAF B ({})", args.paf_b))?;
 
-    // ── Step 2: read-ID set-equality check (O(1) memory), before any output ───
-    eprintln!("[INFO] Step 2/3 — verifying the two PAFs share the same read-ID set...");
-    let chk = read_id_set_check(&a_sorted, &b_sorted, 5)?;
-    eprintln!(
-        "  shared: {}   only in {}: {}   only in {}: {}",
-        chk.shared, args.label_a, chk.only_a, args.label_b, chk.only_b
-    );
-    if chk.only_a > 0 || chk.only_b > 0 {
-        if !args.allow_id_mismatch {
-            if !args.keep_sorted {
-                let _ = fs::remove_file(&a_sorted);
-                let _ = fs::remove_file(&b_sorted);
+        // ── Step 2: read-ID set-equality check (O(1) memory), before any output ─
+        eprintln!("[INFO] Step 2/3 — verifying the two PAFs share the same read-ID set...");
+        let chk = read_id_set_check(&a_sorted, &b_sorted, 5)?;
+        eprintln!(
+            "  shared: {}   only in {}: {}   only in {}: {}",
+            chk.shared, args.label_a, chk.only_a, args.label_b, chk.only_b
+        );
+        if chk.only_a > 0 || chk.only_b > 0 {
+            if !args.allow_id_mismatch {
+                if !args.keep_sorted {
+                    let _ = fs::remove_file(&a_sorted);
+                    let _ = fs::remove_file(&b_sorted);
+                }
+                bail!(
+                    "read-ID sets differ between the two PAFs: {shared} shared, \
+                     {oa} only in {la} (e.g. {exa}), {ob} only in {lb} (e.g. {exb}). \
+                     Re-run with --allow-id-mismatch to compare the shared intersection.",
+                    shared = chk.shared,
+                    oa = chk.only_a,
+                    la = args.label_a,
+                    exa = chk.examples_a.join(", "),
+                    ob = chk.only_b,
+                    lb = args.label_b,
+                    exb = chk.examples_b.join(", "),
+                );
             }
-            bail!(
-                "read-ID sets differ between the two PAFs: {shared} shared, \
-                 {oa} only in {la} (e.g. {exa}), {ob} only in {lb} (e.g. {exb}). \
-                 Re-run with --allow-id-mismatch to compare the shared intersection.",
-                shared = chk.shared,
-                oa = chk.only_a,
-                la = args.label_a,
-                exa = chk.examples_a.join(", "),
-                ob = chk.only_b,
-                lb = args.label_b,
-                exb = chk.examples_b.join(", "),
+            eprintln!(
+                "  WARNING: read-ID sets differ; proceeding on the shared intersection \
+                 (--allow-id-mismatch)."
             );
         }
-        eprintln!(
-            "  WARNING: read-ID sets differ; proceeding on the shared intersection \
-             (--allow-id-mismatch)."
-        );
-    }
+        (a_sorted.clone(), b_sorted.clone())
+    };
 
     // ── Step 3: single in-memory lock-step pass (collapse + compare + tee) ────
-    eprintln!("[INFO] Step 3/3 — comparing in one pass ({compare_out})...");
-    let (n_matched, n_a_only, n_b_only) = compare_sorted_pafs(
-        &a_sorted,
-        &b_sorted,
+    if args.presorted {
+        eprintln!("[INFO] comparing in one pass ({compare_out})...");
+    } else {
+        eprintln!("[INFO] Step 3/3 — comparing in one pass ({compare_out})...");
+    }
+    let counts = compare_sorted_pafs(
+        &a_in,
+        &b_in,
         &args.label_a,
         &args.label_b,
         &compare_out,
@@ -180,10 +207,41 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         if args.no_alninfo { None } else { Some(&b_alninfo) },
         junctions,
         args.allow_id_mismatch,
-    )?;
+    );
+    let (n_matched, n_a_only, n_b_only) = match counts {
+        Ok(c) => c,
+        Err(e) => {
+            // The compare pass can fail partway (e.g. --presorted inputs that are
+            // not actually in the same order), having already written part of the
+            // output. Remove the partial artifacts so the failure leaves nothing
+            // half-written, then surface the error (with a hint under --presorted).
+            let _ = fs::remove_file(&compare_out);
+            if !args.no_alninfo {
+                let _ = fs::remove_file(&a_alninfo);
+                let _ = fs::remove_file(&b_alninfo);
+            }
+            if !args.no_readinfo {
+                let _ = fs::remove_file(&a_readinfo);
+                let _ = fs::remove_file(&b_readinfo);
+            }
+            if !args.presorted && !args.keep_sorted {
+                let _ = fs::remove_file(&a_sorted);
+                let _ = fs::remove_file(&b_sorted);
+            }
+            return if args.presorted {
+                Err(e).context(
+                    "--presorted requires both PAFs to contain the same reads in the \
+                     same order (grouped by Query_Name); omit --presorted to sort them \
+                     automatically",
+                )
+            } else {
+                Err(e)
+            };
+        }
+    };
 
     // ── cleanup + summary ─────────────────────────────────────────────────────
-    if !args.keep_sorted {
+    if !args.presorted && !args.keep_sorted {
         let _ = fs::remove_file(&a_sorted);
         let _ = fs::remove_file(&b_sorted);
     }
