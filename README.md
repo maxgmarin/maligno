@@ -117,6 +117,7 @@ A `compare` run writes, under `--outdir`, files prefixed with `--prefix`:
 | `{prefix}.{label}.readinfo.tsv.gz` | 33 | **per-read** table — the chosen best alignment for each read (per set) |
 | `{prefix}.compare.tsv.gz` | 94 | the **comparison** table (`full` mode) |
 | `{prefix}.compare.junctions.tsv.gz` | 47 | the **comparison** table (`junctions` mode) |
+| `{prefix}.compare[.junctions].summary.tsv` | 2 | **aggregate summary statistics** (see below) |
 
 ### The comparison table
 
@@ -146,6 +147,29 @@ object lists) use a Python tuple-of-tuples format — parse them in Python with
 
 For the **exhaustive column-by-column dictionary**, the genomic-junction format
 details, and schema-migration notes, see the [reference](docs/REFERENCE.md#compare-readinfo-and-the-comparison-core).
+
+### Summary statistics
+
+Alongside the comparison table, `compare` writes a small `…summary.tsv` with
+predefined aggregate counts (tallied as rows stream, so memory stays constant).
+The headline is the **per-read alignment status**, followed by **identity** stats:
+
+| Category | Meaning |
+|----------|---------|
+| `aligned_both` / `aligned_only_<label>` / `aligned_neither` | how the read's representative alignment maps in each set (an unmapped side is `TargetChr == "*"`) |
+| `query_identical` | both sides mapped over the same query span with the **same alignment relative to the read** (identical `cs`). Split into `…_same_strand` and `…_revcomp` (an inverted, opposite-strand match — `cs_A == reverse_complement(cs_B)`) |
+| `reference_identical` | query-identical **and** same `TargetChr` + target start/end (same placement on the reference) |
+| `present_only_in_<label>_by_id` | reads found in only one set's PAF (0 unless `--allow-id-mismatch`) |
+
+To get the same summary from an existing comparison table (e.g. from the manual
+`paf2tables` → `compare-readinfo` workflow), use **`compare-summary`**:
+
+```bash
+maligno compare-summary -i AvsB.compare.tsv.gz -o AvsB.compare.summary.tsv
+```
+
+It works on either `--mode` (the identity check uses columns present in both).
+Full definitions are in the [reference](docs/REFERENCE.md#compare-readinfo-and-the-comparison-core).
 
 ---
 

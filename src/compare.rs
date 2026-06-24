@@ -30,6 +30,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::compare_junctions::{emit_compare_junctions_row, write_compare_junctions_header};
 use crate::compare_streaming::{emit_compare_row, write_compare_header, CompareMode};
+use crate::compare_summary::{classify, CompareSummary};
 use crate::external_sort::{parse_mem, read_id_set_check, sort_paf_to_file};
 use crate::io_utils::{open_input, open_output};
 use crate::paf_groups::PafGroups;
@@ -130,6 +131,11 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         args.prefix,
         if junctions { ".junctions" } else { "" }
     ));
+    let summary_out = path(format!(
+        "{}.compare{}.summary.tsv",
+        args.prefix,
+        if junctions { ".junctions" } else { "" }
+    ));
 
     // Inputs fed to the compare pass: the freshly sorted temp files by default,
     // or the user's PAFs directly under --presorted (no sort, no set-check).
@@ -195,6 +201,7 @@ pub fn run(args: &CompareArgs) -> Result<()> {
     } else {
         eprintln!("[INFO] Step 3/3 — comparing in one pass ({compare_out})...");
     }
+    let mut summary = CompareSummary::default();
     let counts = compare_sorted_pafs(
         &a_in,
         &b_in,
@@ -207,48 +214,45 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         if args.no_alninfo { None } else { Some(&b_alninfo) },
         junctions,
         args.allow_id_mismatch,
+        &mut summary,
     );
-    let (n_matched, n_a_only, n_b_only) = match counts {
-        Ok(c) => c,
-        Err(e) => {
-            // The compare pass can fail partway (e.g. --presorted inputs that are
-            // not actually in the same order), having already written part of the
-            // output. Remove the partial artifacts so the failure leaves nothing
-            // half-written, then surface the error (with a hint under --presorted).
-            let _ = fs::remove_file(&compare_out);
-            if !args.no_alninfo {
-                let _ = fs::remove_file(&a_alninfo);
-                let _ = fs::remove_file(&b_alninfo);
-            }
-            if !args.no_readinfo {
-                let _ = fs::remove_file(&a_readinfo);
-                let _ = fs::remove_file(&b_readinfo);
-            }
-            if !args.presorted && !args.keep_sorted_paf {
-                let _ = fs::remove_file(&a_sorted);
-                let _ = fs::remove_file(&b_sorted);
-            }
-            return if args.presorted {
-                Err(e).context(
-                    "--presorted requires both PAFs to contain the same reads in the \
-                     same order (grouped by Query_Name); omit --presorted to sort them \
-                     automatically",
-                )
-            } else {
-                Err(e)
-            };
+    if let Err(e) = counts {
+        // The compare pass can fail partway (e.g. --presorted inputs that are
+        // not actually in the same order), having already written part of the
+        // output. Remove the partial artifacts so the failure leaves nothing
+        // half-written, then surface the error (with a hint under --presorted).
+        let _ = fs::remove_file(&compare_out);
+        if !args.no_alninfo {
+            let _ = fs::remove_file(&a_alninfo);
+            let _ = fs::remove_file(&b_alninfo);
         }
-    };
+        if !args.no_readinfo {
+            let _ = fs::remove_file(&a_readinfo);
+            let _ = fs::remove_file(&b_readinfo);
+        }
+        if !args.presorted && !args.keep_sorted_paf {
+            let _ = fs::remove_file(&a_sorted);
+            let _ = fs::remove_file(&b_sorted);
+        }
+        return if args.presorted {
+            Err(e).context(
+                "--presorted requires both PAFs to contain the same reads in the \
+                 same order (grouped by Query_Name); omit --presorted to sort them \
+                 automatically",
+            )
+        } else {
+            Err(e)
+        };
+    }
 
     // ── cleanup + summary ─────────────────────────────────────────────────────
     if !args.presorted && !args.keep_sorted_paf {
         let _ = fs::remove_file(&a_sorted);
         let _ = fs::remove_file(&b_sorted);
     }
-    eprintln!("Comparison summary:");
-    eprintln!("  reads matched (written):    {n_matched}");
-    eprintln!("  {}-only (not compared):     {n_a_only}", args.label_a);
-    eprintln!("  {}-only (not compared):     {n_b_only}", args.label_b);
+    // Aggregate summary statistics → sidecar TSV + stderr block.
+    summary.write_tsv(&summary_out, &args.label_a, &args.label_b)?;
+    summary.render_stderr(&args.label_a, &args.label_b);
     eprintln!("Outputs in {}:", args.outdir);
     if !args.no_alninfo {
         eprintln!("  {a_alninfo}");
@@ -259,6 +263,7 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         eprintln!("  {b_readinfo}");
     }
     eprintln!("  {compare_out}");
+    eprintln!("  {summary_out}");
     if args.keep_sorted_paf {
         eprintln!("  {a_sorted}");
         eprintln!("  {b_sorted}");
@@ -311,6 +316,7 @@ fn compare_sorted_pafs(
     alninfo_b: Option<&str>,
     junctions: bool,
     allow_id_mismatch: bool,
+    summary: &mut CompareSummary,
 ) -> Result<(u64, u64, u64)> {
     // Comparison output + header.
     let mut out = open_output(Some(compare_out))?;
@@ -356,6 +362,7 @@ fn compare_sorted_pafs(
         &header_cols,
         junctions,
         allow_id_mismatch,
+        summary,
     )?;
 
     out.flush()?;
@@ -381,6 +388,7 @@ fn run_merge<R: BufRead>(
     header_cols: &[&str],
     junctions: bool,
     allow_id_mismatch: bool,
+    summary: &mut CompareSummary,
 ) -> Result<(u64, u64, u64)> {
     let mut pending_a = pull(groups_a, al_a, ri_a)?;
     let mut pending_b = pull(groups_b, al_b, ri_b)?;
@@ -401,8 +409,10 @@ fn run_merge<R: BufRead>(
                     );
                 }
                 n_a_only += 1; // ra was already pulled (tables written)
+                summary.note_a_only_id();
                 while pull(groups_a, al_a, ri_a)?.is_some() {
                     n_a_only += 1;
+                    summary.note_a_only_id();
                 }
                 break;
             }
@@ -415,8 +425,10 @@ fn run_merge<R: BufRead>(
                     );
                 }
                 n_b_only += 1;
+                summary.note_b_only_id();
                 while pull(groups_b, al_b, ri_b)?.is_some() {
                     n_b_only += 1;
+                    summary.note_b_only_id();
                 }
                 break;
             }
@@ -430,22 +442,16 @@ fn run_merge<R: BufRead>(
                     let map_b: HashMap<&str, &str> =
                         header_cols.iter().copied().zip(line_b.split('\t')).collect();
 
+                    // One pair of accessor closures, shared by the summary classifier
+                    // and the row emitter (closures are Copy — they capture &map_*).
+                    let get_a = |c: &str| *map_a.get(c).unwrap_or(&"");
+                    let get_b = |c: &str| *map_b.get(c).unwrap_or(&"");
+                    summary.observe(&classify(&get_a, &get_b));
+
                     if junctions {
-                        emit_compare_junctions_row(
-                            out,
-                            &ra.read_name,
-                            ra.read_len,
-                            |c| *map_a.get(c).unwrap_or(&""),
-                            |c| *map_b.get(c).unwrap_or(&""),
-                        )?;
+                        emit_compare_junctions_row(out, &ra.read_name, ra.read_len, get_a, get_b)?;
                     } else {
-                        emit_compare_row(
-                            out,
-                            &ra.read_name,
-                            ra.read_len,
-                            |c| *map_a.get(c).unwrap_or(&""),
-                            |c| *map_b.get(c).unwrap_or(&""),
-                        )?;
+                        emit_compare_row(out, &ra.read_name, ra.read_len, get_a, get_b)?;
                     }
 
                     n_matched += 1;
@@ -463,10 +469,12 @@ fn run_merge<R: BufRead>(
                     );
                 } else if ra.read_name < rb.read_name {
                     n_a_only += 1;
+                    summary.note_a_only_id();
                     pending_b = Some(rb); // keep B; advance A
                     pending_a = pull(groups_a, al_a, ri_a)?;
                 } else {
                     n_b_only += 1;
+                    summary.note_b_only_id();
                     pending_a = Some(ra); // keep A; advance B
                     pending_b = pull(groups_b, al_b, ri_b)?;
                 }
