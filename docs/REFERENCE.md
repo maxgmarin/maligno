@@ -594,6 +594,66 @@ zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' '{print NF}
 
 ---
 
+## Summary statistics (`compare-summary`)
+
+`compare` tallies aggregate summary statistics over the per-read comparison as the
+rows stream out (constant memory) and writes them to
+`{prefix}.compare[.junctions].summary.tsv` (2 columns: `Category`, `Count`) plus a
+stderr block. The **same** statistics can be computed from an existing comparison
+table with the standalone command:
+
+```bash
+maligno compare-summary -i AvsB.compare.tsv.gz -o AvsB.compare.summary.tsv
+# -i: a compare / compare-readinfo table (.gz or - ok); -o: optional (else stderr only)
+```
+
+`compare-summary` auto-detects the two labels from the `TargetChr_<label>` columns
+and works on either `--mode` table (the classifier reads only columns present in
+both views). It sees only matched rows, so the `present_only_in_*_by_id` counts are
+always 0 there; the built-in `compare` tally fills those from the read-ID merge.
+
+### Classification (per matched read)
+
+Computed from each side's **representative (best) alignment** — the row already
+selected for the readinfo/compare output — using these columns: `TargetChr`,
+`Strand`, `cs`, `Query_Start`, `Query_End`, `Target_Start`, `Target_End`.
+
+- **Mapping status** (`TargetChr == "*"` or empty ⇒ unmapped): `aligned_both`,
+  `aligned_only_<label_a>`, `aligned_only_<label_b>`, `aligned_neither`.
+- **Query-coordinate identical** — both sides mapped, same query span
+  (`Query_Start`/`Query_End`, which PAF reports in forward-read coordinates), and
+  the same alignment relative to the read via **either**:
+  - *same strand*: `Strand_A == Strand_B` and `cs_A == cs_B`, or
+  - *reverse-complement*: `Strand_A != Strand_B` and `cs_A == cs_revcomp(cs_B)` —
+    an inverted/opposite-strand alignment of the same query-to-reference
+    correspondence (e.g. a locus inverted between two assemblies). `cs_revcomp`
+    reverses the cs op order and complements each op length-preservingly
+    (`:N`→`:N`; `=ACGT`→`=`+revcomp; `*xy`→complemented bases; `+`/`-`→revcomp of
+    the sequence; intron `~gt…ag`→`~ct…ac`).
+
+  Reported as `query_identical`, split into `query_identical_same_strand` and
+  `query_identical_revcomp`; `query_not_identical = aligned_both - query_identical`.
+- **Reference-coordinate identical** — same-strand query-identical **and** identical
+  `TargetChr` + `Target_Start` + `Target_End` (same placement on the reference). The
+  reverse-complement branch never qualifies (inverted placement).
+
+### Summary TSV schema
+
+| Category | Meaning |
+|----------|---------|
+| `reads_compared` | matched reads written to the comparison table |
+| `aligned_both` | representative alignment mapped in both sets |
+| `aligned_only_<label_a>` / `aligned_only_<label_b>` | mapped in one set, `"*"` in the other |
+| `aligned_neither` | unmapped (`"*"`) in both |
+| `query_identical` | query-coordinate identical (see above) |
+| `query_identical_same_strand` | …via the same-strand branch |
+| `query_identical_revcomp` | …via the reverse-complement branch |
+| `query_not_identical` | both mapped but not query-identical |
+| `reference_identical` | reference-coordinate identical |
+| `present_only_in_<label_a>_by_id` / `…_<label_b>_by_id` | read present in only one set's PAF (built-in `compare` only; 0 unless `--allow-id-mismatch`) |
+
+---
+
 ## Troubleshooting
 
 ### "`compare-readinfo` matched far fewer reads than I expected" — sort-order diagnostic

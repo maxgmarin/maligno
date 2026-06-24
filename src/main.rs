@@ -35,6 +35,7 @@
 mod cigar_junctions;    // CIGAR-based intron extractor (utility; not yet wired in)
 mod compare_junctions;  // junction-view (47-col) header/row emitters (library; --mode junctions)
 mod compare_streaming;  // `compare-readinfo` command + shared comparison core
+mod compare_summary;    // `compare-summary` command + shared classifier/accumulator
 mod cs_parser;          // cs-tag parser  (PAF → alninfo path; also extracts genomic junctions)
 mod io_utils;
 mod junction;
@@ -54,6 +55,7 @@ use clap::{Parser, Subcommand};
 
 use compare::CompareArgs;
 use compare_streaming::CompareReadinfoArgs;
+use compare_summary::CompareSummaryArgs;
 use paf2tables::Paf2TablesArgs;
 use readinfo::ReadInfoArgs;
 use sam2paf::Sam2pafArgs;
@@ -74,6 +76,8 @@ enum Commands {
     Paf2tables(Paf2TablesArgs),
     /// Two readinfo TSVs → per-read comparison TSV (--mode full|junctions; strict order by default).
     CompareReadinfo(CompareReadinfoArgs),
+    /// Comparison TSV → aggregate summary statistics (alignment status + query/reference identity).
+    CompareSummary(CompareSummaryArgs),
     /// SAM → PAF converter (utility; use before paf2tables/compare to start the pipeline).
     Sam2paf(Sam2pafArgs),
     /// [utility] alninfo TSV → per-read summary TSV. Most users want `paf2tables --readinfo`.
@@ -87,6 +91,7 @@ fn main() -> Result<()> {
         Commands::Compare(args)          => compare::run(args),
         Commands::Paf2tables(args)       => paf2tables::run(args),
         Commands::CompareReadinfo(args)  => compare_streaming::run(args),
+        Commands::CompareSummary(args)   => compare_summary::run(args),
         Commands::Sam2paf(args)          => sam2paf::run(args),
         Commands::UtilsReadinfo(args)    => readinfo::run(args),
     }

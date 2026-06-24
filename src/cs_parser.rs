@@ -136,6 +136,113 @@ fn parse_uint(bytes: &[u8], pos: &mut usize) -> u64 {
     n
 }
 
+/// Complement a single nucleotide byte, preserving case. Non-ACGTN bytes pass
+/// through unchanged.
+#[inline]
+fn complement_base(b: u8) -> u8 {
+    match b {
+        b'A' => b'T', b'C' => b'G', b'G' => b'C', b'T' => b'A', b'N' => b'N',
+        b'a' => b't', b'c' => b'g', b'g' => b'c', b't' => b'a', b'n' => b'n',
+        other => other,
+    }
+}
+
+/// Append the reverse-complement of `seq` to `out` (bases emitted in reverse
+/// order, each complemented case-preservingly).
+#[inline]
+fn push_revcomp_bases(seq: &[u8], out: &mut Vec<u8>) {
+    for &b in seq.iter().rev() {
+        out.push(complement_base(b));
+    }
+}
+
+/// Reverse-complement a minimap2 cs string: reverse the operation order and
+/// complement each operation length-preservingly. This yields the cs string the
+/// *opposite-strand* alignment of the same query-to-reference correspondence would
+/// produce, so two alignments that are exact reverse-complements of each other
+/// (identical query alignment, inverted strand — e.g. a locus inverted between two
+/// reference assemblies) satisfy `cs_a == cs_revcomp(cs_b)`.
+///
+/// Per-op transforms (all length-preserving):
+///   `:N`      → `:N`                       (match run length unchanged)
+///   `=ACGT`   → `=` + revcomp(bases)       (long-form match)
+///   `*xy`     → `*` + comp(x) + comp(y)    (substitution: ref & query bases)
+///   `+seq`    → `+` + revcomp(seq)         (insertion)
+///   `-seq`    → `-` + revcomp(seq)         (deletion)
+///   `~ppNNNss`→ `~` + revcomp(ss) + NNN + revcomp(pp)   (intron; motif flips, e.g. gt..ag → ct..ac)
+pub fn cs_revcomp(cs: &str) -> String {
+    let bytes = cs.as_bytes();
+    let len = bytes.len();
+    let mut pos: usize = 0;
+    let mut ops: Vec<Vec<u8>> = Vec::new();
+
+    while pos < len {
+        let op = bytes[pos];
+        let op_start = pos;
+        pos += 1;
+
+        match op {
+            // Short-form match `:N` — unchanged.
+            b':' => {
+                while pos < len && bytes[pos].is_ascii_digit() { pos += 1; }
+                ops.push(bytes[op_start..pos].to_vec());
+            }
+            // Long-form match `=ACGT` — reverse-complement the bases.
+            b'=' => {
+                let s = pos;
+                while pos < len && bytes[pos].is_ascii_alphabetic() { pos += 1; }
+                let mut t = Vec::with_capacity(pos - s + 1);
+                t.push(b'=');
+                push_revcomp_bases(&bytes[s..pos], &mut t);
+                ops.push(t);
+            }
+            // Substitution `*xy` — complement both the ref and query base.
+            b'*' => {
+                let r = bytes.get(pos).copied().unwrap_or(b'n');
+                let q = bytes.get(pos + 1).copied().unwrap_or(b'n');
+                pos = (pos + 2).min(len);
+                ops.push(vec![b'*', complement_base(r), complement_base(q)]);
+            }
+            // Insertion `+seq` / deletion `-seq` — reverse-complement the sequence.
+            b'+' | b'-' => {
+                let s = pos;
+                while pos < len && bytes[pos].is_ascii_alphabetic() { pos += 1; }
+                let mut t = Vec::with_capacity(pos - s + 1);
+                t.push(op);
+                push_revcomp_bases(&bytes[s..pos], &mut t);
+                ops.push(t);
+            }
+            // Splice `~pp<len>ss` — flip the donor/acceptor motifs (revcomp), keep len.
+            b'~' => {
+                let pref_s = pos;
+                let pref_e = (pos + 2).min(len);
+                let mut p = pref_e;
+                while p < len && bytes[p].is_ascii_digit() { p += 1; }
+                let dig_s = pref_e;
+                let dig_e = p;
+                let suf_s = dig_e;
+                let suf_e = (dig_e + 2).min(len);
+                pos = suf_e;
+                let mut t = Vec::new();
+                t.push(b'~');
+                push_revcomp_bases(&bytes[suf_s..suf_e], &mut t); // new prefix = revcomp(old suffix)
+                t.extend_from_slice(&bytes[dig_s..dig_e]);
+                push_revcomp_bases(&bytes[pref_s..pref_e], &mut t); // new suffix = revcomp(old prefix)
+                ops.push(t);
+            }
+            // Unrecognized byte — skip (defensive, matches parse_cs).
+            _ => {}
+        }
+    }
+
+    ops.reverse();
+    let mut out = Vec::with_capacity(len);
+    for o in &ops {
+        out.extend_from_slice(o);
+    }
+    String::from_utf8(out).unwrap_or_default()
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // Tests
 // ───────────────────────────────────────────────────────────────────────────
@@ -211,5 +318,53 @@ mod tests {
         let stats = parse_cs(":50+aaaaa~ct100ag:20");
         assert_eq!(stats.raw_junctions, vec![55]);
         assert_eq!(stats.raw_genomic_junctions, vec![(50, 150)]);
+    }
+
+    // ── cs_revcomp ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn revcomp_match_only() {
+        // Pure match run is symmetric.
+        assert_eq!(cs_revcomp(":100"), ":100");
+    }
+
+    #[test]
+    fn revcomp_intron_motif_flips_and_order_reverses() {
+        // gt..ag donor/acceptor flips to ct..ac; op order reverses.
+        assert_eq!(cs_revcomp(":277~gt421ag:114"), ":114~ct421ac:277");
+    }
+
+    #[test]
+    fn revcomp_substitution_complements_both_bases() {
+        // *cg → complement c→g, g→c → *gc
+        assert_eq!(cs_revcomp(":10*cg:20"), ":20*gc:10");
+    }
+
+    #[test]
+    fn revcomp_indels_are_reverse_complemented() {
+        // deletion -ccc → -ggg (revcomp); insertion +at → +at (revcomp of "at")
+        assert_eq!(cs_revcomp(":5-ccc:7"), ":7-ggg:5");
+        assert_eq!(cs_revcomp(":5+at:7"), ":7+at:5");
+    }
+
+    #[test]
+    fn revcomp_longform_match() {
+        // =ACGT → =ACGT (revcomp of ACGT is ACGT)
+        assert_eq!(cs_revcomp("=ACGT"), "=ACGT");
+        // =AACC → =GGTT
+        assert_eq!(cs_revcomp("=AACC"), "=GGTT");
+    }
+
+    #[test]
+    fn revcomp_roundtrip_complex() {
+        // Double reverse-complement must return the original (real-data shape).
+        for cs in [
+            ":172*cg*ct:2~gt16826ag:177*ac~gt17004ac:174-ccc*ag~gt2177ag:39",
+            ":277~gt421ag:114",
+            ":50+aaaaa~ct100ag:20",
+            "=ACGT~ct50ag:30*at:10-gca",
+        ] {
+            assert_eq!(cs_revcomp(&cs_revcomp(cs)), cs, "roundtrip failed for {cs}");
+        }
     }
 }
