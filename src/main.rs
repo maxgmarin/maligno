@@ -6,8 +6,8 @@
 //!   1. On-rails (primary) — `compare`:
 //!        `maligno compare -a A.paf -b B.paf --outdir results/ --prefix AvsB`
 //!      Sorts both PAFs (consistent order), verifies they share the same read-ID
-//!      set, then writes the per-set alninfo + readinfo tables AND the comparison
-//!      table. Makes the key assumptions for you and does them well.
+//!      set. Then it writes the per-set alninfo + readinfo tables AND the comparison
+//!      table. 
 //!
 //!   2. Manual building blocks (full control):
 //!        `maligno paf2tables -i A.sorted.paf --alninfo A.alninfo.tsv.gz --readinfo A.readinfo.tsv.gz`
@@ -16,20 +16,21 @@
 //!
 //! Commands:
 //!
-//!   1. `compare`            two PAFs → a results directory (sorted-then-compared,
-//!                                      on-rails). PRIMARY. `--mode full` (default,
-//!                                      94 cols) or `--mode junctions` (47-col view).
-//!   2. `paf2tables`         PAF                → alninfo TSV (35 cols) and/or readinfo TSV (33 cols)
-//!   3. `compare-readinfo`   two readinfo TSVs  → per-read comparison TSV (same `--mode`)
-//!   4. `sam2paf`            SAM                → PAF  (utility; use before paf2tables/compare)
-//!   5. `utils-readinfo`     alninfo TSV        → per-read summary TSV (low-level utility;
-//!                                                most users want `paf2tables --readinfo`)
+//!   1. `compare`            end-to-end comparison of all input alignments
+//!                           (PRIMARY analysis entry point). `--mode full`
+//!                           (default, 94 cols) or `--mode junctions` (47-col view).
+//!   2. `sam2paf`            SAM → PAF converter (utility; use before paf2tables/compare)
+//!   3. `paf2tables`         PAF → alninfo TSV and/or readinfo TSV tables
+//!   4. `compare-readinfo`   two readinfo TSVs → per-read comparison TSV (same `--mode`)
+//!   5. `compare-summary`    comparison TSV → aggregate summary statistics
+//!                           (alignment status + query/reference identity)
+//!   6. `utils-readinfo`     alninfo TSV → per-read summary TSV (low-level utility;
+//!                           most users want `paf2tables --readinfo`)
 //!
 //! The comparison itself is a streaming merge-join (constant memory): only reads
 //! present in BOTH inputs (matched on Read_Name + Read_Len) produce an output row.
-//! `compare` guarantees the inputs are sorted and share the same read-ID set
-//! (erroring otherwise, unless `--allow-id-mismatch`); the plumbing commands trust
-//! the caller and use `--ignore-row-mismatch` for the lenient path.
+//! `compare` guarantees the inputs are sorted and share the same read-ID set.
+
 
 // ── Pipeline modules ──────────────────────────────────────────────────────────
 mod cigar_junctions;    // CIGAR-based intron extractor (utility; not yet wired in)
@@ -70,29 +71,32 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Two PAFs → sorted, verified, and compared into a results directory. The primary entry point.
+    /// end-to-end comparison of all input alignments (Primary analysis entry point).
     Compare(CompareArgs),
-    /// PAF → alninfo (35 cols) and/or readinfo (33 cols).
-    Paf2tables(Paf2TablesArgs),
-    /// Two readinfo TSVs → per-read comparison TSV (--mode full|junctions; strict order by default).
-    CompareReadinfo(CompareReadinfoArgs),
-    /// Comparison TSV → aggregate summary statistics (alignment status + query/reference identity).
-    CompareSummary(CompareSummaryArgs),
-    /// SAM → PAF converter (utility; use before paf2tables/compare to start the pipeline).
+    /// SAM -> PAF converter (conversion utility).
     Sam2paf(Sam2pafArgs),
-    /// [utility] alninfo TSV → per-read summary TSV. Most users want `paf2tables --readinfo`.
+    /// PAF -> alninfo TSV and/or readinfo TSV tables.
+    Paf2tables(Paf2TablesArgs),
+    /// Two readinfo TSVs -> per-read comparison TSV (--mode full|junctions).
+    CompareReadinfo(CompareReadinfoArgs),
+    /// Comparison TSV → aggregate summary statistics
+    CompareSummary(CompareSummaryArgs),
+    /// [utility] alninfo TSV → per-read summary TSV.
     #[command(name = "utils-readinfo")]
     UtilsReadinfo(ReadInfoArgs),
 }
+
+
+
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match &cli.command {
         Commands::Compare(args)          => compare::run(args),
+        Commands::Sam2paf(args)          => sam2paf::run(args),
         Commands::Paf2tables(args)       => paf2tables::run(args),
         Commands::CompareReadinfo(args)  => compare_streaming::run(args),
         Commands::CompareSummary(args)   => compare_summary::run(args),
-        Commands::Sam2paf(args)          => sam2paf::run(args),
         Commands::UtilsReadinfo(args)    => readinfo::run(args),
     }
 }
