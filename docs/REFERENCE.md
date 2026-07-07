@@ -649,6 +649,75 @@ selected for the readinfo/compare output — using these columns: `TargetChr`,
 
 ---
 
+## Query-different reads & regions (`find-query-diff`)
+
+`find-query-diff` reads a `compare` / `compare-readinfo` comparison TSV and
+reports every read whose alignment is **not** `query_identical` (the exact same
+`classify()` used by `compare-summary`, above — a reverse-complement match still
+counts as identical), plus merged genomic regions showing where those differing
+reads cluster.
+
+**Run automatically by `compare`.** After writing the comparison table, `compare`
+runs `find-query-diff` on it as a final step — always `--coord-side both`, always
+gzip'd (neither is exposed as a `compare`-level flag), reusing `compare`'s own
+`--outdir`/`--prefix`. Skip it with `--skip-find-query-diff`. This is a plain
+function call on the freshly written `compare_out` file — not a re-architected
+fused pass — so its output is **byte-identical** to running the standalone
+command on that same file.
+
+**Standalone command** (for the manual workflow, or to choose `--coord-side`
+`a`/`b` or opt out of `--gzip`):
+
+```bash
+maligno find-query-diff -i AvsB.compare.tsv.gz --outdir results/ --prefix AvsB \
+  [--coord-side a|b|both] [--gzip] [--emit-identical-reads]
+# -i: a compare / compare-readinfo table (.gz or - ok, either --mode)
+```
+
+Like `compare-summary`, labels are auto-detected from the `TargetChr_<label>`
+columns, and the classification is mode-independent (`full` and `junctions`
+produce identical `find-query-diff` output for the same input PAFs).
+
+### Categories
+
+Derived from the shared `CompareSummary` counters — no re-derivation of
+`classify()`'s logic:
+
+| Category | Definition |
+|----------|------------|
+| `diff_aln_to_both` | mapped in both sets, **not** `query_identical` (`= aligned_both - query_identical`) |
+| `diff_aln_only_<label_a>` / `diff_aln_only_<label_b>` | mapped in one set only (`= aligned_only_a` / `aligned_only_b`) |
+| `query_different_total` | sum of the three categories above |
+| `query_identical_total` | excluded from all outputs (incl. the reverse-complement branch) |
+| `aligned_neither` | excluded (unmapped in both — no query-space difference to report) |
+
+Reconciliation: `reads_compared == query_different_total + query_identical_total + aligned_neither`.
+
+### Outputs
+
+| File | Contents |
+|------|----------|
+| `{prefix}.query_diff_reads.tsv[.gz]` | one row per differing read: `Read_Name`, `outcome` (the canonical category name above) |
+| `{prefix}.query_diff_regions.A.bed[.gz]` | merged loci over reads with an A placement (`diff_aln_to_both` + `diff_aln_only_<label_a>`) |
+| `{prefix}.query_diff_regions.B.bed[.gz]` | merged loci over reads with a B placement (`diff_aln_to_both` + `diff_aln_only_<label_b>`) |
+| `{prefix}.query_diff_summary.tsv` | the category tally above (+ stderr) |
+| `{prefix}.query_identical_reads.tsv[.gz]` | *(opt-in, `--emit-identical-reads`)* one row per `query_identical` read: `Read_Name`, `category` (`query_identical_same_strand` / `query_identical_revcomp`) — the complement of the diff-reads file. Off by default; **not** produced by `compare`'s built-in invocation. |
+
+Region-table columns: `#chrom  start  end  n_reads  n_both  n_only_<A\|B>  n_plus  n_minus`
+— `n_reads = n_both + n_only_*`; `n_plus + n_minus <= n_reads`. Loci are formed by
+a generic sort + single-sweep merge (`src/interval_merge.rs`), equivalent to
+`bedtools merge -c -o count`, verified against a real `bedtools` oracle at both
+small (~11.6K reads) and genome scale (~986K reads, 31.5K differing) — exact match
+on `(chrom, start, end, n_reads)` in both cases.
+
+**A read may appear on only one side.** A `diff_aln_only_<label_b>` read has no A
+coordinate and is absent from the A region table (but still counted and listed in
+the read TSV); symmetric for `diff_aln_only_<label_a>` and the B table. Bad
+intervals (unparseable or `end <= start`) are skipped and counted internally
+rather than aborting the run.
+
+---
+
 ## Troubleshooting
 
 ### "`compare-readinfo` matched far fewer reads than I expected" — sort-order diagnostic

@@ -58,6 +58,28 @@ pub struct FindQueryDiffArgs {
     /// Gzip the read TSV and region tables (appends `.gz`).
     #[arg(long = "gzip")]
     gzip: bool,
+
+    /// Also write a TSV of Read_Names whose query alignment is identical between
+    /// A and B (same-strand or reverse-complement). Off by default.
+    #[arg(long = "emit-identical-reads")]
+    emit_identical_reads: bool,
+}
+
+impl FindQueryDiffArgs {
+    /// Construct args for `compare`'s built-in invocation of this command: always
+    /// both coordinate sides, always gzip'd output — `compare` does not expose
+    /// either as its own option, so those defaults live here in exactly one place.
+    /// `emit_identical_reads` stays off and is not exposed via `compare`.
+    pub(crate) fn for_compare(input: String, outdir: String, prefix: String) -> Self {
+        Self {
+            input,
+            outdir,
+            prefix,
+            coord_side: CoordSide::Both,
+            gzip: true,
+            emit_identical_reads: false,
+        }
+    }
 }
 
 /// Whether a differing read is mapped on both sides or only this coordinate
@@ -131,6 +153,7 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
     let regions_a_out = path(format!("{}.query_diff_regions.A.bed{}", args.prefix, ext));
     let regions_b_out = path(format!("{}.query_diff_regions.B.bed{}", args.prefix, ext));
     let summary_out = path(format!("{}.query_diff_summary.tsv", args.prefix));
+    let identical_out = path(format!("{}.query_identical_reads.tsv{}", args.prefix, ext));
 
     // ── Header: column index, labels, per-side indices ────────────────────────
     let mut reader = open_input(&args.input)
@@ -169,6 +192,14 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
     let mut reads_w = open_output(Some(&reads_out))?;
     writeln!(reads_w, "Read_Name\toutcome")?;
 
+    let mut identical_w: Option<Box<dyn Write>> = if args.emit_identical_reads {
+        let mut w = open_output(Some(&identical_out))?;
+        writeln!(w, "Read_Name\tcategory")?;
+        Some(w)
+    } else {
+        None
+    };
+
     let mut summary = CompareSummary::default();
     let mut vec_a: Vec<Ivl<DiffMeta>> = Vec::new();
     let mut vec_b: Vec<Ivl<DiffMeta>> = Vec::new();
@@ -189,6 +220,18 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
 
         let class = classify(&get_a, &get_b);
         summary.observe(&class);
+        let read_name = fields.get(read_name_idx).copied().unwrap_or("");
+
+        if class.query_identical {
+            if let Some(w) = identical_w.as_mut() {
+                let cat = if class.query_identical_rc {
+                    "query_identical_revcomp"
+                } else {
+                    "query_identical_same_strand"
+                };
+                writeln!(w, "{read_name}\t{cat}")?;
+            }
+        }
 
         // Select query-different reads and their placement(s).
         let (category, in_a, in_b) = match class.map_status {
@@ -199,7 +242,6 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
             _ => continue,
         };
 
-        let read_name = fields.get(read_name_idx).copied().unwrap_or("");
         writeln!(reads_w, "{read_name}\t{category}")?;
 
         let outcome = if in_a && in_b { Outcome::Both } else { Outcome::OnlySide };
@@ -217,6 +259,9 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
         }
     }
     reads_w.flush()?;
+    if let Some(w) = identical_w.as_mut() {
+        w.flush()?;
+    }
 
     // ── Pass 2: merge each selected coordinate space → region tables ──────────
     if want_a {
@@ -253,6 +298,9 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
         eprintln!("  {regions_b_out}");
     }
     eprintln!("  {summary_out}");
+    if args.emit_identical_reads {
+        eprintln!("  {identical_out}");
+    }
     Ok(())
 }
 
@@ -280,11 +328,10 @@ fn write_region_table(
     only_col: &str,
     input: &str,
 ) -> Result<()> {
+    eprintln!(
+        "[INFO] find-query-diff: coord_space={coord}(label={label})  input={input}  -> {path}"
+    );
     let mut w = open_output(Some(path))?;
-    writeln!(
-        w,
-        "# maligno find-query-diff  coord_space={coord}(label={label})  input={input}"
-    )?;
     writeln!(w, "#chrom\tstart\tend\tn_reads\tn_both\t{only_col}\tn_plus\tn_minus")?;
     for l in loci {
         writeln!(

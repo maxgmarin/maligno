@@ -32,6 +32,7 @@ use crate::compare_junctions::{emit_compare_junctions_row, write_compare_junctio
 use crate::compare_streaming::{emit_compare_row, write_compare_header, CompareMode};
 use crate::compare_summary::{classify, CompareSummary};
 use crate::external_sort::{parse_mem, read_id_set_check, sort_paf_to_file};
+use crate::find_query_diff::{self, FindQueryDiffArgs};
 use crate::io_utils::{open_input, open_output};
 use crate::paf_groups::PafGroups;
 use crate::readinfo::{collapse_group, ReadInfoRow, READINFO_HEADER};
@@ -101,6 +102,11 @@ pub struct CompareArgs {
     /// Do not write the per-set readinfo (33-col) tables.
     #[arg(long = "no-readinfo")]
     no_readinfo: bool,
+
+    /// Skip the automatic find-query-diff step run after the comparison table is
+    /// written (query-different reads + merged genomic regions, gzip'd).
+    #[arg(long = "skip-find-query-diff")]
+    skip_find_query_diff: bool,
 }
 
 pub fn run(args: &CompareArgs) -> Result<()> {
@@ -266,6 +272,21 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         eprintln!("  {a_sorted}");
         eprintln!("  {b_sorted}");
     }
+
+    // ── find-query-diff (default-on): query-different reads + merged regions ──
+    if !args.skip_find_query_diff {
+        eprintln!(
+            "[INFO] running find-query-diff on the comparison table \
+             (skip with --skip-find-query-diff)..."
+        );
+        let fq_args = FindQueryDiffArgs::for_compare(
+            compare_out.clone(),
+            args.outdir.clone(),
+            args.prefix.clone(),
+        );
+        find_query_diff::run(&fq_args)?;
+    }
+
     Ok(())
 }
 
