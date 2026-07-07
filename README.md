@@ -9,7 +9,7 @@
 **maligno** is a toolkit for systematically comparing two sets of alignments read-by-read.
 The primary command, **`maligno compare`**, takes two alignment files (e.g. PAF) for the same set of reads
 and produces a detailed per-read alignment comparison table. This table enables easy comparison of alignment stats (alignment scores, coverage, indels, mismatches,
-soft-clipping, and splice-junction agreement) with a difference column for each metric.
+soft-clipping, and splice-junction agreement) across the analyzed reads.
 
 This makes it easy to compare alignment results across conditions such as:
 1) Different aligners (`minimap2` vs `bwa mem`)
@@ -17,8 +17,8 @@ This makes it easy to compare alignment results across conditions such as:
 3) Different reference genomes (`GRCh38` vs `CHM13`)
 
 With a single comparison table, you can quickly ask:
-- "How many reads aligned exactly the same?"
-- "Which read IDs differ in their alignment between set A and B, and how?"
+- "How many reads aligned identically?"
+- "Which read IDs differ in their alignment between set A and B, and how do they differ?"
 - "How many reads improved their alignment score by X points?"
 - "How do splice junctions differ, in read or genomic coordinate space?"
 
