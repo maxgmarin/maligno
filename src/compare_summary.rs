@@ -214,6 +214,24 @@ pub struct CompareSummaryArgs {
     output: Option<String>,
 }
 
+/// Detect the two dataset labels from a compare-table header by stripping the
+/// `TargetChr_` prefix (in column order): `(label_a, label_b)`. Shared by
+/// `compare-summary` and `find-query-diff`.
+pub(crate) fn detect_labels(cols: &[&str]) -> Result<(String, String)> {
+    let labels: Vec<String> = cols
+        .iter()
+        .filter_map(|c| c.strip_prefix("TargetChr_").map(|s| s.to_string()))
+        .collect();
+    if labels.len() != 2 {
+        bail!(
+            "expected exactly two `TargetChr_<label>` columns in the header, found {} \
+             — is this a maligno compare table?",
+            labels.len()
+        );
+    }
+    Ok((labels[0].clone(), labels[1].clone()))
+}
+
 pub fn run(args: &CompareSummaryArgs) -> Result<()> {
     let mut reader = open_input(&args.input)
         .with_context(|| format!("opening comparison table '{}'", args.input))?;
@@ -229,19 +247,7 @@ pub fn run(args: &CompareSummaryArgs) -> Result<()> {
         cols.iter().copied().enumerate().map(|(i, c)| (c, i)).collect();
 
     // Detect label_a / label_b from the two `TargetChr_<label>` columns, in order.
-    let labels: Vec<String> = cols
-        .iter()
-        .filter_map(|c| c.strip_prefix("TargetChr_").map(|s| s.to_string()))
-        .collect();
-    if labels.len() != 2 {
-        bail!(
-            "expected exactly two `TargetChr_<label>` columns in the header, found {} \
-             — is '{}' a maligno compare table?",
-            labels.len(),
-            args.input
-        );
-    }
-    let (label_a, label_b) = (labels[0].clone(), labels[1].clone());
+    let (label_a, label_b) = detect_labels(&cols)?;
 
     // The unsuffixed columns `classify` reads; resolve each side's index up front.
     const NEEDED: [&str; 7] = [

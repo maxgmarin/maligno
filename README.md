@@ -102,6 +102,7 @@ For each read to be compared, the following is done.
 | `--presorted` | skip the sort — inputs already hold the same reads in the same order |
 | `--allow-id-mismatch` | compare the shared intersection instead of erroring when read-ID sets differ |
 | `--no-alninfo`, `--no-readinfo` | skip writing those per-set tables |
+| `--skip-find-query-diff` | skip the automatic `find-query-diff` step run after the comparison table is written |
 | `--keep-sorted-paf` | keep the intermediate sorted PAFs |
 
 
@@ -118,6 +119,7 @@ A `compare` run writes, under `--outdir`, files prefixed with `--prefix`:
 | `{prefix}.compare.tsv.gz` | 94 | the **comparison** table (`full` mode) |
 | `{prefix}.compare.junctions.tsv.gz` | 47 | the **comparison** table (`junctions` mode) |
 | `{prefix}.compare[.junctions].summary.tsv` | 2 | **aggregate summary statistics** (see below) |
+| `{prefix}.query_diff_reads.tsv.gz`, `{prefix}.query_diff_regions.{A,B}.bed.gz`, `{prefix}.query_diff_summary.tsv` | — | **query-different reads + regions** (see below); skip with `--skip-find-query-diff` |
 
 ### The comparison table
 
@@ -170,6 +172,32 @@ maligno compare-summary -i AvsB.compare.tsv.gz -o AvsB.compare.summary.tsv
 
 It works on either `--mode` (the identity check uses columns present in both).
 Full definitions are in the [reference](docs/REFERENCE.md#compare-readinfo-and-the-comparison-core).
+
+### Query-different reads & regions
+
+After writing the comparison table, `compare` also runs **`find-query-diff`** —
+it finds every read whose alignment is **not** `query_identical` (using the exact
+same definition as above), and reports where those reads cluster on the genome.
+This runs by default (always both coordinate sides, gzip'd — not configurable);
+skip it with `--skip-find-query-diff`.
+
+Outputs: `{prefix}.query_diff_reads.tsv.gz` (one row per differing read + its
+category — `diff_aln_to_both` / `diff_aln_only_<label>`), a merged, `bedtools
+merge`-style region table per side (`{prefix}.query_diff_regions.{A,B}.bed.gz` —
+`chrom, start, end, n_reads, n_both, n_only_<label>, n_plus, n_minus`), and a
+category-tally `{prefix}.query_diff_summary.tsv`.
+
+To run it on an existing comparison table (e.g. from the manual workflow, or with
+different `--coord-side`/`--gzip` choices), use the standalone command:
+
+```bash
+maligno find-query-diff -i AvsB.compare.tsv.gz --outdir results/ --prefix AvsB
+```
+
+Add **`--emit-identical-reads`** to also write `{prefix}.query_identical_reads.tsv`
+(`Read_Name` + `query_identical_same_strand`/`query_identical_revcomp`) — the
+complement of the diff-reads file. Off by default; not used by `compare`'s
+built-in invocation.
 
 ---
 

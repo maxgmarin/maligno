@@ -24,7 +24,9 @@
 //!   4. `compare-readinfo`   two readinfo TSVs → per-read comparison TSV (same `--mode`)
 //!   5. `compare-summary`    comparison TSV → aggregate summary statistics
 //!                           (alignment status + query/reference identity)
-//!   6. `utils-readinfo`     alninfo TSV → per-read summary TSV (low-level utility;
+//!   6. `find-query-diff`   comparison TSV → query-different reads + the merged
+//!                           genomic regions where they cluster
+//!   7. `utils-readinfo`     alninfo TSV → per-read summary TSV (low-level utility;
 //!                           most users want `paf2tables --readinfo`)
 //!
 //! The comparison itself is a streaming merge-join (constant memory): only reads
@@ -37,6 +39,8 @@ mod cigar_junctions;    // CIGAR-based intron extractor (utility; not yet wired 
 mod compare_junctions;  // junction-view (47-col) header/row emitters (library; --mode junctions)
 mod compare_streaming;  // `compare-readinfo` command + shared comparison core
 mod compare_summary;    // `compare-summary` command + shared classifier/accumulator
+mod find_query_diff;   // `find-query-diff` command (query-different reads + regions)
+mod interval_merge;     // generic sort+sweep interval merge (bedtools merge -c -o count)
 mod cs_parser;          // cs-tag parser  (PAF → alninfo path; also extracts genomic junctions)
 mod io_utils;
 mod junction;
@@ -57,6 +61,7 @@ use clap::{Parser, Subcommand};
 use compare::CompareArgs;
 use compare_streaming::CompareReadinfoArgs;
 use compare_summary::CompareSummaryArgs;
+use find_query_diff::FindQueryDiffArgs;
 use paf2tables::Paf2TablesArgs;
 use readinfo::ReadInfoArgs;
 use sam2paf::Sam2pafArgs;
@@ -81,6 +86,9 @@ enum Commands {
     CompareReadinfo(CompareReadinfoArgs),
     /// Comparison TSV → aggregate summary statistics
     CompareSummary(CompareSummaryArgs),
+    /// Comparison TSV → query-different reads and the merged genomic regions where they cluster.
+    #[command(name = "find-query-diff")]
+    FindQueryDiff(FindQueryDiffArgs),
     /// [utility] alninfo TSV → per-read summary TSV.
     #[command(name = "utils-readinfo")]
     UtilsReadinfo(ReadInfoArgs),
@@ -97,6 +105,7 @@ fn main() -> Result<()> {
         Commands::Paf2tables(args)       => paf2tables::run(args),
         Commands::CompareReadinfo(args)  => compare_streaming::run(args),
         Commands::CompareSummary(args)   => compare_summary::run(args),
+        Commands::FindQueryDiff(args)    => find_query_diff::run(args),
         Commands::UtilsReadinfo(args)    => readinfo::run(args),
     }
 }
