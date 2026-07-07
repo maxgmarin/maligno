@@ -6,24 +6,24 @@
 
 # maligno
 
-**maligno** is a toolkit for comparing two sets of alignments read-by-read. The
-primary command, **`maligno compare`**, takes two PAF files for the same set of reads
-and produces a per-read comparison table (alignment scores, coverage, indels,
-and splice-junction agreement) in a single command. This is useful for comparing alignments of the same set of reads across various conditions, which includes:
-1) Comparing different aligners (`minimap2` versus `bwa mem`)
-2) Alignment results for different parameters of the same aligner (`splice` vs `splice:hq` for transcript alignment w. `minimap2`
-3) Reads aligned to different reference genomes (`GRCh38` vs `CHM13`)
+**maligno** is a toolkit for systematically comparing two sets of alignments read-by-read.
+The primary command, **`maligno compare`**, takes two alignment files (e.g. PAF) for the same set of reads
+and produces a detailed per-read alignment comparison table. This table enables easy comparison of alignment stats (alignment scores, coverage, indels, mismatches,
+soft-clipping, and splice-junction agreement) with a difference column for each metric.
 
-The key idea of maligno is to make it easy to systematically compare alignments of the same set of reads across varying conditions. 
-The final comparison table output by `maligno` has detailed alignment information across each read. The alignment information (strand, alignment score, `cs` tag, mismatches, indels, soft-clipping, junctions, etc) are provided for each read as well as a column of the difference for 
+This makes it easy to compare alignment results across conditions such as:
+1) Different aligners (`minimap2` vs `bwa mem`)
+2) Different parameters of the same aligner (`splice` vs `splice:hq` for transcript alignment with `minimap2`)
+3) Different reference genomes (`GRCh38` vs `CHM13`)
 
-This makes it easy compare two sets of alignment results (A & B) and to ask questions like: 
-- "How many reads aligned exactly the same?" or "What are the exact read IDs that differ in their alignment at all between set A or B?"
+With a single comparison table, you can quickly ask:
+- "How many reads aligned exactly the same?"
+- "Which read IDs differ in their alignment between set A and B, and how?"
 - "How many reads improved their alignment score by X points?"
-- "How do the splice junctions differ in either query (read) coordinate space or genomic coordinate space?"
-  
-In summary, `maligno` provides an efficient framework to produce detailed comparisons of alignment results across varying conditions: `paramters`, `aligners`, and `references`.
+- "How do splice junctions differ, in read or genomic coordinate space?"
 
+In short, `maligno` gives you an efficient framework for detailed alignment comparisons
+across different parameters, aligners, and references.
 
 ---
 

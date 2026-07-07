@@ -107,8 +107,7 @@ pub fn run(args: &Paf2TablesArgs) -> Result<()> {
 }
 
 /// Stream a PAF into the alninfo table, one row per alignment, in input order.
-/// No grouping is performed — this is the single source of truth for the
-/// `paf2alninfo` behavior. Malformed lines emit a WARNING and are skipped.
+/// Malformed lines emit a WARNING and are skipped.
 pub(crate) fn stream_alninfo<R: BufRead, W: Write>(reader: &mut R, w: &mut W) -> Result<()> {
     AlnInfo::write_header(w)?;
 
@@ -133,7 +132,7 @@ pub(crate) fn stream_alninfo<R: BufRead, W: Write>(reader: &mut R, w: &mut W) ->
     Ok(())
 }
 
-/// Stream a PAF into the readinfo table by grouping contiguous `Query_Name`
+/// Stream a PAF into the "readinfo" table by grouping contiguous `Query_Name`
 /// runs and collapsing each to its best alignment. If `alninfo_out` is `Some`,
 /// every alignment's alninfo row is tee'd to it in the same pass (byte-identical
 /// to `paf2alninfo`). With `strict_grouping`, errors if a `Query_Name` reappears

@@ -17,7 +17,7 @@ table. Use `compare` for the safe, do-it-all path; drop to the subcommands when
 you want manual control.
 
 **1. On-rails (primary) — `compare`:** one command that sorts both PAFs (so
-grouping/order are guaranteed, not trusted), verifies they carry the same read-ID
+order is guaranteed), verifies they carry the same read-ID
 set, and writes a results directory with the per-set alninfo + readinfo tables
 and the comparison table.
 
@@ -72,12 +72,7 @@ maligno paf2tables -i in.paf --alninfo alninfo.tsv.gz
 maligno paf2tables -i in.paf --readinfo readinfo.tsv.gz
 ```
 
-At least one of `--alninfo` / `--readinfo` must be given. The output is
-**byte-identical** to the older two-command flow because every record is routed
-through the exact same conversion + serialization code
-(`AlnInfo::from_paf` → `write_row`) before the unchanged collapse logic runs;
-when both outputs are requested the alninfo rows are simply *tee'd* off the same
-stream that feeds readinfo grouping.
+At least one of `--alninfo` / `--readinfo` must be given. 
 
 **Grouping requirement.** The `--readinfo` output requires the PAF be **grouped**
 by `Query_Name` (each read's alignments contiguous); `--alninfo` never cares

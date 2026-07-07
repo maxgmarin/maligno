@@ -84,7 +84,7 @@ pub fn parse_line(line: &str, lineno: u64) -> Result<PafRecord<'_>> {
 /// Scan the optional-tag substring for `ms:i:`, `AS:i:`, and `cs:Z:`.
 /// Returns `(ms, AS, cs_slice)`.
 ///
-/// For unmapped records the Python code returns (0, 0, ""); we match that.
+/// For unmapped records it will return (0, 0, "").
 fn parse_tags(raw: &str, is_unmapped: bool) -> (i64, i64, &str) {
     if is_unmapped {
         return (0, 0, "");

@@ -160,8 +160,7 @@ fn push_revcomp_bases(seq: &[u8], out: &mut Vec<u8>) {
 /// complement each operation length-preservingly. This yields the cs string the
 /// *opposite-strand* alignment of the same query-to-reference correspondence would
 /// produce, so two alignments that are exact reverse-complements of each other
-/// (identical query alignment, inverted strand — e.g. a locus inverted between two
-/// reference assemblies) satisfy `cs_a == cs_revcomp(cs_b)`.
+/// (identical query alignment, inverted strand) satisfy `cs_a == cs_revcomp(cs_b)`.
 ///
 /// Per-op transforms (all length-preserving):
 ///   `:N`      → `:N`                       (match run length unchanged)

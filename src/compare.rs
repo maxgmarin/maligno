@@ -47,7 +47,7 @@ pub struct CompareArgs {
     #[arg(short = 'b', long = "paf-b", value_name = "b.paf")]
     paf_b: String,
 
-    /// Label for dataset A (names the per-set outputs and the column suffix).
+    /// Label for dataset A.
     #[arg(long = "label-a", value_name = "LABEL", default_value = "SetA")]
     label_a: String,
 
@@ -89,9 +89,7 @@ pub struct CompareArgs {
     keep_sorted_paf: bool,
 
     /// Skip the internal sort: assume both PAFs already contain the same reads,
-    /// grouped by Query_Name and in the same relative order (any ordering, e.g.
-    /// `samtools sort -n`; byte-lex not required). The same-order requirement is
-    /// verified during the compare pass, which errors on the first divergence.
+    /// grouped by Query_Name and in the same relative order.
     /// Not combinable with --allow-id-mismatch or --keep-sorted-paf.
     #[arg(long = "presorted", conflicts_with_all = ["allow_id_mismatch", "keep_sorted_paf"])]
     presorted: bool,

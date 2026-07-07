@@ -234,7 +234,7 @@ impl AlnInfo {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Compute soft-clip lengths, matching Python's `get_softclip_lengths()`.
+/// Compute soft-clip lengths based on query alignment information`.
 fn softclip_lengths(query_len: u64, query_start: u64, query_end: u64, strand: char)
     -> (u64, u64)
 {
@@ -248,7 +248,7 @@ fn softclip_lengths(query_len: u64, query_start: u64, query_end: u64, strand: ch
 ///
 /// Python's repr() always includes a decimal point for finite non-integer
 /// floats.  Rust's Display omits the `.0` for integer-valued floats (e.g.
-/// `1.0` → `"1"`).  We restore the `.0` to match Python.
+/// `1.0` → `"1"`).  This restores the `.0` to match Python.
 fn fmt_float(v: f64) -> String {
     if v.is_nan()      { return "NaN".to_owned(); }
     if v.is_infinite() { return if v > 0.0 { "inf".to_owned() } else { "-inf".to_owned() }; }
