@@ -356,8 +356,10 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
 }
 
 // ── CLI args ─────────────────────────────────────────────────────────────────
+// utils-readinfo subcommand is unregistered from main.rs; kept here for possible reuse.
 
 #[derive(clap::Args, Debug)]
+#[allow(dead_code)]
 pub struct ReadInfoArgs {
     /// Input alninfo TSV file (use '-' for stdin)
     #[arg(short = 'i', long = "input", value_name = "alninfo.tsv")]
@@ -370,6 +372,7 @@ pub struct ReadInfoArgs {
 
 // ── Main entry point ─────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub fn run(args: &ReadInfoArgs) -> Result<()> {
     // Open input (transparently handles plain files, .gz, and stdin via '-')
     let reader = open_input(&args.input)?;
@@ -460,6 +463,7 @@ pub fn run(args: &ReadInfoArgs) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn flush_group<W: Write + ?Sized>(group: &mut Vec<AlnRow>, out: &mut W) -> Result<()> {
     if group.is_empty() {
         return Ok(());

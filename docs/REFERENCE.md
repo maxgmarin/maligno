@@ -51,7 +51,6 @@ maligno compare-readinfo -a A.readinfo.tsv.gz -b B.readinfo.tsv.gz -o compare.ts
 | `paf2tables`  | PAF (`-i`, `.gz`/`-` ok)           | **alninfo TSV** (`--alninfo`, 35 cols) and/or **readinfo TSV** (`--readinfo`, 33 cols), in one pass |
 | `compare-readinfo` | two readinfo TSVs (`-a`, `-b`) | per-read comparison TSV (`-o`); same `--mode full`/`junctions` as `compare` |
 | `sam2paf`     | SAM file or stdin (`-`)            | PAF written to stdout                   |
-| `utils-readinfo` | alninfo TSV (`-i`, `.gz`/`-` ok) | per-read summary TSV (`-o`, 33 cols) — low-level utility; most users want `paf2tables --readinfo` |
 
 All inputs/outputs transparently support gzip (`.gz` suffix) and stdin/stdout (`-`).
 
@@ -273,14 +272,9 @@ The pre-sort satisfies both the `--readinfo` contiguity requirement and
 with zeroed alignment statistics, allowing unaligned reads to flow through the entire
 pipeline.
 
-### `utils-readinfo`
+### Readinfo collapse (used by `paf2tables --readinfo` and `compare`)
 
-The per-read collapse step. **Most users don't call this directly** — `paf2tables --readinfo`
-produces the identical readinfo table straight from a PAF. `utils-readinfo` is the low-level
-utility for the case where you already have an `alninfo.tsv` (and not the PAF) and want to
-collapse it to readinfo.
-
-Groups alninfo rows by `Query_Name` (contiguous in sorted input) and collapses each group
+The per-read collapse step. Groups alninfo rows by `Query_Name` (contiguous in sorted input) and collapses each group
 to one summary row:
 
 - **Best alignment** is the row with the highest `ms`, ties broken by highest `AS`, then by
@@ -806,7 +800,7 @@ src/
 ├── paf2tables.rs           — PAF → alninfo and/or readinfo (one pass)
 ├── compare_streaming.rs    — `compare-readinfo` command + shared comparison core (emit/header/ReadKey/CompareMode)
 ├── compare_junctions.rs    — junction-view (47-col) header/row emitters (library; used by --mode junctions)
-├── readinfo.rs             — collapse library (collapse_group/ReadInfoRow/AlnRow) + utils-readinfo entry point
+├── readinfo.rs             — collapse library (collapse_group/ReadInfoRow/AlnRow); utils-readinfo CLI unregistered but code kept
 ├── paf_groups.rs           — shared PAF → per-read group reader, with optional alninfo tee
 ├── record.rs               — AlnInfo struct + TSV serialisation
 ├── paf.rs                  — PAF record parser

@@ -242,7 +242,7 @@ The full manual lives in **[`docs/REFERENCE.md`](docs/REFERENCE.md)**:
 
 - Manual building blocks — `paf2tables` (PAF → alninfo/readinfo) and
   `compare-readinfo` (the comparison engine).
-- Utilities — `sam2paf` (SAM → PAF) and `utils-readinfo`.
+- Utilities — `sam2paf` (SAM → PAF).
 - The complete column dictionary for every table, genomic-junction format,
   and schema-migration notes.
 - Sort-order troubleshooting and the overlap diagnostic script.

@@ -26,8 +26,6 @@
 //!                           (alignment status + query/reference identity)
 //!   6. `find-query-diff`   comparison TSV → query-different reads + the merged
 //!                           genomic regions where they cluster
-//!   7. `utils-readinfo`     alninfo TSV → per-read summary TSV (low-level utility;
-//!                           most users want `paf2tables --readinfo`)
 //!
 //! The comparison itself is a streaming merge-join (constant memory): only reads
 //! present in BOTH inputs (matched on Read_Name + Read_Len) produce an output row.
@@ -49,7 +47,7 @@ mod compare;            // primary `compare` command (on-rails: sort → tables 
 mod external_sort;      // in-process PAF sort (ext-sort) + read-ID set check
 mod paf2tables;         // PAF → alninfo and/or readinfo, one pass
 mod paf_groups;         // shared PAF → per-read group reader (paf2tables / compare)
-mod readinfo;           // shared collapse library + utils-readinfo entry point
+mod readinfo;           // shared collapse library (utils-readinfo CLI unregistered; run()/ReadInfoArgs/flush_group kept for future reuse)
 mod record;
 
 // ── sam2paf utility submodule ─────────────────────────────────────────────────
@@ -63,7 +61,6 @@ use compare_streaming::CompareReadinfoArgs;
 use compare_summary::CompareSummaryArgs;
 use find_query_diff::FindQueryDiffArgs;
 use paf2tables::Paf2TablesArgs;
-use readinfo::ReadInfoArgs;
 use sam2paf::Sam2pafArgs;
 
 /// Unified PAF alignment-comparison toolkit.
@@ -89,9 +86,6 @@ enum Commands {
     /// Comparison TSV → query-different reads and the merged genomic regions where they cluster.
     #[command(name = "find-query-diff")]
     FindQueryDiff(FindQueryDiffArgs),
-    /// [utility] alninfo TSV → per-read summary TSV.
-    #[command(name = "utils-readinfo")]
-    UtilsReadinfo(ReadInfoArgs),
 }
 
 
@@ -106,6 +100,5 @@ fn main() -> Result<()> {
         Commands::CompareReadinfo(args)  => compare_streaming::run(args),
         Commands::CompareSummary(args)   => compare_summary::run(args),
         Commands::FindQueryDiff(args)    => find_query_diff::run(args),
-        Commands::UtilsReadinfo(args)    => readinfo::run(args),
     }
 }
