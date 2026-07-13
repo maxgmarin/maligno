@@ -660,17 +660,37 @@ fused pass — so its output is **byte-identical** to running the standalone
 command on that same file.
 
 **Standalone command** (for the manual workflow, or to choose `--coord-side`
-`a`/`b` or opt out of `--gzip`):
+`a`/`b`, opt out of `--gzip`, or select `--compare-by`):
 
 ```bash
 maligno find-query-diff -i AvsB.compare.tsv.gz --outdir results/ --prefix AvsB \
-  [--coord-side a|b|both] [--gzip] [--emit-identical-reads]
+  [--coord-side a|b|both] [--gzip] [--compare-by all|junctions] [--emit-identical-reads]
 # -i: a compare / compare-readinfo table (.gz or - ok, either --mode)
 ```
 
 Like `compare-summary`, labels are auto-detected from the `TargetChr_<label>`
 columns, and the classification is mode-independent (`full` and `junctions`
 produce identical `find-query-diff` output for the same input PAFs).
+
+### `--compare-by` — what defines a difference
+
+For reads mapped in **both** sets, `--compare-by` chooses the identity test; the
+map-status handling (only-A / only-B / neither) is unchanged either way.
+
+| Value | "Identical" means | Notes |
+|-------|-------------------|-------|
+| `all` (default) | the full `cs` tag matches (the `classify()` definition above; reverse-complement counts as identical) | any mismatch/indel/soft-clip/junction difference flags the read. Used by `compare`'s built-in invocation; **not** exposed as a `compare`-level flag. |
+| `junctions` | the **query-space splice-junction set** matches (`junction_set_stats` on the `junctions_<label>` columns) | reads with identical junctions but differing mismatches/indels/soft-clips count as the same; both-unspliced reads compare equal. Strand-agnostic — query junctions are stored in plus-strand read coordinates, so no span gate or reverse-complement handling is applied. |
+
+Because only the both-mapped identity test changes, the `junctions`-different read
+set is always a **subset** of the `all`-different set, and `reads_compared` /
+`aligned_neither` are identical between the two modes on the same input.
+
+In `junctions` mode every output filename gains a `.junctions` segment (e.g.
+`{prefix}.query_diff_reads.junctions.tsv`) so it never clobbers an `all` run at the
+same `--outdir`/`--prefix`, and the summary TSV carries a leading
+`compare_by<TAB>junctions` row. The default (`all`) outputs are byte-identical to
+prior releases.
 
 ### Categories
 
@@ -695,7 +715,10 @@ Reconciliation: `reads_compared == query_different_total + query_identical_total
 | `{prefix}.query_diff_regions.A.bed[.gz]` | merged loci over reads with an A placement (`diff_aln_to_both` + `diff_aln_only_<label_a>`) |
 | `{prefix}.query_diff_regions.B.bed[.gz]` | merged loci over reads with a B placement (`diff_aln_to_both` + `diff_aln_only_<label_b>`) |
 | `{prefix}.query_diff_summary.tsv` | the category tally above (+ stderr) |
-| `{prefix}.query_identical_reads.tsv[.gz]` | *(opt-in, `--emit-identical-reads`)* one row per `query_identical` read: `Read_Name`, `category` (`query_identical_same_strand` / `query_identical_revcomp`) — the complement of the diff-reads file. Off by default; **not** produced by `compare`'s built-in invocation. |
+| `{prefix}.query_identical_reads.tsv[.gz]` | *(opt-in, `--emit-identical-reads`)* one row per `query_identical` read: `Read_Name`, `category` (`query_identical_same_strand` / `query_identical_revcomp`, or `query_identical_junctions` under `--compare-by junctions`) — the complement of the diff-reads file. Off by default; **not** produced by `compare`'s built-in invocation. |
+
+Under `--compare-by junctions` every filename above gains a `.junctions` segment
+(e.g. `{prefix}.query_diff_reads.junctions.tsv`).
 
 Region-table columns: `#chrom  start  end  n_reads  n_both  n_only_<A\|B>  n_plus  n_minus`
 — `n_reads = n_both + n_only_*`; `n_plus + n_minus <= n_reads`. Loci are formed by

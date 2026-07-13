@@ -188,16 +188,30 @@ merge`-style region table per side (`{prefix}.query_diff_regions.{A,B}.bed.gz` �
 category-tally `{prefix}.query_diff_summary.tsv`.
 
 To run it on an existing comparison table (e.g. from the manual workflow, or with
-different `--coord-side`/`--gzip` choices), use the standalone command:
+different `--coord-side`/`--gzip`/`--compare-by` choices), use the standalone command:
 
 ```bash
 maligno find-query-diff -i AvsB.compare.tsv.gz --outdir results/ --prefix AvsB
 ```
 
+**`--compare-by`** selects what counts as a difference between the two sets:
+
+- `all` (default) — compare the full `cs` tag, so any mismatch, indel, soft-clip,
+  or junction difference flags the read. This is the definition used above and by
+  `compare`'s built-in invocation.
+- `junctions` — compare only the **query-space splice-junction set**; reads with
+  identical junctions but differing mismatches/indels/soft-clips count as the
+  **same**. Reads aligned in only one set are still reported (they have no
+  junctions to compare on the missing side). In this mode the outputs gain a
+  `.junctions` filename segment (e.g. `{prefix}.query_diff_reads.junctions.tsv`),
+  so a `junctions` run never clobbers an `all` run at the same prefix. The
+  junctions-different read set is always a subset of the `all`-different set.
+  `--compare-by` is a standalone-only option — `compare` always uses `all`.
+
 Add **`--emit-identical-reads`** to also write `{prefix}.query_identical_reads.tsv`
-(`Read_Name` + `query_identical_same_strand`/`query_identical_revcomp`) — the
-complement of the diff-reads file. Off by default; not used by `compare`'s
-built-in invocation.
+(`Read_Name` + `query_identical_same_strand`/`query_identical_revcomp`, or
+`query_identical_junctions` under `--compare-by junctions`) — the complement of the
+diff-reads file. Off by default; not used by `compare`'s built-in invocation.
 
 ---
 
