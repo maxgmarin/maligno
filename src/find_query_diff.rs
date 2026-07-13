@@ -10,6 +10,17 @@
 //! Reverse-complement matches count as **identical** (not a difference), and
 //! reads unmapped on both sides are excluded.
 //!
+//! `--compare-by` selects what "identical" means for both-mapped reads:
+//!   - `all` (default) — the full cs tag must match, motif-blind (the `classify`
+//!     definition above: intron donor/acceptor motif letters are ignored, so a
+//!     differently-reported motif at the same intron position/length is not by
+//!     itself a difference); any other mismatch/indel/soft-clip/junction-position
+//!     difference counts.
+//!   - `junctions` — only the **query-space splice-junction set** must match; reads
+//!     with identical junctions but differing mismatches/indels/soft-clips count as
+//!     the same. Reads aligned in only one set are still reported as differences
+//!     (they have no junctions to compare on the missing side).
+//!
 //! Outputs (to `--outdir`, `--prefix`-named):
 //!   1. `{prefix}.query_diff_reads.tsv[.gz]`      — one row per differing read + category
 //!   2. `{prefix}.query_diff_regions.A.bed[.gz]`  — merged A-coordinate loci
@@ -23,15 +34,26 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
-use crate::compare_summary::{classify, detect_labels, CompareSummary, MapStatus};
+use crate::compare_summary::{classify, detect_labels, CompareSummary, MapStatus, ReadClass};
 use crate::interval_merge::{merge_and_count, Ivl, Locus};
 use crate::io_utils::{open_input, open_output};
+use crate::junction::{junction_set_stats, parse_junction_str};
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub enum CoordSide {
     A,
     B,
     Both,
+}
+
+/// What aspect of the alignment defines a difference between A and B.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum CompareBy {
+    /// Flag any difference across the whole alignment (compares the full cs tag,
+    /// motif-blind: intron donor/acceptor letters are ignored).
+    All,
+    /// Flag only reads whose query-space splice-junction set differs.
+    Junctions,
 }
 
 /// Find reads whose query-space alignment differs between A and B, and the
@@ -59,6 +81,15 @@ pub struct FindQueryDiffArgs {
     #[arg(long = "gzip")]
     gzip: bool,
 
+    /// What defines a difference: `all` (default) compares the full cs tag,
+    /// motif-blind (intron donor/acceptor letters ignored) — any other
+    /// mismatch/indel/soft-clip/junction-position difference counts; `junctions`
+    /// compares only the query-space splice-junction set (reads with identical
+    /// junctions but differing mismatches/indels/soft-clips count as the same). In
+    /// `junctions` mode the outputs gain a `.junctions` filename segment.
+    #[arg(long = "compare-by", value_enum, default_value = "all")]
+    compare_by: CompareBy,
+
     /// Also write a TSV of Read_Names whose query alignment is identical between
     /// A and B (same-strand or reverse-complement). Off by default.
     #[arg(long = "emit-identical-reads")]
@@ -70,6 +101,8 @@ impl FindQueryDiffArgs {
     /// both coordinate sides, always gzip'd output — `compare` does not expose
     /// either as its own option, so those defaults live here in exactly one place.
     /// `emit_identical_reads` stays off and is not exposed via `compare`.
+    /// `compare_by` is pinned to `All` so the compare-fused run is byte-identical
+    /// to the historical behavior; the junctions mode is not exposed via `compare`.
     pub(crate) fn for_compare(input: String, outdir: String, prefix: String) -> Self {
         Self {
             input,
@@ -77,6 +110,7 @@ impl FindQueryDiffArgs {
             prefix,
             coord_side: CoordSide::Both,
             gzip: true,
+            compare_by: CompareBy::All,
             emit_identical_reads: false,
         }
     }
@@ -140,6 +174,21 @@ fn build_ivl<'a>(get: impl Fn(&str) -> &'a str, outcome: Outcome) -> Option<Ivl<
     })
 }
 
+/// Junction-space query identity for one both-mapped read: `true` iff the two
+/// query-space junction *sets* are equal. Strand-agnostic — query junctions are
+/// stored in plus-strand read coordinates (see `record.rs`), so no span gate and
+/// no reverse-complement handling are needed (unlike the cs-tag comparison). Two
+/// reads with no junctions on either side compare equal.
+fn junctions_identical<'a>(
+    get_a: &impl Fn(&str) -> &'a str,
+    get_b: &impl Fn(&str) -> &'a str,
+) -> bool {
+    let ja = parse_junction_str(get_a("junctions"));
+    let jb = parse_junction_str(get_b("junctions"));
+    let (_overlap, only_a, only_b) = junction_set_stats(&ja, &jb);
+    only_a == 0 && only_b == 0
+}
+
 pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
     let outdir = Path::new(&args.outdir);
     fs::create_dir_all(outdir)
@@ -148,12 +197,19 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
     let want_a = matches!(args.coord_side, CoordSide::A | CoordSide::Both);
     let want_b = matches!(args.coord_side, CoordSide::B | CoordSide::Both);
     let ext = if args.gzip { ".gz" } else { "" };
+    // Non-default mode gets a `.junctions` filename segment so its outputs never
+    // clobber the default (`all`) run at the same --outdir/--prefix, and so the
+    // default run stays byte-for-byte backward-compatible.
+    let tag = match args.compare_by {
+        CompareBy::All => "",
+        CompareBy::Junctions => ".junctions",
+    };
     let path = |name: String| outdir.join(name).to_string_lossy().into_owned();
-    let reads_out = path(format!("{}.query_diff_reads.tsv{}", args.prefix, ext));
-    let regions_a_out = path(format!("{}.query_diff_regions.A.bed{}", args.prefix, ext));
-    let regions_b_out = path(format!("{}.query_diff_regions.B.bed{}", args.prefix, ext));
-    let summary_out = path(format!("{}.query_diff_summary.tsv", args.prefix));
-    let identical_out = path(format!("{}.query_identical_reads.tsv{}", args.prefix, ext));
+    let reads_out = path(format!("{}.query_diff_reads{}.tsv{}", args.prefix, tag, ext));
+    let regions_a_out = path(format!("{}.query_diff_regions.A{}.bed{}", args.prefix, tag, ext));
+    let regions_b_out = path(format!("{}.query_diff_regions.B{}.bed{}", args.prefix, tag, ext));
+    let summary_out = path(format!("{}.query_diff_summary{}.tsv", args.prefix, tag));
+    let identical_out = path(format!("{}.query_identical_reads{}.tsv{}", args.prefix, tag, ext));
 
     // ── Header: column index, labels, per-side indices ────────────────────────
     let mut reader = open_input(&args.input)
@@ -171,8 +227,12 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
         .get("Read_Name")
         .context("comparison table is missing column 'Read_Name'")?;
 
-    const NEEDED: [&str; 7] = [
+    // `junctions` (query-space set) is needed by `--compare-by junctions`; it is
+    // present in both the full (94-col) and junctions (47-col) compare tables, so
+    // requiring it unconditionally never breaks either input.
+    const NEEDED: [&str; 8] = [
         "TargetChr", "Strand", "cs", "Query_Start", "Query_End", "Target_Start", "Target_End",
+        "junctions",
     ];
     let resolve = |label: &str| -> Result<HashMap<&'static str, usize>> {
         let mut m = HashMap::new();
@@ -218,16 +278,31 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
             idx_b.get(c).and_then(|&i| fields.get(i)).copied().unwrap_or("")
         };
 
-        let class = classify(&get_a, &get_b);
+        // `classify` gives map_status (mode-independent) + the cs-based identity.
+        // In `junctions` mode we keep the map_status but redefine "identical" as
+        // "query-space junction sets are equal"; the rest of the pipeline (read
+        // selection, summary, intervals) is driven by this single `class`, so the
+        // outputs and summary stay consistent by construction.
+        let base = classify(&get_a, &get_b);
+        let class = match args.compare_by {
+            CompareBy::All => base,
+            CompareBy::Junctions => ReadClass {
+                map_status: base.map_status,
+                query_identical: matches!(base.map_status, MapStatus::BothMapped)
+                    && junctions_identical(&get_a, &get_b),
+                query_identical_rc: false,
+                reference_identical: false,
+            },
+        };
         summary.observe(&class);
         let read_name = fields.get(read_name_idx).copied().unwrap_or("");
 
         if class.query_identical {
             if let Some(w) = identical_w.as_mut() {
-                let cat = if class.query_identical_rc {
-                    "query_identical_revcomp"
-                } else {
-                    "query_identical_same_strand"
+                let cat = match args.compare_by {
+                    CompareBy::Junctions => "query_identical_junctions",
+                    CompareBy::All if class.query_identical_rc => "query_identical_revcomp",
+                    CompareBy::All => "query_identical_same_strand",
                 };
                 writeln!(w, "{read_name}\t{cat}")?;
             }
@@ -274,15 +349,22 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
     }
 
     // ── Summary (TSV + stderr) ────────────────────────────────────────────────
+    let compare_by_str = match args.compare_by {
+        CompareBy::All => "all",
+        CompareBy::Junctions => "junctions",
+    };
     let rows = summary_rows(&summary);
     let mut sw = open_output(Some(&summary_out))?;
     writeln!(sw, "Category\tCount")?;
+    // Record the active mode in every summary (both `all` and `junctions`) so the
+    // file is self-describing regardless of how it was produced.
+    writeln!(sw, "compare_by\t{compare_by_str}")?;
     for (k, v) in &rows {
         writeln!(sw, "{k}\t{v}")?;
     }
     sw.flush()?;
 
-    eprintln!("Query-diff summary:");
+    eprintln!("Query-diff summary (compare-by={compare_by_str}):");
     for (k, v) in &rows {
         eprintln!("  {k:<24} {v}");
     }
@@ -342,4 +424,47 @@ fn write_region_table(
     }
     w.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a column accessor that returns `juncs` for the `junctions` column and
+    /// "" otherwise — enough to exercise `junctions_identical`.
+    fn getter(juncs: &'static str) -> impl Fn(&str) -> &'static str {
+        move |c| if c == "junctions" { juncs } else { "" }
+    }
+
+    #[test]
+    fn junctions_identical_empty_equals_empty() {
+        // Both reads unspliced → junction sets both empty → identical.
+        assert!(junctions_identical(&getter("()"), &getter("()")));
+    }
+
+    #[test]
+    fn junctions_identical_same_set() {
+        assert!(junctions_identical(&getter("(10, 20)"), &getter("(10, 20)")));
+    }
+
+    #[test]
+    fn junctions_identical_ignores_order() {
+        // Set semantics: order does not matter.
+        assert!(junctions_identical(&getter("(10, 20)"), &getter("(20, 10)")));
+    }
+
+    #[test]
+    fn junctions_identical_disjoint_is_different() {
+        assert!(!junctions_identical(&getter("(10,)"), &getter("(20,)")));
+    }
+
+    #[test]
+    fn junctions_identical_one_side_empty_is_different() {
+        assert!(!junctions_identical(&getter("(10,)"), &getter("()")));
+    }
+
+    #[test]
+    fn junctions_identical_subset_is_different() {
+        assert!(!junctions_identical(&getter("(10, 20)"), &getter("(10,)")));
+    }
 }

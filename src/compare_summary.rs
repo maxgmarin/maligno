@@ -15,13 +15,20 @@
 //! it needs — `cs`, `Strand`, `Query_Start`, `Query_End`, `TargetChr`,
 //! `Target_Start`, `Target_End` — are present in both the 94-col `full` and the
 //! 47-col `junctions` outputs).
+//!
+//! cs-tag equality is **motif-blind**: intron donor/acceptor letters are blanked
+//! out (via `cs_strip_splice_motifs`) before comparing, so an intron with the same
+//! length/position but a differently-reported motif (e.g. minimap2's `ct..ac` vs.
+//! STAR's `nn..nn` placeholder) does not by itself make two alignments "different".
+//! Every other structural detail — matches, substitutions, indels, intron
+//! length/position — is still compared exactly.
 
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 
 use anyhow::{bail, Context, Result};
 
-use crate::cs_parser::cs_revcomp;
+use crate::cs_parser::{cs_revcomp, cs_strip_splice_motifs};
 use crate::io_utils::{open_input, open_output};
 
 /// Whether each side's representative alignment is mapped.
@@ -81,9 +88,15 @@ where
         let same_span = get_a("Query_Start") == get_b("Query_Start")
             && get_a("Query_End") == get_b("Query_End");
         if same_span {
-            let cs_a = get_a("cs");
-            let cs_b = get_b("cs");
+            // Compare cs tags with intron donor/acceptor motif letters blanked out
+            // (`~ct..ac` and `~nn..nn` compare equal if the intron length/position
+            // match). Some aligners (e.g. STAR) report `nn` placeholders instead of
+            // the true motif bases that minimap2 reports for the same splice site —
+            // that's a limitation of the aligner's own output, not a real alignment
+            // difference, so it must not by itself make two alignments "different".
+            let cs_a = cs_strip_splice_motifs(get_a("cs"));
             if get_a("Strand") == get_b("Strand") {
+                let cs_b = cs_strip_splice_motifs(get_b("cs"));
                 if cs_a == cs_b {
                     query_identical = true;
                     // Reference identity only applies to the same-strand case.
@@ -91,7 +104,7 @@ where
                         && get_a("Target_Start") == get_b("Target_Start")
                         && get_a("Target_End") == get_b("Target_End");
                 }
-            } else if cs_a == cs_revcomp(cs_b) {
+            } else if cs_a == cs_strip_splice_motifs(&cs_revcomp(get_b("cs"))) {
                 // Opposite strands but the alignment is an exact reverse-complement
                 // (e.g. an inverted locus between two assemblies).
                 query_identical = true;

@@ -159,7 +159,7 @@ The headline is the **per-read alignment status**, followed by **identity** stat
 | Category | Meaning |
 |----------|---------|
 | `aligned_both` / `aligned_only_<label>` / `aligned_neither` | how the read's representative alignment maps in each set (an unmapped side is `TargetChr == "*"`) |
-| `query_identical` | both sides mapped over the same query span with the **same alignment relative to the read** (identical `cs`). Split into `…_same_strand` and `…_revcomp` (an inverted, opposite-strand match — `cs_A == reverse_complement(cs_B)`) |
+| `query_identical` | both sides mapped over the same query span with the **same alignment relative to the read** (identical `cs`, motif-blind — intron donor/acceptor letters are ignored, so a differently-reported motif at the same intron position/length doesn't count as a difference). Split into `…_same_strand` and `…_revcomp` (an inverted, opposite-strand match — `cs_A == reverse_complement(cs_B)`) |
 | `reference_identical` | query-identical **and** same `TargetChr` + target start/end (same placement on the reference) |
 | `present_only_in_<label>_by_id` | reads found in only one set's PAF (0 unless `--allow-id-mismatch`) |
 
@@ -188,16 +188,32 @@ merge`-style region table per side (`{prefix}.query_diff_regions.{A,B}.bed.gz` �
 category-tally `{prefix}.query_diff_summary.tsv`.
 
 To run it on an existing comparison table (e.g. from the manual workflow, or with
-different `--coord-side`/`--gzip` choices), use the standalone command:
+different `--coord-side`/`--gzip`/`--compare-by` choices), use the standalone command:
 
 ```bash
 maligno find-query-diff -i AvsB.compare.tsv.gz --outdir results/ --prefix AvsB
 ```
 
+**`--compare-by`** selects what counts as a difference between the two sets:
+
+- `all` (default) — compare the full `cs` tag, motif-blind (intron donor/acceptor
+  letters ignored, since some aligners such as STAR report `nn` placeholders
+  instead of the true motif for an otherwise-identical intron), so any other
+  mismatch, indel, soft-clip, or junction-position difference flags the read. This
+  is the definition used above and by `compare`'s built-in invocation.
+- `junctions` — compare only the **query-space splice-junction set**; reads with
+  identical junctions but differing mismatches/indels/soft-clips count as the
+  **same**. Reads aligned in only one set are still reported (they have no
+  junctions to compare on the missing side). In this mode the outputs gain a
+  `.junctions` filename segment (e.g. `{prefix}.query_diff_reads.junctions.tsv`),
+  so a `junctions` run never clobbers an `all` run at the same prefix. The
+  junctions-different read set is always a subset of the `all`-different set.
+  `--compare-by` is a standalone-only option — `compare` always uses `all`.
+
 Add **`--emit-identical-reads`** to also write `{prefix}.query_identical_reads.tsv`
-(`Read_Name` + `query_identical_same_strand`/`query_identical_revcomp`) — the
-complement of the diff-reads file. Off by default; not used by `compare`'s
-built-in invocation.
+(`Read_Name` + `query_identical_same_strand`/`query_identical_revcomp`, or
+`query_identical_junctions` under `--compare-by junctions`) — the complement of the
+diff-reads file. Off by default; not used by `compare`'s built-in invocation.
 
 ---
 
