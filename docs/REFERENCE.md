@@ -620,6 +620,15 @@ selected for the readinfo/compare output — using these columns: `TargetChr`,
     (`:N`→`:N`; `=ACGT`→`=`+revcomp; `*xy`→complemented bases; `+`/`-`→revcomp of
     the sequence; intron `~gt…ag`→`~ct…ac`).
 
+  Both `cs_A == cs_B` and `cs_A == cs_revcomp(cs_B)` are evaluated **motif-blind**:
+  each cs string is first passed through `cs_strip_splice_motifs`, which replaces
+  every intron's 2-letter donor/acceptor motif with a fixed `nn`/`nn` placeholder
+  while keeping the intron length and every other op (matches, substitutions,
+  indels) unchanged. This absorbs a real-world aligner-output limitation — e.g.
+  STAR reports `~nn<len>nn` where minimap2 reports the true motif (`~ct<len>ac`)
+  for the identical intron — so it no longer, by itself, makes two otherwise
+  identical alignments count as different.
+
   Reported as `query_identical`, split into `query_identical_same_strand` and
   `query_identical_revcomp`; `query_not_identical = aligned_both - query_identical`.
 - **Reference-coordinate identical** — same-strand query-identical **and** identical
@@ -679,7 +688,7 @@ map-status handling (only-A / only-B / neither) is unchanged either way.
 
 | Value | "Identical" means | Notes |
 |-------|-------------------|-------|
-| `all` (default) | the full `cs` tag matches (the `classify()` definition above; reverse-complement counts as identical) | any mismatch/indel/soft-clip/junction difference flags the read. Used by `compare`'s built-in invocation; **not** exposed as a `compare`-level flag. |
+| `all` (default) | the full `cs` tag matches, motif-blind (the `classify()` definition above; reverse-complement counts as identical) | any mismatch/indel/soft-clip/junction-position difference flags the read; a differently-reported intron motif at the same position/length (e.g. STAR's `nn` placeholder vs. minimap2's true motif) does not. Used by `compare`'s built-in invocation; **not** exposed as a `compare`-level flag. |
 | `junctions` | the **query-space splice-junction set** matches (`junction_set_stats` on the `junctions_<label>` columns) | reads with identical junctions but differing mismatches/indels/soft-clips count as the same; both-unspliced reads compare equal. Strand-agnostic — query junctions are stored in plus-strand read coordinates, so no span gate or reverse-complement handling is applied. |
 
 Because only the both-mapped identity test changes, the `junctions`-different read
@@ -688,9 +697,8 @@ set is always a **subset** of the `all`-different set, and `reads_compared` /
 
 In `junctions` mode every output filename gains a `.junctions` segment (e.g.
 `{prefix}.query_diff_reads.junctions.tsv`) so it never clobbers an `all` run at the
-same `--outdir`/`--prefix`, and the summary TSV carries a leading
-`compare_by<TAB>junctions` row. The default (`all`) outputs are byte-identical to
-prior releases.
+same `--outdir`/`--prefix`. Both modes write a leading `compare_by<TAB><all|junctions>`
+row in the summary TSV so the file is self-describing.
 
 ### Categories
 

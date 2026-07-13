@@ -11,8 +11,11 @@
 //! reads unmapped on both sides are excluded.
 //!
 //! `--compare-by` selects what "identical" means for both-mapped reads:
-//!   - `all` (default) — the full cs tag must match (the `classify` definition
-//!     above): any difference in mismatches, indels, soft-clips or junctions counts.
+//!   - `all` (default) — the full cs tag must match, motif-blind (the `classify`
+//!     definition above: intron donor/acceptor motif letters are ignored, so a
+//!     differently-reported motif at the same intron position/length is not by
+//!     itself a difference); any other mismatch/indel/soft-clip/junction-position
+//!     difference counts.
 //!   - `junctions` — only the **query-space splice-junction set** must match; reads
 //!     with identical junctions but differing mismatches/indels/soft-clips count as
 //!     the same. Reads aligned in only one set are still reported as differences
@@ -46,7 +49,8 @@ pub enum CoordSide {
 /// What aspect of the alignment defines a difference between A and B.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum CompareBy {
-    /// Flag any difference across the whole alignment (compares the full cs tag).
+    /// Flag any difference across the whole alignment (compares the full cs tag,
+    /// motif-blind: intron donor/acceptor letters are ignored).
     All,
     /// Flag only reads whose query-space splice-junction set differs.
     Junctions,
@@ -77,11 +81,12 @@ pub struct FindQueryDiffArgs {
     #[arg(long = "gzip")]
     gzip: bool,
 
-    /// What defines a difference: `all` (default) compares the full cs tag — any
-    /// mismatch/indel/soft-clip/junction difference counts; `junctions` compares
-    /// only the query-space splice-junction set (reads with identical junctions but
-    /// differing mismatches/indels/soft-clips count as the same). In `junctions`
-    /// mode the outputs gain a `.junctions` filename segment.
+    /// What defines a difference: `all` (default) compares the full cs tag,
+    /// motif-blind (intron donor/acceptor letters ignored) — any other
+    /// mismatch/indel/soft-clip/junction-position difference counts; `junctions`
+    /// compares only the query-space splice-junction set (reads with identical
+    /// junctions but differing mismatches/indels/soft-clips count as the same). In
+    /// `junctions` mode the outputs gain a `.junctions` filename segment.
     #[arg(long = "compare-by", value_enum, default_value = "all")]
     compare_by: CompareBy,
 
@@ -344,24 +349,22 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
     }
 
     // ── Summary (TSV + stderr) ────────────────────────────────────────────────
+    let compare_by_str = match args.compare_by {
+        CompareBy::All => "all",
+        CompareBy::Junctions => "junctions",
+    };
     let rows = summary_rows(&summary);
     let mut sw = open_output(Some(&summary_out))?;
     writeln!(sw, "Category\tCount")?;
-    // In junctions mode, make the summary self-describing (the default `all` file
-    // is left byte-identical to the historical output — no extra row).
-    if matches!(args.compare_by, CompareBy::Junctions) {
-        writeln!(sw, "compare_by\tjunctions")?;
-    }
+    // Record the active mode in every summary (both `all` and `junctions`) so the
+    // file is self-describing regardless of how it was produced.
+    writeln!(sw, "compare_by\t{compare_by_str}")?;
     for (k, v) in &rows {
         writeln!(sw, "{k}\t{v}")?;
     }
     sw.flush()?;
 
-    let mode_note = match args.compare_by {
-        CompareBy::All => "",
-        CompareBy::Junctions => " (compare-by=junctions)",
-    };
-    eprintln!("Query-diff summary{mode_note}:");
+    eprintln!("Query-diff summary (compare-by={compare_by_str}):");
     for (k, v) in &rows {
         eprintln!("  {k:<24} {v}");
     }

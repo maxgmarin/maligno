@@ -242,6 +242,69 @@ pub fn cs_revcomp(cs: &str) -> String {
     String::from_utf8(out).unwrap_or_default()
 }
 
+/// Normalize a cs string by blanking out intron donor/acceptor motif letters
+/// (replacing them with a fixed `nn`/`nn` placeholder) while preserving intron
+/// length and every other op byte-for-byte, in the original op order.
+///
+/// Used to compare cs tags "structurally" — same matches, substitutions, indels,
+/// and intron positions/lengths — without requiring agreement on the intron
+/// motif letters themselves. Some aligners (e.g. STAR, via `samtools calmd`-based
+/// cs generation) report `nn` placeholders instead of the true donor/acceptor
+/// bases that minimap2 reports (`gt..ag` / `ct..ac`), even when the intron itself
+/// is identical; this is a limitation of the aligner's own MD/CIGAR output, not a
+/// real alignment difference.
+///
+/// `~ppNNNss` → `~nnNNNnn` (length `NNN` unchanged); every other op is copied
+/// through unchanged. Unlike `cs_revcomp`, op order is **not** reversed — this is
+/// a same-strand normalization, applied to each side independently (after
+/// `cs_revcomp` for the opposite-strand comparison branch).
+pub fn cs_strip_splice_motifs(cs: &str) -> String {
+    let bytes = cs.as_bytes();
+    let len = bytes.len();
+    let mut pos: usize = 0;
+    let mut out = Vec::with_capacity(len);
+
+    while pos < len {
+        let op = bytes[pos];
+        let op_start = pos;
+        pos += 1;
+
+        match op {
+            // `:N` — digits only.
+            b':' => {
+                while pos < len && bytes[pos].is_ascii_digit() { pos += 1; }
+                out.extend_from_slice(&bytes[op_start..pos]);
+            }
+            // `=ACGT`, `+seq`, `-seq` — alphabetic run; copied through unchanged.
+            b'=' | b'+' | b'-' => {
+                while pos < len && bytes[pos].is_ascii_alphabetic() { pos += 1; }
+                out.extend_from_slice(&bytes[op_start..pos]);
+            }
+            // `*xy` — two bases; copied through unchanged.
+            b'*' => {
+                pos = (pos + 2).min(len);
+                out.extend_from_slice(&bytes[op_start..pos]);
+            }
+            // `~pp<len>ss` — blank both motifs, keep the intron length.
+            b'~' => {
+                pos = (pos + 2).min(len); // skip 2-char motif prefix
+                let dig_s = pos;
+                while pos < len && bytes[pos].is_ascii_digit() { pos += 1; }
+                let dig_e = pos;
+                pos = (pos + 2).min(len); // skip 2-char motif suffix
+                out.push(b'~');
+                out.extend_from_slice(b"nn");
+                out.extend_from_slice(&bytes[dig_s..dig_e]);
+                out.extend_from_slice(b"nn");
+            }
+            // Unrecognized byte — skip (defensive, matches parse_cs).
+            _ => {}
+        }
+    }
+
+    String::from_utf8(out).unwrap_or_default()
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // Tests
 // ───────────────────────────────────────────────────────────────────────────
@@ -352,6 +415,47 @@ mod tests {
         assert_eq!(cs_revcomp("=ACGT"), "=ACGT");
         // =AACC → =GGTT
         assert_eq!(cs_revcomp("=AACC"), "=GGTT");
+    }
+
+    // ── cs_strip_splice_motifs ─────────────────────────────────────────────
+
+    #[test]
+    fn strip_motifs_no_introns_unchanged() {
+        assert_eq!(cs_strip_splice_motifs(":50*ag:30"), ":50*ag:30");
+        assert_eq!(cs_strip_splice_motifs("=ACGT*at:10-gca"), "=ACGT*at:10-gca");
+    }
+
+    #[test]
+    fn strip_motifs_blanks_one_intron_keeps_length() {
+        assert_eq!(cs_strip_splice_motifs(":28~ct792ac:122"), ":28~nn792nn:122");
+    }
+
+    #[test]
+    fn strip_motifs_matches_star_placeholder() {
+        // STAR's own output already uses `nn`/`nn` — stripping is a no-op there,
+        // so it compares equal to minimap2's `ct..ac` after both are normalized.
+        assert_eq!(cs_strip_splice_motifs(":28~nn792nn:122"), ":28~nn792nn:122");
+        assert_eq!(
+            cs_strip_splice_motifs(":28~ct792ac:122"),
+            cs_strip_splice_motifs(":28~nn792nn:122"),
+        );
+    }
+
+    #[test]
+    fn strip_motifs_preserves_order_multiple_introns() {
+        // Order must NOT reverse (unlike cs_revcomp).
+        assert_eq!(
+            cs_strip_splice_motifs(":50~ct100ag:30~gt75ac:20"),
+            ":50~nn100nn:30~nn75nn:20"
+        );
+    }
+
+    #[test]
+    fn strip_motifs_idempotent() {
+        let cs = ":50~ct100ag:30*at:10-gca";
+        let once = cs_strip_splice_motifs(cs);
+        let twice = cs_strip_splice_motifs(&once);
+        assert_eq!(once, twice);
     }
 
     #[test]
