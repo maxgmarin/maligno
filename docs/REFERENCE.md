@@ -47,12 +47,14 @@ maligno compare-readinfo -a A.readinfo.tsv.gz -b B.readinfo.tsv.gz -o compare.ts
 
 | Subcommand    | Input                              | Output                                  |
 |---------------|------------------------------------|-----------------------------------------|
-| **`compare`** | two PAFs (`-a`, `-b`)              | **a results directory** (`--outdir`/`--prefix`): per-set alninfo + readinfo for A and B, plus the comparison TSV — **the primary entry point**. Sorts inputs and verifies read-ID sets match. `--mode full` (default, 94 cols) or `--mode junctions` (47-col view) |
+| **`compare`** | two PAFs (`-a`, `-b`; file paths only, no stdin) | **a results directory** (`--outdir`/`--prefix`): per-set alninfo + readinfo for A and B, plus the comparison TSV — **the primary entry point**. Sorts inputs and verifies read-ID sets match. `--mode full` (default, 94 cols) or `--mode junctions` (47-col view) |
 | `paf2tables`  | PAF (`-i`, `.gz`/`-` ok)           | **alninfo TSV** (`--alninfo`, 35 cols) and/or **readinfo TSV** (`--readinfo`, 33 cols), in one pass |
 | `compare-readinfo` | two readinfo TSVs (`-a`, `-b`) | per-read comparison TSV (`-o`); same `--mode full`/`junctions` as `compare` |
 | `sam2paf`     | SAM file or stdin (`-`)            | PAF written to stdout                   |
 
-All inputs/outputs transparently support gzip (`.gz` suffix) and stdin/stdout (`-`).
+All inputs/outputs transparently support gzip (`.gz` suffix) and stdin/stdout (`-`) —
+except `compare`'s `-a`/`-b`, which require real file paths (no stdin), since
+`compare` always needs two independent inputs.
 
 ### Working with PAF files: `paf2tables` (start here)
 

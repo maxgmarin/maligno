@@ -38,14 +38,25 @@ use crate::paf_groups::PafGroups;
 use crate::readinfo::{collapse_group, ReadInfoRow, READINFO_HEADER};
 use crate::record::AlnInfo;
 
+/// Reject stdin (`-`) for `compare`'s two-file inputs. `compare` always needs two
+/// independent files, so piping a single stream in for one side doesn't make
+/// sense — require a real path for both `--paf-a` and `--paf-b`.
+fn require_paf_path(s: &str) -> Result<String, String> {
+    if s == "-" {
+        Err("stdin ('-') is not supported here; provide a path to a PAF file".to_string())
+    } else {
+        Ok(s.to_string())
+    }
+}
+
 #[derive(clap::Args, Debug)]
 pub struct CompareArgs {
-    /// PAF for dataset A. Use '-' for stdin; '.gz' auto-decompressed.
-    #[arg(short = 'a', long = "paf-a", value_name = "a.paf")]
+    /// PAF for dataset A ('.gz' auto-decompressed).
+    #[arg(short = 'a', long = "paf-a", value_name = "a.paf", value_parser = require_paf_path)]
     paf_a: String,
 
-    /// PAF for dataset B. Use '-' for stdin; '.gz' auto-decompressed.
-    #[arg(short = 'b', long = "paf-b", value_name = "b.paf")]
+    /// PAF for dataset B ('.gz' auto-decompressed).
+    #[arg(short = 'b', long = "paf-b", value_name = "b.paf", value_parser = require_paf_path)]
     paf_b: String,
 
     /// Label for dataset A.

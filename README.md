@@ -71,7 +71,9 @@ maligno compare --mode junctions \
 # → results/Splice_vs_SpliceHQ.compare.junctions.tsv.gz
 ```
 
-All inputs/outputs transparently support gzip (`.gz`) and stdin/stdout (`-`).
+All inputs/outputs transparently support gzip (`.gz`) and stdin/stdout (`-`) —
+except `compare`'s `-a`/`-b`, which require real file paths (no stdin), since
+`compare` always needs two independent inputs.
 
 ---
 
