@@ -83,7 +83,7 @@ pub struct CompareArgs {
     #[arg(long = "sort-mem", value_name = "SIZE", default_value = "1G")]
     sort_mem: String,
 
-    /// Temp directory for sort spill files (default: --outdir).
+    /// Temp directory for temp out of memory sort files (default: --outdir).
     #[arg(long = "tmp-dir", value_name = "DIR")]
     tmp_dir: Option<String>,
 
@@ -91,8 +91,8 @@ pub struct CompareArgs {
     #[arg(long = "sort-threads", value_name = "N", default_value_t = 1)]
     sort_threads: usize,
 
-    /// Compare the shared intersection instead of erroring when the two PAFs do
-    /// not carry the exact same Query_Name set.
+    /// Compare the shared intersection of aligned sequences instead of erroring when the two PAFs do
+    /// not carry the exact same "Query_Name" set.
     #[arg(long = "allow-id-mismatch")]
     allow_id_mismatch: bool,
 
@@ -101,7 +101,7 @@ pub struct CompareArgs {
     keep_sorted_paf: bool,
 
     /// Skip the internal sort: assume both PAFs already contain the same reads,
-    /// grouped by Query_Name and in the same relative order.
+    /// grouped by "Query_Name" and in the same relative order.
     /// Not combinable with --allow-id-mismatch or --keep-sorted-paf.
     #[arg(long = "presorted", conflicts_with_all = ["allow_id_mismatch", "keep_sorted_paf"])]
     presorted: bool,
@@ -114,8 +114,7 @@ pub struct CompareArgs {
     #[arg(long = "no-readinfo")]
     no_readinfo: bool,
 
-    /// Skip the automatic find-query-diff step run after the comparison table is
-    /// written (query-different reads + merged genomic regions, gzip'd).
+    /// Skip the "find-query-diff" step run at the end of the comparison.
     #[arg(long = "skip-find-query-diff")]
     skip_find_query_diff: bool,
 }

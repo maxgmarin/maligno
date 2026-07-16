@@ -15,7 +15,7 @@ pub struct PafRecord<'a> {
     pub num_residue_matches:  u64,
     pub aln_block_len:        u64,
     pub mapq:                 u32,
-    /// SAM `ms:i` tag (mate / second-best alignment score).
+    /// SAM `ms:i` tag (mapping Score: the maximum-scoring sub-segment within a given alignment).
     pub ms:                   i64,
     /// SAM `AS:i` tag (alignment score).
     pub aln_score:            i64,
