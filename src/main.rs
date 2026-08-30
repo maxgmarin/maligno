@@ -63,7 +63,7 @@ use find_query_diff::FindQueryDiffArgs;
 use paf2tables::Paf2TablesArgs;
 use sam2paf::Sam2pafArgs;
 
-/// Unified PAF alignment-comparison toolkit.
+/// Unified alignment-comparison toolkit.
 #[derive(Parser, Debug)]
 #[command(name = "maligno", version, about)]
 struct Cli {
