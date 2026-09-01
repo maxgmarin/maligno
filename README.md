@@ -7,7 +7,7 @@
 # maligno
 
 **maligno** is a toolkit for systematically comparing two sets of alignments read-by-read.
-The primary command, **`maligno compare`**, takes two alignment files (e.g. PAF) for the same set of reads
+The primary command, **`maligno compare`**, takes two alignment files ([PAF](https://github.com/lh3/miniasm/blob/master/PAF.md)) for the same set of reads
 and produces a detailed per-read alignment comparison table. This table enables easy comparison of alignment stats (alignment scores, coverage, indels, mismatches,
 soft-clipping, and splice-junction agreement) across the analyzed reads.
 
