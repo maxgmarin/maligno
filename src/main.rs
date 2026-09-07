@@ -18,7 +18,7 @@
 //!
 //!   1. `compare`            end-to-end comparison of all input alignments
 //!                           (PRIMARY analysis entry point). `--mode full`
-//!                           (default, 94 cols) or `--mode junctions` (47-col view).
+//!                           (default, 96 cols) or `--mode junctions` (49-col view).
 //!   2. `sam2paf`            SAM → PAF converter (utility; use before paf2tables/compare)
 //!   3. `paf2tables`         PAF → alninfo TSV and/or readinfo TSV tables
 //!   4. `compare-readinfo`   two readinfo TSVs → per-read comparison TSV (same `--mode`)
@@ -34,7 +34,7 @@
 
 // ── Pipeline modules ──────────────────────────────────────────────────────────
 mod cigar_junctions;    // CIGAR-based intron extractor (utility; not yet wired in)
-mod compare_junctions;  // junction-view (47-col) header/row emitters (library; --mode junctions)
+mod compare_junctions;  // junction-view (49-col) header/row emitters (library; --mode junctions)
 mod compare_streaming;  // `compare-readinfo` command + shared comparison core
 mod compare_summary;    // `compare-summary` command + shared classifier/accumulator
 mod find_query_diff;   // `find-query-diff` command (query-different reads + regions)

@@ -1,7 +1,7 @@
 //! Splice-junction-focused comparison view (the `--mode junctions` output).
 //!
 //! This module is a **library**: it provides the header + row emitters for the
-//! 47-column junction-focused comparison, reused by both `compare --mode
+//! 49-column junction-focused comparison, reused by both `compare --mode
 //! junctions` (`compare_streaming::run`) and `pafcompare --mode junctions`
 //! (`pafcompare::run`). It no longer owns a subcommand of its own.
 //!
@@ -22,7 +22,7 @@ use crate::junction::{
 
 // ── Column schemas ──────────────────────────────────────────────────────────
 
-/// Per-side data columns (each appears once for A and once for B, suffixed).
+/// Per-side data columns (each appears once suffixed `_A` and once `_B`).
 const PER_SIDE_COLS: &[&str] = &[
     "TargetChr",
     "Strand",
@@ -63,19 +63,21 @@ const COMPARISON_COLS: &[&str] = &[
 
 // ── Reusable header + row emitters (shared with `pafcompare`) ────────────────
 
-/// Write the `compare-junctions` header: keys, per-side data columns (suffixed
-/// with each label), then the fixed comparison/object columns.
-pub(crate) fn write_compare_junctions_header<W: Write>(
-    out: &mut W,
-    label_a: &str,
-    label_b: &str,
-) -> std::io::Result<()> {
-    write!(out, "Read_Name\tRead_Len")?;
+/// Write the `compare-junctions` header: keys, the two set-label columns, the
+/// per-side data columns (suffixed `_A` / `_B`), then the fixed
+/// comparison/object columns.
+///
+/// Side suffixes are **fixed** (`_A` / `_B`), never the user's label — the
+/// human-readable labels are carried as the `Label_A` / `Label_B` data columns
+/// instead (see `emit_compare_junctions_row`), so column names are stable across
+/// datasets and unambiguous even when a label itself contains an underscore.
+pub(crate) fn write_compare_junctions_header<W: Write>(out: &mut W) -> std::io::Result<()> {
+    write!(out, "Read_Name\tRead_Len\tLabel_A\tLabel_B")?;
     for col in PER_SIDE_COLS {
-        write!(out, "\t{col}_{label_a}")?;
+        write!(out, "\t{col}_A")?;
     }
     for col in PER_SIDE_COLS {
-        write!(out, "\t{col}_{label_b}")?;
+        write!(out, "\t{col}_B")?;
     }
     for col in COMPARISON_COLS {
         write!(out, "\t{col}")?;
@@ -91,6 +93,8 @@ pub(crate) fn emit_compare_junctions_row<'r, W, FA, FB>(
     out: &mut W,
     name: &str,
     len: u64,
+    label_a: &str,
+    label_b: &str,
     get_a: FA,
     get_b: FB,
 ) -> std::io::Result<()>
@@ -149,8 +153,9 @@ where
     let g_only_a_str = format_genomic_junction_tuple(&gj_only_a_vec);
     let g_only_b_str = format_genomic_junction_tuple(&gj_only_b_vec);
 
-    // Write the row.
-    write!(out, "{name}\t{len}")?;
+    // Write the row. `Label_A` / `Label_B` name the two sets on every row, so
+    // any row subset of this table remains self-describing.
+    write!(out, "{name}\t{len}\t{label_a}\t{label_b}")?;
     for f in &a_raw {
         write!(out, "\t{}", escape_tsv_field(f))?;
     }

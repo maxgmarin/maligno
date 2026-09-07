@@ -29,14 +29,34 @@ use crate::junction::{
 /// the two commands expose an identical `--mode` surface.
 #[derive(Clone, Debug, Default, clap::ValueEnum)]
 pub(crate) enum CompareMode {
-    /// All per-read metrics, including genomic-junction comparison (94 cols).
+    /// All per-read metrics, including genomic-junction comparison (96 cols).
     #[default]
     Full,
-    /// Splice-junction-focused view (47 cols).
+    /// Splice-junction-focused view (49 cols).
     Junctions,
 }
 
 // ── CLI args ─────────────────────────────────────────────────────────────────
+
+/// Validate a `--label-a` / `--label-b` value.
+///
+/// Since v0.13.0 the label is written as a **data value** (the `Label_A` /
+/// `Label_B` columns) on every comparison row, and it is also interpolated into
+/// per-set output filenames, so a tab/newline would corrupt the TSV and a path
+/// separator would redirect output. Underscores are fine — side identity comes
+/// from the fixed `_A` / `_B` column suffixes, not from parsing the label.
+pub(crate) fn validate_set_label(s: &str) -> Result<String, String> {
+    if s.is_empty() {
+        return Err("label must not be empty".to_string());
+    }
+    if let Some(bad) = s.chars().find(|c| matches!(c, '\t' | '\n' | '\r' | '/' | '\\')) {
+        return Err(format!(
+            "label must not contain {bad:?} (tabs/newlines would corrupt the output \
+             table; path separators would redirect the per-set output files)"
+        ));
+    }
+    Ok(s.to_string())
+}
 
 #[derive(clap::Args, Debug)]
 pub struct CompareReadinfoArgs {
@@ -48,12 +68,14 @@ pub struct CompareReadinfoArgs {
     #[arg(short = 'b', long = "readinfo-b", value_name = "readinfo_b.tsv")]
     pub readinfo_b: String,
 
-    /// Label for dataset A (used as column suffix)
-    #[arg(long = "label-a", value_name = "LABEL", default_value = "SetA")]
+    /// Name for dataset A, recorded in the output's `Label_A` column
+    #[arg(long = "label-a", value_name = "LABEL", default_value = "SetA",
+          value_parser = validate_set_label)]
     pub label_a: String,
 
-    /// Label for dataset B (used as column suffix)
-    #[arg(long = "label-b", value_name = "LABEL", default_value = "SetB")]
+    /// Name for dataset B, recorded in the output's `Label_B` column
+    #[arg(long = "label-b", value_name = "LABEL", default_value = "SetB",
+          value_parser = validate_set_label)]
     pub label_b: String,
 
     /// Output comparison TSV file ('.gz' for gzip)
@@ -67,7 +89,7 @@ pub struct CompareReadinfoArgs {
     pub ignore_row_mismatch: bool,
 
     /// Comparison view: `full` (all per-read metrics incl. genomic-junction
-    /// comparison, 94 cols) or `junctions` (splice-junction-focused, 47 cols).
+    /// comparison, 96 cols) or `junctions` (splice-junction-focused, 49 cols).
     #[arg(long = "mode", value_enum, default_value_t = CompareMode::Full)]
     pub mode: CompareMode,
 }
@@ -147,19 +169,21 @@ fn comparison_col_names() -> Vec<&'static str> {
 
 // ── Reusable header + row emitters (shared with `pafcompare`) ────────────────
 
-/// Write the `compare` output header: `Read_Name`, `Read_Len`, the per-side data
-/// columns (suffixed with each label), then the comparison/object columns.
-pub(crate) fn write_compare_header<W: Write>(
-    out: &mut W,
-    label_a: &str,
-    label_b: &str,
-) -> std::io::Result<()> {
-    write!(out, "Read_Name\tRead_Len")?;
+/// Write the `compare` output header: `Read_Name`, `Read_Len`, the two set-label
+/// columns, the per-side data columns (suffixed `_A` / `_B`), then the
+/// comparison/object columns.
+///
+/// Side suffixes are **fixed** (`_A` / `_B`), never the user's label — the
+/// human-readable labels are carried as the `Label_A` / `Label_B` data columns
+/// instead (see `emit_compare_row`), so column names are stable across datasets
+/// and unambiguous even when a label itself contains an underscore.
+pub(crate) fn write_compare_header<W: Write>(out: &mut W) -> std::io::Result<()> {
+    write!(out, "Read_Name\tRead_Len\tLabel_A\tLabel_B")?;
     for col in READINFO_DATA_COLS {
-        write!(out, "\t{col}_{label_a}")?;
+        write!(out, "\t{col}_A")?;
     }
     for col in READINFO_DATA_COLS {
-        write!(out, "\t{col}_{label_b}")?;
+        write!(out, "\t{col}_B")?;
     }
     for col in comparison_col_names() {
         write!(out, "\t{col}")?;
@@ -179,6 +203,8 @@ pub(crate) fn emit_compare_row<'r, W, FA, FB>(
     out: &mut W,
     name: &str,
     len: u64,
+    label_a: &str,
+    label_b: &str,
     get_a: FA,
     get_b: FB,
 ) -> std::io::Result<()>
@@ -277,8 +303,9 @@ where
         (m, oa, ob, oa + ob, oa_str, ob_str)
     };
 
-    // Write output row.
-    write!(out, "{name}\t{len}")?;
+    // Write output row. `Label_A` / `Label_B` name the two sets on every row, so
+    // any row subset of this table remains self-describing.
+    write!(out, "{name}\t{len}\t{label_a}\t{label_b}")?;
     for f in &a_raw_fields {
         write!(out, "\t{}", escape_tsv_field(f))?;
     }
@@ -460,15 +487,15 @@ pub fn run(args: &CompareReadinfoArgs) -> Result<()> {
     // Open output
     let mut out = open_output(Some(&args.output))?;
 
-    // `junctions` mode emits the splice-focused 47-col view (genomic-junction
+    // `junctions` mode emits the splice-focused 49-col view (genomic-junction
     // metrics always on); `full` mode emits the full per-read comparison.
     let junctions_mode = matches!(args.mode, CompareMode::Junctions);
 
     // Write header
     if junctions_mode {
-        write_compare_junctions_header(&mut out, &args.label_a, &args.label_b)?;
+        write_compare_junctions_header(&mut out)?;
     } else {
-        write_compare_header(&mut out, &args.label_a, &args.label_b)?;
+        write_compare_header(&mut out)?;
     }
 
     eprintln!("[INFO] Starting comparison...");
@@ -490,6 +517,8 @@ pub fn run(args: &CompareReadinfoArgs) -> Result<()> {
                     &mut out,
                     &key_a.name,
                     key_a.len,
+                    &args.label_a,
+                    &args.label_b,
                     |c| reader_a.get_col(c).unwrap_or(""),
                     |c| reader_b.get_col(c).unwrap_or(""),
                 )?;
@@ -498,6 +527,8 @@ pub fn run(args: &CompareReadinfoArgs) -> Result<()> {
                     &mut out,
                     &key_a.name,
                     key_a.len,
+                    &args.label_a,
+                    &args.label_b,
                     |c| reader_a.get_col(c).unwrap_or(""),
                     |c| reader_b.get_col(c).unwrap_or(""),
                 )?;

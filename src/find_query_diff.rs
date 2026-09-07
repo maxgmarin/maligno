@@ -34,7 +34,9 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
-use crate::compare_summary::{classify, detect_labels, CompareSummary, MapStatus, ReadClass};
+use crate::compare_summary::{
+    classify, labels_from_row, require_ab_schema, CompareSummary, MapStatus, ReadClass,
+};
 use crate::interval_merge::{merge_and_count, Ivl, Locus};
 use crate::io_utils::{open_input, open_output};
 use crate::junction::{junction_set_stats, parse_junction_str};
@@ -222,22 +224,22 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
     let cols: Vec<&str> = header.split('\t').collect();
     let col_index: HashMap<&str, usize> =
         cols.iter().copied().enumerate().map(|(i, c)| (c, i)).collect();
-    let (label_a, label_b) = detect_labels(&cols)?;
+    require_ab_schema(&cols)?;
     let read_name_idx = *col_index
         .get("Read_Name")
         .context("comparison table is missing column 'Read_Name'")?;
 
     // `junctions` (query-space set) is needed by `--compare-by junctions`; it is
-    // present in both the full (94-col) and junctions (47-col) compare tables, so
+    // present in both the full (96-col) and junctions (49-col) compare tables, so
     // requiring it unconditionally never breaks either input.
     const NEEDED: [&str; 8] = [
         "TargetChr", "Strand", "cs", "Query_Start", "Query_End", "Target_Start", "Target_End",
         "junctions",
     ];
-    let resolve = |label: &str| -> Result<HashMap<&'static str, usize>> {
+    let resolve = |side: &str| -> Result<HashMap<&'static str, usize>> {
         let mut m = HashMap::new();
         for base in NEEDED {
-            let name = format!("{base}_{label}");
+            let name = format!("{base}_{side}");
             let idx = *col_index
                 .get(name.as_str())
                 .with_context(|| format!("comparison table is missing column '{name}'"))?;
@@ -245,8 +247,14 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
         }
         Ok(m)
     };
-    let idx_a = resolve(&label_a)?;
-    let idx_b = resolve(&label_b)?;
+    let idx_a = resolve("A")?;
+    let idx_b = resolve("B")?;
+
+    // Human-readable labels come from each row's `Label_A` / `Label_B` columns
+    // (picked up from the first data row); used for reporting only.
+    let mut label_a = "A".to_string();
+    let mut label_b = "B".to_string();
+    let mut seen_row = false;
 
     // ── Pass 1: stream rows → read TSV + differing-interval vectors ────────────
     let mut reads_w = open_output(Some(&reads_out))?;
@@ -271,6 +279,10 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
             continue;
         }
         let fields: Vec<&str> = line.split('\t').collect();
+        if !seen_row {
+            (label_a, label_b) = labels_from_row(&col_index, &fields);
+            seen_row = true;
+        }
         let get_a = |c: &str| -> &str {
             idx_a.get(c).and_then(|&i| fields.get(i)).copied().unwrap_or("")
         };
@@ -356,15 +368,18 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
     let rows = summary_rows(&summary);
     let mut sw = open_output(Some(&summary_out))?;
     writeln!(sw, "Category\tCount")?;
-    // Record the active mode in every summary (both `all` and `junctions`) so the
-    // file is self-describing regardless of how it was produced.
+    // Record the active mode and the two set labels in every summary (both `all`
+    // and `junctions`) so the file is self-describing regardless of how it was
+    // produced.
     writeln!(sw, "compare_by\t{compare_by_str}")?;
+    writeln!(sw, "label_A\t{label_a}")?;
+    writeln!(sw, "label_B\t{label_b}")?;
     for (k, v) in &rows {
         writeln!(sw, "{k}\t{v}")?;
     }
     sw.flush()?;
 
-    eprintln!("Query-diff summary (compare-by={compare_by_str}):");
+    eprintln!("Query-diff summary (compare-by={compare_by_str}, A={label_a}, B={label_b}):");
     for (k, v) in &rows {
         eprintln!("  {k:<24} {v}");
     }

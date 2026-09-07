@@ -29,7 +29,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 
 use crate::compare_junctions::{emit_compare_junctions_row, write_compare_junctions_header};
-use crate::compare_streaming::{emit_compare_row, write_compare_header, CompareMode};
+use crate::compare_streaming::{
+    emit_compare_row, validate_set_label, write_compare_header, CompareMode,
+};
 use crate::compare_summary::{classify, CompareSummary};
 use crate::external_sort::{parse_mem, read_id_set_check, sort_paf_to_file};
 use crate::find_query_diff::{self, FindQueryDiffArgs};
@@ -59,12 +61,14 @@ pub struct CompareArgs {
     #[arg(short = 'b', long = "paf-b", value_name = "b.paf", value_parser = require_paf_path)]
     paf_b: String,
 
-    /// Label for dataset A.
-    #[arg(long = "label-a", value_name = "LABEL", default_value = "SetA")]
+    /// Name for dataset A, recorded in the comparison table's `Label_A` column.
+    #[arg(long = "label-a", value_name = "LABEL", default_value = "SetA",
+          value_parser = validate_set_label)]
     label_a: String,
 
-    /// Label for dataset B.
-    #[arg(long = "label-b", value_name = "LABEL", default_value = "SetB")]
+    /// Name for dataset B, recorded in the comparison table's `Label_B` column.
+    #[arg(long = "label-b", value_name = "LABEL", default_value = "SetB",
+          value_parser = validate_set_label)]
     label_b: String,
 
     /// Output directory.
@@ -75,7 +79,7 @@ pub struct CompareArgs {
     #[arg(short = 'p', long = "prefix", value_name = "NAME")]
     prefix: String,
 
-    /// Comparison view: `full` (94 cols) or `junctions` (47-col splice view).
+    /// Comparison view: `full` (96 cols) or `junctions` (49-col splice view).
     #[arg(long = "mode", value_enum, default_value_t = CompareMode::Full)]
     mode: CompareMode,
 
@@ -121,6 +125,15 @@ pub struct CompareArgs {
 
 pub fn run(args: &CompareArgs) -> Result<()> {
     // ── Step 0: setup ─────────────────────────────────────────────────────────
+    // Distinct labels are required: they name the per-set output files, so equal
+    // labels would silently overwrite A's alninfo/readinfo with B's.
+    if args.label_a == args.label_b {
+        bail!(
+            "--label-a and --label-b are both '{}' — they must differ (they name \
+             the per-set output files)",
+            args.label_a
+        );
+    }
     let outdir = Path::new(&args.outdir);
     fs::create_dir_all(outdir)
         .with_context(|| format!("cannot create --outdir '{}'", args.outdir))?;
@@ -350,9 +363,9 @@ fn compare_sorted_pafs(
     // Comparison output + header.
     let mut out = open_output(Some(compare_out))?;
     if junctions {
-        write_compare_junctions_header(&mut out, label_a, label_b)?;
+        write_compare_junctions_header(&mut out)?;
     } else {
-        write_compare_header(&mut out, label_a, label_b)?;
+        write_compare_header(&mut out)?;
     }
 
     // Per-set side outputs. A suppressed table writes to `io::sink()` (no file is
@@ -391,6 +404,8 @@ fn compare_sorted_pafs(
         &header_cols,
         junctions,
         allow_id_mismatch,
+        label_a,
+        label_b,
         summary,
     )?;
 
@@ -417,6 +432,8 @@ fn run_merge<R: BufRead>(
     header_cols: &[&str],
     junctions: bool,
     allow_id_mismatch: bool,
+    label_a: &str,
+    label_b: &str,
     summary: &mut CompareSummary,
 ) -> Result<(u64, u64, u64)> {
     let mut pending_a = pull(groups_a, al_a, ri_a)?;
@@ -478,9 +495,13 @@ fn run_merge<R: BufRead>(
                     summary.observe(&classify(&get_a, &get_b));
 
                     if junctions {
-                        emit_compare_junctions_row(out, &ra.read_name, ra.read_len, get_a, get_b)?;
+                        emit_compare_junctions_row(
+                            out, &ra.read_name, ra.read_len, label_a, label_b, get_a, get_b,
+                        )?;
                     } else {
-                        emit_compare_row(out, &ra.read_name, ra.read_len, get_a, get_b)?;
+                        emit_compare_row(
+                            out, &ra.read_name, ra.read_len, label_a, label_b, get_a, get_b,
+                        )?;
                     }
 
                     n_matched += 1;

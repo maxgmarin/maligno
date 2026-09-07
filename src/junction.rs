@@ -65,7 +65,7 @@ pub fn junction_set_stats(a: &[i64], b: &[i64]) -> (u64, u64, u64) {
 ///
 /// As of v0.2.3 the serialized form for `genomic_junctions` drops the chromosome
 /// from each inner tuple — chrom is available separately via the per-row
-/// `TargetChr` (alninfo) / `TargetChr_<label>` (compare) column. The caller
+/// `TargetChr` (alninfo) / `TargetChr_A` & `TargetChr_B` (compare) column. The caller
 /// reconstructs full `(chrom, start, end)` tuples by combining this output with
 /// the relevant per-row chrom.
 ///

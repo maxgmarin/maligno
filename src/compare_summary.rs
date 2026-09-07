@@ -13,8 +13,8 @@
 //! `classify` reads per-side values by **unsuffixed** readinfo column name through
 //! two accessor closures, so it is independent of the compare `--mode` (the columns
 //! it needs — `cs`, `Strand`, `Query_Start`, `Query_End`, `TargetChr`,
-//! `Target_Start`, `Target_End` — are present in both the 94-col `full` and the
-//! 47-col `junctions` outputs).
+//! `Target_Start`, `Target_End` — are present in both the 96-col `full` and the
+//! 49-col `junctions` outputs).
 //!
 //! cs-tag equality is **motif-blind**: intron donor/acceptor letters are blanked
 //! out (via `cs_strip_splice_motifs`) before comparing, so an intron with the same
@@ -177,28 +177,36 @@ impl CompareSummary {
 
     /// The ordered (category, count) rows — the single layout used by both the
     /// TSV writer and the stderr renderer.
-    fn rows(&self, label_a: &str, label_b: &str) -> Vec<(String, u64)> {
+    ///
+    /// Category names use the fixed `A` / `B` side identifiers, so summary keys
+    /// are stable across datasets and machine-parseable without knowing the
+    /// labels. The human-readable labels are emitted separately as `label_A` /
+    /// `label_B` provenance rows (see `write_tsv` / `render_stderr`).
+    fn rows(&self) -> Vec<(String, u64)> {
         vec![
             ("reads_compared".to_string(), self.reads_compared),
             ("aligned_both".to_string(), self.aligned_both),
-            (format!("aligned_only_{label_a}"), self.aligned_only_a),
-            (format!("aligned_only_{label_b}"), self.aligned_only_b),
+            ("aligned_only_A".to_string(), self.aligned_only_a),
+            ("aligned_only_B".to_string(), self.aligned_only_b),
             ("aligned_neither".to_string(), self.aligned_neither),
             ("query_identical".to_string(), self.query_identical),
             ("query_identical_same_strand".to_string(), self.query_identical_same_strand),
             ("query_identical_revcomp".to_string(), self.query_identical_rc),
             ("query_not_identical".to_string(), self.query_not_identical()),
             ("reference_identical".to_string(), self.reference_identical),
-            (format!("present_only_in_{label_a}_by_id"), self.a_only_by_id),
-            (format!("present_only_in_{label_b}_by_id"), self.b_only_by_id),
+            ("present_only_in_A_by_id".to_string(), self.a_only_by_id),
+            ("present_only_in_B_by_id".to_string(), self.b_only_by_id),
         ]
     }
 
-    /// Write the summary as a 2-column TSV (`Category<TAB>Count`).
+    /// Write the summary as a 2-column TSV (`Category<TAB>Count`), preceded by
+    /// the two label provenance rows so the file is self-describing.
     pub fn write_tsv(&self, path: &str, label_a: &str, label_b: &str) -> Result<()> {
         let mut w = open_output(Some(path))?;
         writeln!(w, "Category\tCount")?;
-        for (k, v) in self.rows(label_a, label_b) {
+        writeln!(w, "label_A\t{label_a}")?;
+        writeln!(w, "label_B\t{label_b}")?;
+        for (k, v) in self.rows() {
             writeln!(w, "{k}\t{v}")?;
         }
         w.flush()?;
@@ -208,7 +216,9 @@ impl CompareSummary {
     /// Print a human-readable block to stderr.
     pub fn render_stderr(&self, label_a: &str, label_b: &str) {
         eprintln!("Comparison summary:");
-        for (k, v) in self.rows(label_a, label_b) {
+        eprintln!("  {:<34} {label_a}", "label_A");
+        eprintln!("  {:<34} {label_b}", "label_B");
+        for (k, v) in self.rows() {
             eprintln!("  {k:<34} {v}");
         }
     }
@@ -227,22 +237,56 @@ pub struct CompareSummaryArgs {
     output: Option<String>,
 }
 
-/// Detect the two dataset labels from a compare-table header by stripping the
-/// `TargetChr_` prefix (in column order): `(label_a, label_b)`. Shared by
-/// `compare-summary` and `find-query-diff`.
-pub(crate) fn detect_labels(cols: &[&str]) -> Result<(String, String)> {
-    let labels: Vec<String> = cols
+/// Confirm a compare-table header uses the fixed `_A` / `_B` side suffixes
+/// introduced in v0.13.0. Shared by `compare-summary` and `find-query-diff`.
+///
+/// Pre-v0.13.0 tables suffixed per-side columns with the dataset *label*
+/// (`TargetChr_Splice`), which made column names dataset-specific and ambiguous
+/// whenever a label itself contained an underscore. Those tables are not
+/// readable by this version — the error tells the user to regenerate.
+pub(crate) fn require_ab_schema(cols: &[&str]) -> Result<()> {
+    let has_a = cols.contains(&"TargetChr_A");
+    let has_b = cols.contains(&"TargetChr_B");
+    if has_a && has_b {
+        return Ok(());
+    }
+    // A legacy table is recognizable by label-suffixed `TargetChr_*` columns;
+    // name them in the error so the cause is obvious.
+    let legacy: Vec<&str> = cols
         .iter()
-        .filter_map(|c| c.strip_prefix("TargetChr_").map(|s| s.to_string()))
+        .copied()
+        .filter(|c| c.starts_with("TargetChr_"))
         .collect();
-    if labels.len() != 2 {
+    if !legacy.is_empty() {
         bail!(
-            "expected exactly two `TargetChr_<label>` columns in the header, found {} \
-             — is this a maligno compare table?",
-            labels.len()
+            "this comparison table uses the pre-v0.13.0 label-suffixed schema ({}) \
+             — regenerate it with maligno v0.13+ (`compare` / `compare-readinfo`), \
+             which writes fixed `TargetChr_A` / `TargetChr_B` columns plus \
+             `Label_A` / `Label_B`",
+            legacy.join(", ")
         );
     }
-    Ok((labels[0].clone(), labels[1].clone()))
+    bail!(
+        "comparison table is missing the `TargetChr_A` / `TargetChr_B` columns \
+         — is this a maligno compare table?"
+    );
+}
+
+/// Recover the human-readable set labels from a compare table's first data row
+/// (the `Label_A` / `Label_B` columns). Falls back to `("A", "B")` when those
+/// columns are absent or the table has no data rows, so label reporting is
+/// best-effort and never blocks the actual comparison.
+pub(crate) fn labels_from_row(col_index: &HashMap<&str, usize>, fields: &[&str]) -> (String, String) {
+    let pick = |name: &str, fallback: &str| -> String {
+        col_index
+            .get(name)
+            .and_then(|&i| fields.get(i))
+            .copied()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(fallback)
+            .to_string()
+    };
+    (pick("Label_A", "A"), pick("Label_B", "B"))
 }
 
 pub fn run(args: &CompareSummaryArgs) -> Result<()> {
@@ -259,17 +303,17 @@ pub fn run(args: &CompareSummaryArgs) -> Result<()> {
     let col_index: HashMap<&str, usize> =
         cols.iter().copied().enumerate().map(|(i, c)| (c, i)).collect();
 
-    // Detect label_a / label_b from the two `TargetChr_<label>` columns, in order.
-    let (label_a, label_b) = detect_labels(&cols)?;
+    // Require the v0.13+ fixed `_A` / `_B` side suffixes.
+    require_ab_schema(&cols)?;
 
     // The unsuffixed columns `classify` reads; resolve each side's index up front.
     const NEEDED: [&str; 7] = [
         "TargetChr", "Strand", "cs", "Query_Start", "Query_End", "Target_Start", "Target_End",
     ];
-    let resolve = |label: &str| -> Result<HashMap<&'static str, usize>> {
+    let resolve = |side: &str| -> Result<HashMap<&'static str, usize>> {
         let mut m = HashMap::new();
         for base in NEEDED {
-            let name = format!("{base}_{label}");
+            let name = format!("{base}_{side}");
             let idx = *col_index
                 .get(name.as_str())
                 .with_context(|| format!("comparison table is missing column '{name}'"))?;
@@ -277,8 +321,14 @@ pub fn run(args: &CompareSummaryArgs) -> Result<()> {
         }
         Ok(m)
     };
-    let idx_a = resolve(&label_a)?;
-    let idx_b = resolve(&label_b)?;
+    let idx_a = resolve("A")?;
+    let idx_b = resolve("B")?;
+
+    // The human-readable labels live in each row's `Label_A` / `Label_B`, so they
+    // are picked up from the first data row and used for reporting only.
+    let mut label_a = "A".to_string();
+    let mut label_b = "B".to_string();
+    let mut seen_row = false;
 
     let mut summary = CompareSummary::default();
     for line in reader.lines() {
@@ -287,6 +337,10 @@ pub fn run(args: &CompareSummaryArgs) -> Result<()> {
             continue;
         }
         let fields: Vec<&str> = line.split('\t').collect();
+        if !seen_row {
+            (label_a, label_b) = labels_from_row(&col_index, &fields);
+            seen_row = true;
+        }
         let get_a = |c: &str| -> &str {
             idx_a.get(c).and_then(|&i| fields.get(i)).copied().unwrap_or("")
         };
@@ -306,4 +360,110 @@ pub fn run(args: &CompareSummaryArgs) -> Result<()> {
          present_only_in_* by-ID counts are 0 here.)"
     );
     Ok(())
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Tests
+// ───────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn index<'a>(cols: &[&'a str]) -> HashMap<&'a str, usize> {
+        cols.iter().copied().enumerate().map(|(i, c)| (c, i)).collect()
+    }
+
+    // ─── require_ab_schema ─────────────────────────────────────────────────
+
+    #[test]
+    fn ab_schema_accepted() {
+        let cols = ["Read_Name", "Label_A", "Label_B", "TargetChr_A", "TargetChr_B"];
+        assert!(require_ab_schema(&cols).is_ok());
+    }
+
+    #[test]
+    fn legacy_label_suffixed_schema_is_rejected_with_regenerate_hint() {
+        // A pre-v0.13.0 table: per-side columns suffixed with the dataset label.
+        let cols = ["Read_Name", "TargetChr_Splice", "TargetChr_SpliceHQ"];
+        let err = require_ab_schema(&cols).unwrap_err().to_string();
+        assert!(err.contains("pre-v0.13.0"), "unexpected error: {err}");
+        assert!(err.contains("regenerate"), "unexpected error: {err}");
+        // Names the offending columns so the cause is obvious.
+        assert!(err.contains("TargetChr_Splice"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn one_sided_ab_schema_is_rejected() {
+        // `TargetChr_B` missing → not a usable comparison table.
+        let cols = ["Read_Name", "TargetChr_A"];
+        assert!(require_ab_schema(&cols).is_err());
+    }
+
+    #[test]
+    fn non_compare_table_is_rejected() {
+        // No `TargetChr_*` columns at all (e.g. an alninfo/readinfo table).
+        let cols = ["Query_Name", "Query_Len", "TargetChr"];
+        let err = require_ab_schema(&cols).unwrap_err().to_string();
+        assert!(err.contains("missing the `TargetChr_A`"), "unexpected error: {err}");
+    }
+
+    // ─── labels_from_row ───────────────────────────────────────────────────
+
+    #[test]
+    fn labels_read_from_first_data_row() {
+        let cols = ["Read_Name", "Read_Len", "Label_A", "Label_B", "TargetChr_A"];
+        let fields = ["r1", "100", "Splice", "SpliceHQ", "chr1"];
+        assert_eq!(
+            labels_from_row(&index(&cols), &fields),
+            ("Splice".to_string(), "SpliceHQ".to_string())
+        );
+    }
+
+    #[test]
+    fn labels_fall_back_when_columns_absent() {
+        // No Label_A/Label_B columns → report the bare side identifiers.
+        let cols = ["Read_Name", "TargetChr_A", "TargetChr_B"];
+        let fields = ["r1", "chr1", "chr1"];
+        assert_eq!(
+            labels_from_row(&index(&cols), &fields),
+            ("A".to_string(), "B".to_string())
+        );
+    }
+
+    #[test]
+    fn labels_fall_back_on_empty_values_and_short_rows() {
+        let cols = ["Read_Name", "Label_A", "Label_B"];
+        // Empty label value → fall back rather than reporting "".
+        assert_eq!(
+            labels_from_row(&index(&cols), &["r1", "", "SpliceHQ"]),
+            ("A".to_string(), "SpliceHQ".to_string())
+        );
+        // Truncated row (fewer fields than the header) must not panic.
+        assert_eq!(
+            labels_from_row(&index(&cols), &["r1"]),
+            ("A".to_string(), "B".to_string())
+        );
+    }
+
+    // ─── label validation ──────────────────────────────────────────────────
+
+    #[test]
+    fn set_labels_reject_corrupting_characters() {
+        use crate::compare_streaming::validate_set_label;
+        assert!(validate_set_label("").is_err());
+        assert!(validate_set_label("a\tb").is_err());
+        assert!(validate_set_label("a\nb").is_err());
+        assert!(validate_set_label("a/b").is_err());
+        assert!(validate_set_label("a\\b").is_err());
+    }
+
+    #[test]
+    fn set_labels_allow_underscores() {
+        use crate::compare_streaming::validate_set_label;
+        // The whole point of fixed `_A`/`_B` suffixes: an underscore in a label
+        // is no longer ambiguous, so it must be accepted.
+        assert_eq!(validate_set_label("my_run_1").unwrap(), "my_run_1");
+        assert_eq!(validate_set_label("Splice").unwrap(), "Splice");
+    }
 }
