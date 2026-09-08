@@ -28,7 +28,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
-use crate::compare_streaming::{emit_compare_row, validate_set_label, write_compare_header};
+use crate::compare_streaming::validate_set_label;
+use crate::comparison_row::{emit_compare_row, write_compare_header};
 use crate::compare_summary::{classify, CompareSummary};
 use crate::external_sort::{parse_mem, read_id_set_check, sort_paf_to_file};
 use crate::find_query_diff::{self, FindQueryDiffArgs};
