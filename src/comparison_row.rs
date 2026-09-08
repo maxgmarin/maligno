@@ -257,6 +257,12 @@ impl<'r> AlignmentRow<'r> {
         Self { raw, metrics }
     }
 
+    /// The 31 per-side columns in `READINFO_DATA_COLS` order, exactly as read.
+    /// The Parquet writer walks this in step with the column list.
+    pub(crate) fn raw(&self) -> &[&'r str; N_SIDE_COLS] {
+        &self.raw
+    }
+
     fn target_chr(&self) -> &'r str {
         self.raw[I_TARGET_CHR]
     }
@@ -374,6 +380,67 @@ impl AlignmentDiff {
             genomic_junctions_only_a: format_genomic_junction_tuple(&gj_only_a_vec),
             genomic_junctions_only_b: format_genomic_junction_tuple(&gj_only_b_vec),
         }
+    }
+}
+
+/// One comparison-block value, tagged with its type.
+///
+/// [`AlignmentDiff::values`] yields these in `comparison_col_names()` order so a
+/// second writer (Parquet) can consume the block without restating the order. The
+/// TSV writer keeps its own explicit `write!` sequence — the two are cross-checked
+/// by `parquet_matches_tsv_for_the_comparison_block` in `parquet_out`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum DiffValue<'a> {
+    Bool(bool),
+    I64(i64),
+    U64(u64),
+    /// `NaN` here means "undefined"; the Parquet writer stores it as a null.
+    F64(f64),
+    Str(&'a str),
+}
+
+impl AlignmentDiff {
+    /// The 30 comparison values in `comparison_col_names()` order.
+    pub(crate) fn values(&self) -> Vec<DiffValue<'_>> {
+        use DiffValue::*;
+        vec![
+            // Orientation & identity.
+            Bool(self.strand_match),
+            F64(self.seqid_diff),
+            F64(self.query_aln_cov_diff),
+            I64(self.query_aln_len_diff),
+            // Score.
+            I64(self.as_diff),
+            I64(self.ms_diff),
+            F64(self.as_ratio),
+            F64(self.ms_ratio),
+            // Event-count diffs.
+            I64(self.n_sub_bases_diff),
+            F64(self.n_sub_bases_ratio),
+            I64(self.n_ins_bases_diff),
+            F64(self.n_ins_bases_ratio),
+            I64(self.n_del_bases_diff),
+            F64(self.n_del_bases_ratio),
+            I64(self.n_sc_start_diff),
+            I64(self.n_sc_end_diff),
+            // Query-space junction set comparison.
+            U64(self.n_matched_junctions),
+            U64(self.n_unmatched_junctions),
+            U64(self.n_junctions_only_a),
+            U64(self.n_junctions_only_b),
+            U64(self.junction_distance),
+            U64(self.junc_dist_v2),
+            // Genomic-space junction set comparison.
+            U64(self.genomic_n_matched_junctions),
+            U64(self.genomic_n_unmatched_junctions),
+            U64(self.genomic_n_junctions_only_a),
+            U64(self.genomic_n_junctions_only_b),
+            // Object lists last.
+            Str(&self.junctions_only_a),
+            Str(&self.junctions_only_b),
+            Str(&self.genomic_junctions_only_a),
+            Str(&self.genomic_junctions_only_b),
+        ]
     }
 }
 
@@ -508,29 +575,6 @@ pub(crate) fn write_compare_header<W: Write>(out: &mut W) -> std::io::Result<()>
     writeln!(out)
 }
 
-/// Emit one comparison row given a by-name column accessor for each side.
-///
-/// Single source of truth for the `compare` row, shared by `compare-readinfo`
-/// (reading from a `ReadInfoReader`) and the fused `compare` pass (reading from
-/// in-memory `ReadInfoRow`s serialized to readinfo lines). Accessors return `""`
-/// for an absent column, which flows through to an empty output cell.
-pub(crate) fn emit_compare_row<'r, W, FA, FB>(
-    out: &mut W,
-    name: &'r str,
-    len: u64,
-    label_a: &'r str,
-    label_b: &'r str,
-    get_a: FA,
-    get_b: FB,
-) -> std::io::Result<()>
-where
-    W: Write,
-    FA: Fn(&str) -> &'r str,
-    FB: Fn(&str) -> &'r str,
-{
-    ComparisonRow::build(name, len, label_a, label_b, get_a, get_b).write_tsv_row(out)
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -563,16 +607,9 @@ mod tests {
     /// Render one full row and split it into its 96 fields.
     fn render(a: &[(&str, &'static str)], b: &[(&str, &'static str)]) -> Vec<String> {
         let mut buf: Vec<u8> = Vec::new();
-        emit_compare_row(
-            &mut buf,
-            "read1",
-            100,
-            "SetA",
-            "SetB",
-            |c| lookup(a, c),
-            |c| lookup(b, c),
-        )
-        .expect("write to Vec cannot fail");
+        ComparisonRow::build("read1", 100, "SetA", "SetB", |c| lookup(a, c), |c| lookup(b, c))
+            .write_tsv_row(&mut buf)
+            .expect("write to Vec cannot fail");
         let s = String::from_utf8(buf).expect("output is utf-8");
         assert!(s.ends_with('\n'), "row must end with a newline");
         assert!(!s.trim_end().ends_with('\t'), "row must not end with a tab");
@@ -651,7 +688,9 @@ mod tests {
         // Labels are validated by `validate_set_label` rather than escaped, and
         // Read_Name is passed through as-is. Backslashes must survive untouched.
         let mut buf: Vec<u8> = Vec::new();
-        emit_compare_row(&mut buf, "read\\1", 100, "Set\\A", "Set\\B", |_| "", |_| "").unwrap();
+        ComparisonRow::build("read\\1", 100, "Set\\A", "Set\\B", |_| "", |_| "")
+            .write_tsv_row(&mut buf)
+            .unwrap();
         let s = String::from_utf8(buf).unwrap();
         let f: Vec<&str> = s.trim_end_matches('\n').split('\t').collect();
         assert_eq!(f[0], "read\\1");

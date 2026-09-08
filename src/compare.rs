@@ -29,7 +29,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 
 use crate::compare_streaming::validate_set_label;
-use crate::comparison_row::{emit_compare_row, write_compare_header};
+use crate::comparison_row::{write_compare_header, ComparisonRow};
+use crate::parquet_out::{ComparisonParquetWriter, OutputFormat};
 use crate::compare_summary::{classify, CompareSummary};
 use crate::external_sort::{parse_mem, read_id_set_check, sort_paf_to_file};
 use crate::find_query_diff::{self, FindQueryDiffArgs};
@@ -116,6 +117,14 @@ pub struct CompareArgs {
     /// Skip the "find-query-diff" step run at the end of the comparison.
     #[arg(long = "skip-find-query-diff")]
     skip_find_query_diff: bool,
+
+    /// Which serialization(s) of the comparison table to write: `tsv`
+    /// ({prefix}.compare.tsv.gz), `parquet` ({prefix}.compare.parquet), or `both`.
+    /// Parquet is typed and column-pruned, so re-reading a few columns is far
+    /// faster; it is somewhat larger on disk for this table. `parquet` alone
+    /// requires --skip-find-query-diff, which still reads the TSV.
+    #[arg(long = "format", value_enum, default_value_t = OutputFormat::Both)]
+    format: OutputFormat,
 }
 
 pub fn run(args: &CompareArgs) -> Result<()> {
@@ -127,6 +136,17 @@ pub fn run(args: &CompareArgs) -> Result<()> {
             "--label-a and --label-b are both '{}' — they must differ (they name \
              the per-set output files)",
             args.label_a
+        );
+    }
+    // `find-query-diff` reads the comparison TSV, so a Parquet-only run has nothing
+    // for it. Refuse rather than silently dropping four outputs — the same stance
+    // the read-ID set check takes, naming the flag that opts in.
+    if !args.format.writes_tsv() && !args.skip_find_query_diff {
+        bail!(
+            "--format parquet writes no TSV, but the find-query-diff step run at the \
+             end of `compare` reads the comparison TSV. Re-run with \
+             --skip-find-query-diff to accept that (no query-diff reads or region \
+             BEDs will be produced), or with --format both to keep them."
         );
     }
     let outdir = Path::new(&args.outdir);
@@ -147,7 +167,14 @@ pub fn run(args: &CompareArgs) -> Result<()> {
     let b_alninfo = path(format!("{}.{}.alninfo.tsv.gz", args.prefix, args.label_b));
     let a_readinfo = path(format!("{}.{}.readinfo.tsv.gz", args.prefix, args.label_a));
     let b_readinfo = path(format!("{}.{}.readinfo.tsv.gz", args.prefix, args.label_b));
-    let compare_out = path(format!("{}.compare.tsv.gz", args.prefix));
+    let compare_tsv = args
+        .format
+        .writes_tsv()
+        .then(|| path(format!("{}.compare.tsv.gz", args.prefix)));
+    let compare_parquet = args
+        .format
+        .writes_parquet()
+        .then(|| path(format!("{}.compare.parquet", args.prefix)));
     let summary_out = path(format!("{}.compare.summary.tsv", args.prefix));
 
     // Inputs fed to the compare pass: the freshly sorted temp files by default,
@@ -210,9 +237,12 @@ pub fn run(args: &CompareArgs) -> Result<()> {
 
     // ── Step 3: single in-memory lock-step pass (collapse + compare + tee) ────
     if args.presorted {
-        eprintln!("[INFO] comparing in one pass ({compare_out})...");
+        eprintln!("[INFO] comparing in one pass ({})...", describe_outputs(&compare_tsv, &compare_parquet));
     } else {
-        eprintln!("[INFO] Step 3/3 — comparing in one pass ({compare_out})...");
+        eprintln!(
+            "[INFO] Step 3/3 — comparing in one pass ({})...",
+            describe_outputs(&compare_tsv, &compare_parquet)
+        );
     }
     let mut summary = CompareSummary::default();
     let counts = compare_sorted_pafs(
@@ -220,11 +250,12 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         &b_in,
         &args.label_a,
         &args.label_b,
-        &compare_out,
+        compare_tsv.as_deref(),
         if args.no_readinfo { None } else { Some(&a_readinfo) },
         if args.no_readinfo { None } else { Some(&b_readinfo) },
         if args.no_alninfo { None } else { Some(&a_alninfo) },
         if args.no_alninfo { None } else { Some(&b_alninfo) },
+        compare_parquet.as_deref(),
         args.allow_id_mismatch,
         &mut summary,
     );
@@ -233,7 +264,9 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         // not actually in the same order), having already written part of the
         // output. Remove the partial artifacts so the failure leaves nothing
         // half-written, then surface the error (with a hint under --presorted).
-        let _ = fs::remove_file(&compare_out);
+        for p in [compare_tsv.as_deref(), compare_parquet.as_deref()].into_iter().flatten() {
+            let _ = fs::remove_file(p);
+        }
         if !args.no_alninfo {
             let _ = fs::remove_file(&a_alninfo);
             let _ = fs::remove_file(&b_alninfo);
@@ -274,7 +307,9 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         eprintln!("  {a_readinfo}");
         eprintln!("  {b_readinfo}");
     }
-    eprintln!("  {compare_out}");
+    for p in [compare_tsv.as_deref(), compare_parquet.as_deref()].into_iter().flatten() {
+        eprintln!("  {p}");
+    }
     eprintln!("  {summary_out}");
     if args.keep_sorted_paf {
         eprintln!("  {a_sorted}");
@@ -288,7 +323,9 @@ pub fn run(args: &CompareArgs) -> Result<()> {
              (skip with --skip-find-query-diff)..."
         );
         let fq_args = FindQueryDiffArgs::for_compare(
-            compare_out.clone(),
+            compare_tsv
+                .clone()
+                .expect("guarded above: find-query-diff runs only when the TSV is written"),
             args.outdir.clone(),
             args.prefix.clone(),
         );
@@ -296,6 +333,18 @@ pub fn run(args: &CompareArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Render the comparison output path(s) for the progress line.
+fn describe_outputs(tsv: &Option<String>, parquet: &Option<String>) -> String {
+    let mut v: Vec<&str> = Vec::new();
+    if let Some(p) = tsv {
+        v.push(p);
+    }
+    if let Some(p) = parquet {
+        v.push(p);
+    }
+    v.join(" + ")
 }
 
 /// Serialize a `ReadInfoRow` to its readinfo-TSV line (no trailing newline) so it
@@ -336,17 +385,35 @@ fn compare_sorted_pafs(
     b_sorted: &str,
     label_a: &str,
     label_b: &str,
-    compare_out: &str,
+    compare_tsv: Option<&str>,
     readinfo_a: Option<&str>,
     readinfo_b: Option<&str>,
     alninfo_a: Option<&str>,
     alninfo_b: Option<&str>,
+    parquet_out: Option<&str>,
     allow_id_mismatch: bool,
     summary: &mut CompareSummary,
 ) -> Result<(u64, u64, u64)> {
-    // Comparison output + header.
-    let mut out = open_output(Some(compare_out))?;
-    write_compare_header(&mut out)?;
+    // Comparison TSV + header. When the TSV is not requested the rows go to
+    // `io::sink()`, the same way suppressed alninfo/readinfo outputs do, so no
+    // empty file is created and `run_merge` needs no extra plumbing.
+    let mut out: Box<dyn Write> = match compare_tsv {
+        Some(p) => {
+            let mut w = open_output(Some(p))?;
+            write_compare_header(&mut w)?;
+            w
+        }
+        None => Box::new(io::sink()),
+    };
+
+    // Optional Parquet output. Written to a plain file, never gzipped — Parquet
+    // compresses per column internally.
+    let mut parquet = match parquet_out {
+        Some(p) => Some(ComparisonParquetWriter::new(
+            fs::File::create(p).with_context(|| format!("cannot create '{p}'"))?,
+        )?),
+        None => None,
+    };
 
     // Per-set side outputs. A suppressed table writes to `io::sink()` (no file is
     // created and the bytes are discarded) — this keeps every writer a concrete
@@ -382,11 +449,16 @@ fn compare_sorted_pafs(
         &mut al_b,
         &mut ri_b,
         &header_cols,
+        parquet.as_mut(),
         allow_id_mismatch,
         label_a,
         label_b,
         summary,
     )?;
+
+    if let Some(pq) = parquet {
+        pq.finish()?;
+    }
 
     out.flush()?;
     ri_a.flush()?;
@@ -409,6 +481,7 @@ fn run_merge<R: BufRead>(
     al_b: &mut Box<dyn Write>,
     ri_b: &mut Box<dyn Write>,
     header_cols: &[&str],
+    mut parquet: Option<&mut ComparisonParquetWriter<fs::File>>,
     allow_id_mismatch: bool,
     label_a: &str,
     label_b: &str,
@@ -472,9 +545,15 @@ fn run_merge<R: BufRead>(
                     let get_b = |c: &str| *map_b.get(c).unwrap_or(&"");
                     summary.observe(&classify(&get_a, &get_b));
 
-                    emit_compare_row(
-                        out, &ra.read_name, ra.read_len, label_a, label_b, get_a, get_b,
-                    )?;
+                    // One construction, both writers — so the TSV and the Parquet
+                    // can never disagree about a row.
+                    let row = ComparisonRow::build(
+                        &ra.read_name, ra.read_len, label_a, label_b, get_a, get_b,
+                    );
+                    row.write_tsv_row(out)?;
+                    if let Some(pq) = parquet.as_deref_mut() {
+                        pq.append(&row)?;
+                    }
 
                     n_matched += 1;
                     if n_matched % 100_000 == 0 {

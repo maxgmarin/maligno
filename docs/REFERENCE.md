@@ -47,9 +47,9 @@ maligno compare-readinfo -a A.readinfo.tsv.gz -b B.readinfo.tsv.gz -o compare.ts
 
 | Subcommand    | Input                              | Output                                  |
 |---------------|------------------------------------|-----------------------------------------|
-| **`compare`** | two PAFs (`-a`, `-b`; file paths only, no stdin) | **a results directory** (`--outdir`/`--prefix`): per-set alninfo + readinfo for A and B, plus the comparison TSV — **the primary entry point**. Sorts inputs and verifies read-ID sets match. Emits the single 96-column comparison table |
+| **`compare`** | two PAFs (`-a`, `-b`; file paths only, no stdin) | **a results directory** (`--outdir`/`--prefix`): per-set alninfo + readinfo for A and B, plus the comparison TSV — **the primary entry point**. Sorts inputs and verifies read-ID sets match. Emits the single 96-column comparison table as TSV, Parquet or both (`--format`) |
 | `paf2tables`  | PAF (`-i`, `.gz`/`-` ok)           | **alninfo TSV** (`--alninfo`, 35 cols) and/or **readinfo TSV** (`--readinfo`, 33 cols), in one pass |
-| `compare-readinfo` | two readinfo TSVs (`-a`, `-b`) | per-read comparison TSV (`-o`, 96 cols); the same table `compare` writes |
+| `compare-readinfo` | two readinfo TSVs (`-a`, `-b`) | per-read comparison table (`-o`, 96 cols); the same table `compare` writes. Writes Parquet when `-o` ends in `.parquet`, TSV otherwise |
 | `sam2paf`     | SAM file or stdin (`-`)            | PAF written to stdout                   |
 
 All inputs/outputs transparently support gzip (`.gz` suffix) and stdin/stdout (`-`) —
@@ -445,6 +445,39 @@ cannot accidentally match.
 > readable and every other column is unaffected, so regenerate only if soft-clip
 > statistics on unmapped reads matter to your analysis. Reads that aligned in both
 > sets were never affected.
+
+> **New output format (v0.16.0) — Parquet.** `compare --format tsv|parquet|both`
+> (default `both`) and `compare-readinfo -o …parquet` write the comparison table as
+> Parquet in addition to, or instead of, the gzipped TSV. Same 96 columns, same
+> names, same order — `pd.read_parquet` is a drop-in for `pd.read_csv`.
+>
+> Why: the table is written once and read many times. Measured on the 507,365-row
+> Splice-vs-SpliceHQ comparison — reading the 16 columns `find-query-diff` needs
+> takes 16.2 s from `tsv.gz` and 1.1 s from Parquet; a two-column aggregate drops
+> from 14 s to 0.03 s; and writing is *faster* too (4.5 s vs 10.8 s), because zstd
+> beats gzip here and the Parquet path neither formats numbers to text nor escapes
+> 66 fields per row. Costs: ~31% more disk (85 vs 65 MB — six long-string columns
+> dominate this table) and ~306 MB peak RSS while writing versus 35 MB.
+>
+> **Nulls mean "undefined", nothing else.** A null appears where the TSV carries
+> `NaN` in a float column, or an empty `cs`. Values that mean something are kept as
+> values: `TargetChr` and `Strand` stay `*` for an unmapped side (they are the
+> mapping indicator), an empty junction set stays `"()"`, and a real `0` stays `0`.
+> A per-side column that is absent or unparseable becomes a null rather than a
+> fabricated `0`.
+>
+> The two serializations are related by a documented inverse, so a Parquet file can
+> be turned back into the exact TSV: null → `NaN` for float columns and → `""`
+> otherwise, then `escape_tsv_field` once over the per-side and object-list string
+> columns. Note the asymmetry there — per-side values reach the writer already
+> escaped once, and the TSV escapes them again, so Parquet holds the *less* escaped
+> form.
+>
+> **`--format parquet` requires `--skip-find-query-diff`**, because the
+> `find-query-diff` step `compare` runs at the end reads the comparison TSV.
+> `compare-summary` and `find-query-diff` cannot read Parquet yet; until they can,
+> `both` remains the default. The exact-pinned `arrow-array` / `arrow-schema` /
+> `parquet` dependencies must be bumped together.
 
 **Strand tracking and renames (v0.2.1+).** Each side now carries a `Strand_A` / `Strand_B` data
 column (the best alignment's strand), and the comparison block starts with a `Strand_Match`
@@ -905,6 +938,7 @@ src/
 ├── external_sort.rs        — in-process PAF external sort (ext-sort) + O(1) read-ID set check
 ├── paf2tables.rs           — PAF → alninfo and/or readinfo (one pass)
 ├── comparison_row.rs       — comparison-table schema: column lists, ComparisonRow/AlignmentRow/AlignmentDiff, TSV writers
+├── parquet_out.rs          — Parquet writer + OutputFormat; Arrow schema derived from comparison_row's column lists
 ├── compare_streaming.rs    — `compare-readinfo` command + the merge-join machinery (ReadKey/ReadInfoReader)
 ├── readinfo.rs             — collapse library (collapse_group/ReadInfoRow/AlnRow); utils-readinfo CLI unregistered but code kept
 ├── paf_groups.rs           — shared PAF → per-read group reader, with optional alninfo tee

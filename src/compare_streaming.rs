@@ -18,7 +18,8 @@ use std::io::{BufRead, Write};
 
 use anyhow::{bail, Context, Result};
 
-use crate::comparison_row::{emit_compare_row, write_compare_header};
+use crate::comparison_row::{write_compare_header, ComparisonRow};
+use crate::parquet_out::{is_parquet_path, ComparisonParquetWriter};
 use crate::io_utils::{open_input, open_output};
 
 // ── CLI args ─────────────────────────────────────────────────────────────────
@@ -199,11 +200,30 @@ pub fn run(args: &CompareReadinfoArgs) -> Result<()> {
     let idx_name_b = reader_b.get_col_idx("Read_Name").context("missing Read_Name in B")?;
     let idx_len_b = reader_b.get_col_idx("Read_Len").context("missing Read_Len in B")?;
 
-    // Open output
-    let mut out = open_output(Some(&args.output))?;
+    // Output format follows the extension, matching how `open_output` already
+    // dispatches on `.gz`: `-o x.parquet` writes Parquet, anything else (including
+    // `-` for stdout) writes the TSV. Exactly one of the two is produced here —
+    // unlike `compare`, which owns its filenames and can write both.
+    let mut parquet = if is_parquet_path(&args.output) {
+        eprintln!("[INFO] Output format: Parquet (from the '.parquet' extension)");
+        Some(ComparisonParquetWriter::new(
+            std::fs::File::create(&args.output)
+                .with_context(|| format!("cannot create '{}'", args.output))?,
+        )?)
+    } else {
+        None
+    };
 
-    // Write header
-    write_compare_header(&mut out)?;
+    // The TSV writer is only opened when Parquet was not selected, so we never
+    // create a stray empty .tsv alongside a .parquet.
+    let mut out = match parquet {
+        Some(_) => None,
+        None => {
+            let mut w = open_output(Some(&args.output))?;
+            write_compare_header(&mut w)?;
+            Some(w)
+        }
+    };
 
     eprintln!("[INFO] Starting comparison...");
 
@@ -219,15 +239,20 @@ pub fn run(args: &CompareReadinfoArgs) -> Result<()> {
             n_a_total += 1;
             n_b_total += 1;
 
-            emit_compare_row(
-                &mut out,
+            // One construction, whichever writer is active.
+            let row = ComparisonRow::build(
                 &key_a.name,
                 key_a.len,
                 &args.label_a,
                 &args.label_b,
                 |c| reader_a.get_col(c).unwrap_or(""),
                 |c| reader_b.get_col(c).unwrap_or(""),
-            )?;
+            );
+            match (&mut out, &mut parquet) {
+                (Some(w), _) => row.write_tsv_row(w)?,
+                (None, Some(pq)) => pq.append(&row)?,
+                (None, None) => unreachable!("one writer is always active"),
+            }
 
             n_merged += 1;
             if n_merged % 100000 == 0 {
@@ -273,7 +298,15 @@ pub fn run(args: &CompareReadinfoArgs) -> Result<()> {
         reader_b.advance()?;
     }
 
-    out.flush()?;
+    // Close whichever writer is active. Parquet must be finished explicitly — its
+    // footer (schema + row-group index + metadata) is written on close.
+    if let Some(mut w) = out {
+        w.flush()?;
+    }
+    if let Some(pq) = parquet {
+        let n = pq.finish()?;
+        eprintln!("[INFO] Wrote {n} rows to {}", args.output);
+    }
 
     // ── End-of-run summary ────────────────────────────────────────────────
     let a_only = n_a_total - n_merged; // in A, absent from B

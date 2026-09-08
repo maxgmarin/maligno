@@ -35,6 +35,7 @@
 // ── Pipeline modules ──────────────────────────────────────────────────────────
 mod cigar_junctions;    // CIGAR-based intron extractor (utility; not yet wired in)
 mod comparison_row;     // comparison-table schema: column lists, row type, TSV writers
+mod parquet_out;        // Parquet writer for the comparison table (schema derived from comparison_row)
 mod compare_streaming;  // `compare-readinfo` command + merge-join machinery
 mod compare_summary;    // `compare-summary` command + shared classifier/accumulator
 mod find_query_diff;   // `find-query-diff` command (query-different reads + regions)

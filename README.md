@@ -92,6 +92,7 @@ For each read to be compared, the following is done.
 | `--sort-threads` | sort threads (default `1`) |
 | `--presorted` | skip the sort — inputs already hold the same reads in the same order |
 | `--allow-id-mismatch` | compare the shared intersection instead of erroring when read-ID sets differ |
+| `--format` | which serialization(s) of the comparison table: `tsv`, `parquet`, or `both` (default) |
 | `--no-alninfo`, `--no-readinfo` | skip writing those per-set tables |
 | `--skip-find-query-diff` | skip the automatic `find-query-diff` step run after the comparison table is written |
 | `--keep-sorted-paf` | keep the intermediate sorted PAFs |
@@ -107,9 +108,53 @@ A `compare` run writes, under `--outdir`, files prefixed with `--prefix`:
 |------|------|----------|
 | `{prefix}.{label}.alninfo.tsv.gz` | 35 | **per-alignment** table — one row per PAF alignment (every alignment, per set) |
 | `{prefix}.{label}.readinfo.tsv.gz` | 33 | **per-read** table — the chosen best alignment for each read (per set) |
-| `{prefix}.compare.tsv.gz` | 96 | the **comparison** table |
+| `{prefix}.compare.tsv.gz` | 96 | the **comparison** table (unless `--format parquet`) |
+| `{prefix}.compare.parquet` | 96 | the same table as Parquet (unless `--format tsv`) |
 | `{prefix}.compare.summary.tsv` | 2 | **aggregate summary statistics** (see below) |
 | `{prefix}.query_diff_reads.tsv.gz`, `{prefix}.query_diff_regions.{A,B}.bed.gz`, `{prefix}.query_diff_summary.tsv` | — | **query-different reads + regions** (see below); skip with `--skip-find-query-diff` |
+
+### Choosing a format
+
+`--format` selects how the comparison table is serialized. Both carry the same 96
+columns with the same names, in the same order.
+
+| | `tsv.gz` | `parquet` |
+|---|---|---|
+| Read 16 of 96 columns¹ | 16.2 s | **1.1 s** |
+| Read all 96 columns¹ | 20.4 s | **4.7 s** |
+| Count rows where query junctions differ¹ | 14.0 s | **0.03 s** |
+| Write¹ | 10.8 s | **4.5 s** |
+| Size¹ | **64.4 MB** | 86.3 MB |
+| Peak RSS while writing¹ | **35 MB** | 306 MB |
+| Inspect with `zcat \| head` | yes | no — use `duckdb`, `polars`, `pandas` |
+| Readable by `compare-summary` / `find-query-diff` | yes | **not yet** |
+
+¹ measured on the 507,365-transcript GENCODE Splice-vs-SpliceHQ comparison.
+
+Parquet is typed and column-pruned, so reading a few columns skips the rest of the
+file entirely — which is what makes re-analysis 4–15× faster. It is *also* faster to
+write, because zstd beats gzip here and the Parquet path does not format numbers to
+text or escape 66 fields per row. The costs are ~31% more disk (six long-string
+columns dominate this table, and gzip compresses across the whole row stream where
+Parquet compresses each column alone) and more memory while writing.
+
+The default is `both` because `find-query-diff` — which `compare` runs for you at the
+end — still reads the TSV. `--format parquet` therefore requires
+`--skip-find-query-diff`, and says so rather than silently dropping outputs.
+
+In Python:
+
+```python
+import pandas as pd
+df = pd.read_parquet("results/AvsB.compare.parquet")           # all 96 columns, typed
+df = pd.read_parquet("results/AvsB.compare.parquet",
+                     columns=["Read_Name", "junctions_A", "junctions_B"])   # or a few
+```
+
+Nulls mean **undefined**, not zero: an unmapped side has a null `cs` and a null
+`seqid_Max`, and a ratio over a zero denominator is null. Values that mean something
+are kept — `TargetChr` stays `*` for unmapped, an empty junction set stays `()`, and
+a real zero stays `0`.
 
 ### The comparison table
 

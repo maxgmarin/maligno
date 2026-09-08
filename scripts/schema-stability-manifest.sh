@@ -13,7 +13,7 @@
 #
 # The committed baseline for the current release lives at
 # test_data/schema_manifest.v<version>.txt, so the usual check is just:
-#   diff test_data/schema_manifest.v0.15.0.txt after.txt
+#   diff test_data/schema_manifest.v0.16.0.txt after.txt
 # An intentional output change renames that file; see test_data/edge_cases/README.md.
 #
 # Hashes are taken over DECOMPRESSED bytes: gzip embeds an mtime, so hashing

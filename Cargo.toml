@@ -1,6 +1,6 @@
 [package]
 name = "maligno-rs"
-version = "0.15.0"
+version = "0.16.0"
 edition = "2024"
 
 [[bin]]
@@ -12,6 +12,15 @@ clap     = { version = "4", features = ["derive"] }
 anyhow   = "1"
 flate2   = "1"
 ext-sort = { version = "0.1", features = ["memory-limit"] }
+
+# Parquet output for the comparison table. Pinned exactly and feature-trimmed:
+# default features would pull 71 new crates (arrow-csv/json/cast/string/ord/arith,
+# the regex stack, serde_json, and the brotli/snap/lz4 codecs); this set pulls 35.
+# The three versions must move together — parquet's `arrow` feature depends on the
+# arrow-* crates at a matching version.
+arrow-array  = { version = "=59.3.0", default-features = false }
+arrow-schema = { version = "=59.3.0", default-features = false }
+parquet      = { version = "=59.3.0", default-features = false, features = ["arrow", "zstd"] }
 
 [profile.release]
 opt-level = 3

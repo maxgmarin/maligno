@@ -84,10 +84,10 @@ separates `query_identical` (7) from `reference_identical` (6).
 
 ```bash
 ./scripts/schema-stability-manifest.sh ./target/release/maligno /tmp/w > after.txt
-diff test_data/schema_manifest.v0.15.0.txt after.txt && echo "OUTPUT UNCHANGED"
+diff test_data/schema_manifest.v0.16.0.txt after.txt && echo "OUTPUT UNCHANGED"
 ```
 
-`test_data/schema_manifest.v0.15.0.txt` is the committed baseline: 46 SHA-256
+`test_data/schema_manifest.v0.16.0.txt` is the committed baseline: 50 SHA-256
 fingerprints over the decompressed outputs of six scenarios. The filename carries
 a version on purpose — an output change must rename it, which makes regenerating
 the baseline a deliberate act rather than an invisible overwrite.
@@ -104,6 +104,17 @@ Its history is a good illustration of what the gate is for:
   fingerprint** — because chr22 contains no unmapped reads, so only this fixture
   could see the change. Every summary and `find-query-diff` output stayed
   identical too, confirming the classifier never reads soft-clip.
+- **v0.16.0** (Parquet output) moved **nothing** and *added* 4 lines — one
+  `compare.parquet` per scenario that runs `compare`, since the default
+  `--format both` now writes it. All 46 pre-existing fingerprints stayed
+  identical, which is the claim "the TSV path is untouched" being measured
+  rather than asserted.
+
+> **A `parquet` dependency bump will move those 4 lines.** The footer records
+> `created_by: parquet-rs version <x>`, so the file bytes change even when the
+> data does not. The dependency is pinned exactly in `Cargo.toml` so this only
+> happens deliberately — but when it does, expect exactly the 4 `.parquet`
+> fingerprints to differ and nothing else.
 
 ## Regenerating
 
