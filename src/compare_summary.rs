@@ -5,16 +5,15 @@
 //!
 //!   1. Built into `compare`: each matched read is `observe`d as its row streams
 //!      out (O(1) memory — only counters are kept), and the summary is written as
-//!      `{prefix}.compare[.junctions].summary.tsv` plus an stderr block.
+//!      `{prefix}.compare.summary.tsv` plus an stderr block.
 //!   2. The standalone `compare-summary` command: streams an existing comparison
 //!      TSV (`compare` / `compare-readinfo` output) row-by-row and emits the same
 //!      summary. Serves the manual `paf2tables` → `compare-readinfo` workflow.
 //!
 //! `classify` reads per-side values by **unsuffixed** readinfo column name through
-//! two accessor closures, so it is independent of the compare `--mode` (the columns
-//! it needs — `cs`, `Strand`, `Query_Start`, `Query_End`, `TargetChr`,
-//! `Target_Start`, `Target_End` — are present in both the 96-col `full` and the
-//! 49-col `junctions` outputs).
+//! two accessor closures, resolving them via a name→index map, so it is insensitive
+//! to column order. The columns it needs are `cs`, `Strand`, `Query_Start`,
+//! `Query_End`, `TargetChr`, `Target_Start`, `Target_End`.
 //!
 //! cs-tag equality is **motif-blind**: intron donor/acceptor letters are blanked
 //! out (via `cs_strip_splice_motifs`) before comparing, so an intron with the same

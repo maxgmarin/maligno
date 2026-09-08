@@ -47,9 +47,9 @@ maligno compare-readinfo -a A.readinfo.tsv.gz -b B.readinfo.tsv.gz -o compare.ts
 
 | Subcommand    | Input                              | Output                                  |
 |---------------|------------------------------------|-----------------------------------------|
-| **`compare`** | two PAFs (`-a`, `-b`; file paths only, no stdin) | **a results directory** (`--outdir`/`--prefix`): per-set alninfo + readinfo for A and B, plus the comparison TSV — **the primary entry point**. Sorts inputs and verifies read-ID sets match. `--mode full` (default, 96 cols) or `--mode junctions` (49-col view) |
+| **`compare`** | two PAFs (`-a`, `-b`; file paths only, no stdin) | **a results directory** (`--outdir`/`--prefix`): per-set alninfo + readinfo for A and B, plus the comparison TSV — **the primary entry point**. Sorts inputs and verifies read-ID sets match. Emits the single 96-column comparison table |
 | `paf2tables`  | PAF (`-i`, `.gz`/`-` ok)           | **alninfo TSV** (`--alninfo`, 35 cols) and/or **readinfo TSV** (`--readinfo`, 33 cols), in one pass |
-| `compare-readinfo` | two readinfo TSVs (`-a`, `-b`) | per-read comparison TSV (`-o`); same `--mode full`/`junctions` as `compare` |
+| `compare-readinfo` | two readinfo TSVs (`-a`, `-b`) | per-read comparison TSV (`-o`, 96 cols); the same table `compare` writes |
 | `sam2paf`     | SAM file or stdin (`-`)            | PAF written to stdout                   |
 
 All inputs/outputs transparently support gzip (`.gz` suffix) and stdin/stdout (`-`) —
@@ -125,7 +125,6 @@ don't have to pre-sort or worry about ordering:
 
 ```bash
 maligno compare -a A.paf -b B.paf --label-a A --label-b B --outdir results/ --prefix AvsB
-maligno compare -a A.paf -b B.paf --outdir results/ --prefix AvsB --mode junctions   # 49-col view
 ```
 
 What it does, in order:
@@ -143,7 +142,7 @@ What it does, in order:
    ```
    {prefix}.{label_a}.alninfo.tsv.gz    {prefix}.{label_b}.alninfo.tsv.gz
    {prefix}.{label_a}.readinfo.tsv.gz   {prefix}.{label_b}.readinfo.tsv.gz
-   {prefix}.compare.tsv.gz              (or {prefix}.compare.junctions.tsv.gz)
+   {prefix}.compare.tsv.gz
    ```
    The sorted PAFs are scratch (removed unless `--keep-sorted-paf`).
 
@@ -312,8 +311,8 @@ A two-pointer **merge-join** over two sorted readinfo files, matching on
 **(Read_Name, Read_Len)**. This is the engine behind both `compare-readinfo` (readinfo
 TSVs in) and the primary `compare` (which feeds it collapsed rows straight from PAFs).
 For each matched read it emits the 31 data columns from each
-side (suffixed with `--label-a` / `--label-b`) plus 30 comparison/object columns
-(`AS_Diff`, `ms_Ratio`, `seqid_Diff`, `Junction_Distance`, `N_Matched_Junctions`, `Genomic_N_Matched_Junctions`, `Junctions_OnlyA`, …).
+side (suffixed `_A` / `_B`) plus 30 comparison/object columns
+(`AS_Diff`, `ms_Ratio`, `seqid_Diff`, `Junction_Distance`, `N_Matched_Junctions`, `Genomic_N_Matched_Junctions`, `Junctions_OnlyA`, …) — 96 columns in total, including the four leading key/label columns.
 
 **Junction set comparison.** Junctions are compared as **sets** of query coordinates
 (deduplicated on both sides):
@@ -331,8 +330,7 @@ retained positional/legacy metrics.)
 
 **Genomic-junction comparison.** When both alignments are to the *same* reference, junctions
 are also compared in **reference coordinates** in addition to the query-coordinate metrics
-above. These are **always emitted** (both `--mode full` and `--mode junctions`); four count
-columns appear in the comparison block:
+above. These are **always emitted**; four count columns appear in the comparison block:
 
 | Column                          | Meaning |
 |---------------------------------|---------|
@@ -365,7 +363,8 @@ cannot accidentally match.
 > Why: label-suffixed names were dataset-specific (every downstream script had to
 > interpolate the label) and ambiguous whenever a label itself contained an
 > underscore, since `Target_Start_my_run` cannot be decomposed reliably. Column
-> counts grew by two: **94 → 96** (`full`) and **47 → 49** (`junctions`).
+> counts grew by two: **94 → 96** for the full table and **47 → 49** for the
+> then-available `--mode junctions` view (removed in v0.14.0, see below).
 >
 > The `…summary.tsv` categories changed to match: `aligned_only_A` /
 > `aligned_only_B` and `present_only_in_A_by_id` / `present_only_in_B_by_id`
@@ -379,6 +378,49 @@ cannot accidentally match.
 > `--label-a` / `--label-b` are now also validated: they must be non-empty,
 > distinct, and free of tabs, newlines, and path separators. Underscores are fine.
 
+> **Breaking schema change (v0.14.0) — one comparison table, columns regrouped.**
+> `--mode full | junctions` has been **removed** from `compare` and
+> `compare-readinfo`. There is now exactly one comparison table (96 columns), and
+> the per-side and comparison blocks are **grouped by topic** rather than
+> following the readinfo header order. **No column was added or removed, and no
+> value changed — only positions moved.**
+>
+> Why: the 49-column `junctions` view contained no column that was not already in
+> the 96-column view, under the same name and computed identically — it was purely
+> a column selection, and it bought nothing but a smaller file (and little of
+> that: `cs`, `junctions` and `genomic_junctions`, which it kept, are the bulk of
+> the table's bytes). Subsetting columns is better done downstream, where it is
+> not limited to one hard-coded choice of subset. Removing the flag also deletes a
+> duplicated row emitter that every future schema change would have had to update
+> twice.
+>
+> The per-side block (each column suffixed `_A` then `_B`) is now ordered: locus
+> and span → alignment selection and score → identity and coverage → junction
+> counts → cs-derived event counts → the three long strings (`junctions`,
+> `genomic_junctions`, `cs`) last. The comparison block is ordered:
+> orientation/identity → score → event diffs → query-space junction metrics →
+> genomic-space junction metrics → the four object lists last. Layout:
+> keys 1–4, `_A` 5–35, `_B` 36–66, comparison metrics 67–92, object lists 93–96.
+>
+> This decouples the comparison table's per-side order from `readinfo.rs`'s
+> `READINFO_HEADER` (which is **unchanged** — the readinfo and alninfo formats are
+> untouched). Columns are read by name, so the divergence is deliberate.
+>
+> **Impact:** scripts that select columns by *name* need no change; scripts that
+> use hard-coded column *numbers* must be updated (see the migration note on
+> column positions below, and the `tsvcut` / `tsvwhere` helpers in the test-data
+> section). Existing tables remain readable — `compare-summary` and
+> `find-query-diff` resolve every column by name.
+>
+> **Not affected:** `find-query-diff`'s `--compare-by all | junctions` is a
+> *different* flag and is unchanged. It selects what counts as a difference (whole
+> cs tag vs. query-space junction set only), not which columns are written, and it
+> still suffixes its own outputs with `.junctions`. Every junction column stays in
+> the table: `N_Matched_Junctions`, `N_Unmatched_Junctions`,
+> `N_Junctions_OnlyA/B`, the four `Genomic_N_*`, `Junction_Distance`,
+> `Junc_Dist_V2`, and the four object lists. `compare` no longer writes
+> `{prefix}.compare.junctions.tsv.gz` / `.compare.junctions.summary.tsv`.
+
 **Strand tracking and renames (v0.2.1+).** Each side now carries a `Strand_A` / `Strand_B` data
 column (the best alignment's strand), and the comparison block starts with a `Strand_Match`
 (true/false) metric that flags strand-flips between A and B. The legacy column name
@@ -389,14 +431,16 @@ column (the best alignment's strand), and the comparison block starts with a `St
 junctions (`N_Junctions_OnlyA/B`, `Genomic_N_Junctions_OnlyA/B`), the comparison outputs
 now append the actual junction **objects** that failed to overlap at the very end of each
 row: `Junctions_OnlyA`, `Junctions_OnlyB` (query-coord tuples, always emitted) and
-`Genomic_Junctions_OnlyA`, `Genomic_Junctions_OnlyB` (genome-coord tuples, emitted with
-always emitted in both `--mode full` and `--mode junctions`). These
+`Genomic_Junctions_OnlyA`, `Genomic_Junctions_OnlyB` (genome-coord tuples, also always
+emitted). These
 use the same Python tuple format as the per-side `junctions` / `genomic_junctions` data
 columns — parse with `ast.literal_eval` in Python.
 
-> **Migration note (column positions).** Schema growth has shifted column positions twice
-> in pre-1.0 development: first when `genomic_junctions` was added, then again when
-> `Strand` and `Strand_Match` were added (v0.2.1). Scripts that filter by column *number*
+> **Migration note (column positions).** Schema changes have shifted column positions
+> several times in pre-1.0 development: when `genomic_junctions` was added, again when
+> `Strand` and `Strand_Match` were added (v0.2.1), again when `Label_A`/`Label_B` were
+> inserted at columns 3–4 (v0.13.0), and again when the per-side and comparison blocks
+> were regrouped (v0.14.0). Scripts that filter by column *number*
 > (`awk '$73 > 0'`) need updating each time; prefer column-*name* lookup using the header,
 > which is robust to future schema growth:
 > ```bash
@@ -475,40 +519,6 @@ The `--readinfo` collapse emits a one-time WARNING on stderr if its input is not
 sorted, flagging the most common foot-gun (a name-sorted-but-not-byte-lex aligner
 output like STAR's, or a shuffled multi-threaded aligner output).
 
-### `--mode junctions`
-
-A **streamlined, splice-focused** view of the comparison (selected with `--mode junctions`
-on either `compare` or `compare-readinfo`). Same metrics, but emits only **49 columns**
-instead of 96 — useful when the question is "how do the splice junctions for each read
-differ between two alignments?" rather than full score/indel/coverage diffs.
-
-| Cols | Content |
-|------|---------|
-| 1–2   | `Read_Name`, `Read_Len` (join keys) |
-| 3–4   | `Label_A`, `Label_B` — the two set names, repeated on every row |
-| 5–34  | 15 per-side data columns × 2 sides (suffixed `_A` then `_B`): `TargetChr, Strand, MQ_Best, Num_Aln, Num_Aln_MaxScore, JuncCount, seqid_Max, Query_Aln_Cov_Max, junctions, genomic_junctions, cs, Query_Start, Query_End, Target_Start, Target_End` |
-| 35–45 | 11 comparison metrics: `Strand_Match` + `seqid_Diff` + `QueryAlnCov_Diff` + 4 query-junction set metrics (matched / unmatched / OnlyA / OnlyB) + 4 parallel `Genomic_*` set metrics |
-| 46–49 | 4 object lists at the end: `Junctions_OnlyA`, `Junctions_OnlyB`, `Genomic_Junctions_OnlyA`, `Genomic_Junctions_OnlyB` — the actual tuples of junctions that failed to overlap (Python tuple format, parseable with `ast.literal_eval`) |
-
-Genomic-junction metrics are always emitted in this mode (no flag) — `chrom` is embedded in
-each genomic-junction tuple, so cross-chromosome compares correctly produce zero overlap.
-
-```bash
-# From readinfo tables:
-$BIN compare-readinfo --mode junctions \
-  -a refA.readinfo.tsv.gz --label-a RefA \
-  -b refB.readinfo.tsv.gz --label-b RefB \
-  -o RefA_vs_RefB.junctions.tsv.gz
-
-# …or straight from PAFs via the on-rails `compare` (writes a results dir):
-$BIN compare --mode junctions -a refA.paf.gz -b refB.paf.gz \
-  --label-a RefA --label-b RefB --outdir results/ --prefix RefA_vs_RefB
-```
-
-The metric values that overlap with the `--mode full` output (the shared set columns) are
-identical row-for-row — `--mode junctions` is purely a column-selection view of the same
-computation, not a different algorithm.
-
 ### `sam2paf`
 
 Converts SAM alignments to PAF format. A high-performance port of the `sam2paf`
@@ -556,27 +566,18 @@ time $BIN compare-readinfo \
 zcat < /tmp/Splice_vs_SpliceHQ.compare.tsv.gz | head -1 | tr '\t' '\n' | nl
 
 
-
-# Streamlined splice-focused comparison (49 cols: per-side junction info + alignment span + set-overlap metrics)
-time $BIN compare-readinfo --mode junctions \
-  -a /tmp/Splice.readinfo.sorted.tsv.gz   --label-a Splice \
-  -b /tmp/SpliceHQ.readinfo.sorted.tsv.gz --label-b SpliceHQ \
-  -o /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz
-
-# Inspect the junction-view output header
-zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | head -1 | tr '\t' '\n' | nl
-
 # Tip: the primary on-rails `compare` does all of the above (sort + per-set tables +
 # comparison) in one command, writing everything to a results directory:
 #   $BIN compare -a Splice.paf.gz -b SpliceHQ.paf.gz \
 #     --label-a Splice --label-b SpliceHQ --outdir results/ --prefix Splice_vs_SpliceHQ
 
 # ── Select and filter columns BY NAME ───────────────────────────────────────
-# Hardcoded `cut -f N` breaks whenever the schema grows (it did in v0.13.0, which
-# inserted Label_A/Label_B at columns 3-4). These two helpers resolve columns from
-# the header instead, so they keep working across versions.
+# Hardcoded `cut -f N` breaks whenever the schema changes — it did in v0.13.0
+# (which inserted Label_A/Label_B at columns 3-4) and again in v0.14.0 (which
+# regrouped the per-side and comparison blocks). These two helpers resolve columns
+# from the header instead, so they keep working across versions.
 
-CMP=/tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz
+CMP=/tmp/Splice_vs_SpliceHQ.compare.tsv.gz
 
 # tsvcut <file.gz> <Name1,Name2,...>  — print just those columns, in that order.
 # (`gzip -dc` rather than `zcat`: macOS zcat rejects a plain `.gz` name.)
@@ -623,11 +624,10 @@ tsvwhere "$CMP" Genomic_N_Unmatched_Junctions pos \
                 {print $h["Read_Name"]"\t"$h["TargetChr_A"]"\t"$h["TargetChr_B"]"\t"$h["Genomic_N_Matched_Junctions"]"\t"$h["Genomic_N_Junctions_OnlyA"]"\t"$h["Genomic_N_Junctions_OnlyB"]}' \
   | column -t -s $'\t' | less -S
 
-# Verify column counts (expect 35, 33, 96, 49)
-zcat < /tmp/Splice.alninfo.tsv.gz                       | awk -F'\t' '{print NF}' | sort | uniq -c
-zcat < /tmp/Splice.readinfo.tsv.gz                      | awk -F'\t' '{print NF}' | sort | uniq -c
-zcat < /tmp/Splice_vs_SpliceHQ.compare.tsv.gz           | awk -F'\t' '{print NF}' | sort | uniq -c
-zcat < /tmp/Splice_vs_SpliceHQ.compare_junctions.tsv.gz | awk -F'\t' '{print NF}' | sort | uniq -c
+# Verify column counts (expect 35, 33, 96)
+gzip -dc < /tmp/Splice.alninfo.tsv.gz             | awk -F'\t' '{print NF}' | sort | uniq -c
+gzip -dc < /tmp/Splice.readinfo.tsv.gz            | awk -F'\t' '{print NF}' | sort | uniq -c
+gzip -dc < /tmp/Splice_vs_SpliceHQ.compare.tsv.gz | awk -F'\t' '{print NF}' | sort | uniq -c
 ```
 
 ---
@@ -645,10 +645,10 @@ maligno compare-summary -i AvsB.compare.tsv.gz -o AvsB.compare.summary.tsv
 # -i: a compare / compare-readinfo table (.gz or - ok); -o: optional (else stderr only)
 ```
 
-`compare-summary` requires the fixed `TargetChr_A` / `TargetChr_B` columns, and reads the set names from `Label_A` / `Label_B`
-and works on either `--mode` table (the classifier reads only columns present in
-both views). It sees only matched rows, so the `present_only_in_*_by_id` counts are
-always 0 there; the built-in `compare` tally fills those from the read-ID merge.
+`compare-summary` requires the fixed `TargetChr_A` / `TargetChr_B` columns, and reads the
+set names from `Label_A` / `Label_B`. Every column is resolved **by name**, so column
+order does not matter. It sees only matched rows, so the `present_only_in_*_by_id` counts
+are always 0 there; the built-in `compare` tally fills those from the read-ID merge.
 
 ### Classification (per matched read)
 
@@ -724,7 +724,7 @@ command on that same file.
 ```bash
 maligno find-query-diff -i AvsB.compare.tsv.gz --outdir results/ --prefix AvsB \
   [--coord-side a|b|both] [--gzip] [--compare-by all|junctions] [--emit-identical-reads]
-# -i: a compare / compare-readinfo table (.gz or - ok, either --mode)
+# -i: a compare / compare-readinfo table (.gz or - ok)
 ```
 
 Like `compare-summary`, the fixed `TargetChr_A` / `TargetChr_B` columns are required, and set names come from the `Label_A` / `Label_B`
@@ -797,7 +797,7 @@ rather than aborting the run.
 
 ### "`compare-readinfo` matched far fewer reads than I expected" — sort-order diagnostic
 
-`compare-readinfo` (both `--mode` views) uses a streaming merge-join keyed on
+`compare-readinfo` uses a streaming merge-join keyed on
 `(Read_Name, Read_Len)`. The algorithm runs in O(1) memory and O(N+M) time,
 but it **assumes both readinfo files are sorted in the same byte-lexicographic
 order**. (The primary `compare` reads PAFs directly and instead requires both
@@ -880,7 +880,6 @@ src/
 ├── external_sort.rs        — in-process PAF external sort (ext-sort) + O(1) read-ID set check
 ├── paf2tables.rs           — PAF → alninfo and/or readinfo (one pass)
 ├── compare_streaming.rs    — `compare-readinfo` command + shared comparison core (emit/header/ReadKey/CompareMode)
-├── compare_junctions.rs    — junction-view (49-col) header/row emitters (library; used by --mode junctions)
 ├── readinfo.rs             — collapse library (collapse_group/ReadInfoRow/AlnRow); utils-readinfo CLI unregistered but code kept
 ├── paf_groups.rs           — shared PAF → per-read group reader, with optional alninfo tee
 ├── record.rs               — AlnInfo struct + TSV serialisation

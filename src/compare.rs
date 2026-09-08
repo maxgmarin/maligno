@@ -28,10 +28,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
-use crate::compare_junctions::{emit_compare_junctions_row, write_compare_junctions_header};
-use crate::compare_streaming::{
-    emit_compare_row, validate_set_label, write_compare_header, CompareMode,
-};
+use crate::compare_streaming::{emit_compare_row, validate_set_label, write_compare_header};
 use crate::compare_summary::{classify, CompareSummary};
 use crate::external_sort::{parse_mem, read_id_set_check, sort_paf_to_file};
 use crate::find_query_diff::{self, FindQueryDiffArgs};
@@ -79,9 +76,6 @@ pub struct CompareArgs {
     #[arg(short = 'p', long = "prefix", value_name = "NAME")]
     prefix: String,
 
-    /// Comparison view: `full` (96 cols) or `junctions` (49-col splice view).
-    #[arg(long = "mode", value_enum, default_value_t = CompareMode::Full)]
-    mode: CompareMode,
 
     /// In-memory sort buffer per file (K/M/G suffix, or plain bytes).
     #[arg(long = "sort-mem", value_name = "SIZE", default_value = "1G")]
@@ -144,7 +138,6 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         .unwrap_or_else(|| outdir.to_path_buf());
     let _ = fs::create_dir_all(&tmp_dir);
     let mem = parse_mem(&args.sort_mem)?;
-    let junctions = matches!(args.mode, CompareMode::Junctions);
 
     let path = |name: String| outdir.join(name).to_string_lossy().into_owned();
     let a_sorted = path(format!("{}.{}.sorted.paf.gz", args.prefix, args.label_a));
@@ -153,16 +146,8 @@ pub fn run(args: &CompareArgs) -> Result<()> {
     let b_alninfo = path(format!("{}.{}.alninfo.tsv.gz", args.prefix, args.label_b));
     let a_readinfo = path(format!("{}.{}.readinfo.tsv.gz", args.prefix, args.label_a));
     let b_readinfo = path(format!("{}.{}.readinfo.tsv.gz", args.prefix, args.label_b));
-    let compare_out = path(format!(
-        "{}.compare{}.tsv.gz",
-        args.prefix,
-        if junctions { ".junctions" } else { "" }
-    ));
-    let summary_out = path(format!(
-        "{}.compare{}.summary.tsv",
-        args.prefix,
-        if junctions { ".junctions" } else { "" }
-    ));
+    let compare_out = path(format!("{}.compare.tsv.gz", args.prefix));
+    let summary_out = path(format!("{}.compare.summary.tsv", args.prefix));
 
     // Inputs fed to the compare pass: the freshly sorted temp files by default,
     // or the user's PAFs directly under --presorted (no sort, no set-check).
@@ -239,7 +224,6 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         if args.no_readinfo { None } else { Some(&b_readinfo) },
         if args.no_alninfo { None } else { Some(&a_alninfo) },
         if args.no_alninfo { None } else { Some(&b_alninfo) },
-        junctions,
         args.allow_id_mismatch,
         &mut summary,
     );
@@ -356,17 +340,12 @@ fn compare_sorted_pafs(
     readinfo_b: Option<&str>,
     alninfo_a: Option<&str>,
     alninfo_b: Option<&str>,
-    junctions: bool,
     allow_id_mismatch: bool,
     summary: &mut CompareSummary,
 ) -> Result<(u64, u64, u64)> {
     // Comparison output + header.
     let mut out = open_output(Some(compare_out))?;
-    if junctions {
-        write_compare_junctions_header(&mut out)?;
-    } else {
-        write_compare_header(&mut out)?;
-    }
+    write_compare_header(&mut out)?;
 
     // Per-set side outputs. A suppressed table writes to `io::sink()` (no file is
     // created and the bytes are discarded) — this keeps every writer a concrete
@@ -402,7 +381,6 @@ fn compare_sorted_pafs(
         &mut al_b,
         &mut ri_b,
         &header_cols,
-        junctions,
         allow_id_mismatch,
         label_a,
         label_b,
@@ -430,7 +408,6 @@ fn run_merge<R: BufRead>(
     al_b: &mut Box<dyn Write>,
     ri_b: &mut Box<dyn Write>,
     header_cols: &[&str],
-    junctions: bool,
     allow_id_mismatch: bool,
     label_a: &str,
     label_b: &str,
@@ -494,15 +471,9 @@ fn run_merge<R: BufRead>(
                     let get_b = |c: &str| *map_b.get(c).unwrap_or(&"");
                     summary.observe(&classify(&get_a, &get_b));
 
-                    if junctions {
-                        emit_compare_junctions_row(
-                            out, &ra.read_name, ra.read_len, label_a, label_b, get_a, get_b,
-                        )?;
-                    } else {
-                        emit_compare_row(
-                            out, &ra.read_name, ra.read_len, label_a, label_b, get_a, get_b,
-                        )?;
-                    }
+                    emit_compare_row(
+                        out, &ra.read_name, ra.read_len, label_a, label_b, get_a, get_b,
+                    )?;
 
                     n_matched += 1;
                     if n_matched % 100_000 == 0 {

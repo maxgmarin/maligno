@@ -17,11 +17,11 @@
 //! Commands:
 //!
 //!   1. `compare`            end-to-end comparison of all input alignments
-//!                           (PRIMARY analysis entry point). `--mode full`
-//!                           (default, 96 cols) or `--mode junctions` (49-col view).
+//!                           (PRIMARY analysis entry point). Emits the single
+//!                           96-column comparison table.
 //!   2. `sam2paf`            SAM → PAF converter (utility; use before paf2tables/compare)
 //!   3. `paf2tables`         PAF → alninfo TSV and/or readinfo TSV tables
-//!   4. `compare-readinfo`   two readinfo TSVs → per-read comparison TSV (same `--mode`)
+//!   4. `compare-readinfo`   two readinfo TSVs → per-read comparison TSV
 //!   5. `compare-summary`    comparison TSV → aggregate summary statistics
 //!                           (alignment status + query/reference identity)
 //!   6. `find-query-diff`   comparison TSV → query-different reads + the merged
@@ -34,7 +34,6 @@
 
 // ── Pipeline modules ──────────────────────────────────────────────────────────
 mod cigar_junctions;    // CIGAR-based intron extractor (utility; not yet wired in)
-mod compare_junctions;  // junction-view (49-col) header/row emitters (library; --mode junctions)
 mod compare_streaming;  // `compare-readinfo` command + shared comparison core
 mod compare_summary;    // `compare-summary` command + shared classifier/accumulator
 mod find_query_diff;   // `find-query-diff` command (query-different reads + regions)
@@ -79,7 +78,7 @@ enum Commands {
     Sam2paf(Sam2pafArgs),
     /// PAF -> alninfo TSV and/or readinfo TSV tables.
     Paf2tables(Paf2TablesArgs),
-    /// Two readinfo TSVs -> per-read comparison TSV (--mode full|junctions).
+    /// Two readinfo TSVs -> per-read comparison TSV.
     CompareReadinfo(CompareReadinfoArgs),
     /// Comparison TSV → aggregate summary statistics
     CompareSummary(CompareSummaryArgs),

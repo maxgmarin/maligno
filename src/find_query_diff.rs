@@ -104,7 +104,8 @@ impl FindQueryDiffArgs {
     /// either as its own option, so those defaults live here in exactly one place.
     /// `emit_identical_reads` stays off and is not exposed via `compare`.
     /// `compare_by` is pinned to `All` so the compare-fused run is byte-identical
-    /// to the historical behavior; the junctions mode is not exposed via `compare`.
+    /// to the historical behavior; `--compare-by junctions` is not exposed via
+    /// `compare` — re-run `find-query-diff` standalone on the comparison table.
     pub(crate) fn for_compare(input: String, outdir: String, prefix: String) -> Self {
         Self {
             input,
@@ -229,9 +230,9 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
         .get("Read_Name")
         .context("comparison table is missing column 'Read_Name'")?;
 
-    // `junctions` (query-space set) is needed by `--compare-by junctions`; it is
-    // present in both the full (96-col) and junctions (49-col) compare tables, so
-    // requiring it unconditionally never breaks either input.
+    // `junctions` (query-space set) is only read by `--compare-by junctions`, but is
+    // required unconditionally: it is always present in the comparison table, so
+    // demanding it up front turns a mid-stream surprise into an early, clear error.
     const NEEDED: [&str; 8] = [
         "TargetChr", "Strand", "cs", "Query_Start", "Query_End", "Target_Start", "Target_End",
         "junctions",

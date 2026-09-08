@@ -1,8 +1,14 @@
 //! Provides the `compare-readinfo` command (two readinfo TSVs → comparison) and
 //! houses the shared comparison core reused by the primary `compare` command
-//! (`pafcompare.rs`) and the junction view (`compare_junctions.rs`): `ReadKey`,
-//! `ReadInfoReader`, `CompareMode`, `write_compare_header`, `emit_compare_row`,
-//! `comparison_col_names`, `READINFO_DATA_COLS`.
+//! (`compare.rs`): `ReadKey`, `ReadInfoReader`, `write_compare_header`,
+//! `emit_compare_row`, `comparison_col_names`, `READINFO_DATA_COLS`.
+//!
+//! There is exactly **one** comparison table (96 columns). Until v0.14.0 a
+//! `--mode junctions` flag selected a narrower 49-column projection of it; that
+//! was purely a column selection over the same computation, so it was removed in
+//! favour of subsetting columns downstream. Note that `find-query-diff`'s
+//! surviving `--compare-by all|junctions` is a *different* flag: it changes what
+//! counts as a difference, not which columns are written.
 //!
 //! Algorithm: streaming two-pointer merge-join, O(1) memory, O(|A|+|B|) time.
 //! - Stream through both files simultaneously; on key match, emit a row.
@@ -15,26 +21,12 @@ use std::io::{BufRead, Write};
 
 use anyhow::{bail, Context, Result};
 
-use crate::compare_junctions::{emit_compare_junctions_row, write_compare_junctions_header};
 use crate::io_utils::{escape_tsv_field, fmt_float, open_input, open_output};
 use crate::junction::{
     format_genomic_junction_tuple, format_junction_tuple, genomic_junction_set_diffs,
     genomic_junction_set_stats, junction_distance, junction_set_diffs, junction_set_stats,
     parse_genomic_junction_str, parse_junction_str,
 };
-
-// ── Comparison mode ───────────────────────────────────────────────────────────
-
-/// Which comparison view to emit. Shared by `compare` and `compare-readinfo` so
-/// the two commands expose an identical `--mode` surface.
-#[derive(Clone, Debug, Default, clap::ValueEnum)]
-pub(crate) enum CompareMode {
-    /// All per-read metrics, including genomic-junction comparison (96 cols).
-    #[default]
-    Full,
-    /// Splice-junction-focused view (49 cols).
-    Junctions,
-}
 
 // ── CLI args ─────────────────────────────────────────────────────────────────
 
@@ -87,28 +79,43 @@ pub struct CompareReadinfoArgs {
     /// heuristic to work correctly. Unmatched reads are counted in the summary.
     #[arg(long = "ignore-row-mismatch")]
     pub ignore_row_mismatch: bool,
-
-    /// Comparison view: `full` (all per-read metrics incl. genomic-junction
-    /// comparison, 96 cols) or `junctions` (splice-junction-focused, 49 cols).
-    #[arg(long = "mode", value_enum, default_value_t = CompareMode::Full)]
-    pub mode: CompareMode,
 }
 
-// ── ReadInfo column indices (must match readinfo.rs) ──────────────────────────
+// ── Per-side column schema ────────────────────────────────────────────────────
 
+/// The per-side data columns of the comparison table, each emitted once suffixed
+/// `_A` and once `_B`.
+///
+/// These are read out of the readinfo table **by name** (`get_a`/`get_b`), so this
+/// order is free to differ from `readinfo.rs`'s `READINFO_HEADER`. Before v0.14.0
+/// it was that header verbatim; it is now grouped by topic — locus, alignment
+/// selection, identity/coverage, junction counts, cs-derived event counts, and the
+/// three long strings last — so the 96-column table is readable via
+/// `head -1 | tr '\t' '\n' | nl`. **This divergence from `READINFO_HEADER` is
+/// deliberate; do not "resync" the two.**
 const READINFO_DATA_COLS: &[&str] = &[
+    // Locus & span.
     "TargetChr",
     "Strand",
+    "Target_Start",
+    "Target_End",
+    "Query_Start",
+    "Query_End",
+    // Alignment selection & score.
     "MQ_Best",
-    "AS_Max",
-    "ms_Max",
-    "Query_Aln_Cov_Max",
-    "Query_Aln_Len_Max",
-    "seqid_Max",
-    "junctions",
     "Num_Aln",
     "Num_Aln_MaxScore",
+    "AS_Max",
+    "ms_Max",
+    // Identity & coverage.
+    "seqid_Max",
+    "Query_Aln_Cov_Max",
+    "Query_Aln_Len_Max",
+    // Junction counts.
     "JuncCount",
+    "N_Splice_Junction_Events",
+    "N_Splice_Junction_Bases",
+    // cs-derived event counts.
     "N_Match_Events",
     "N_Match_Bases",
     "N_Substitution_Events",
@@ -117,43 +124,47 @@ const READINFO_DATA_COLS: &[&str] = &[
     "N_Insertion_Bases",
     "N_Deletion_Events",
     "N_Deletion_Bases",
-    "N_Splice_Junction_Events",
-    "N_Splice_Junction_Bases",
+    "N_SoftClipped_Events",
     "N_SoftClipped_Bases_Start",
     "N_SoftClipped_Bases_End",
-    "N_SoftClipped_Events",
-    "cs",
+    // Long strings last — these dominate the table's on-disk size.
+    "junctions",
     "genomic_junctions",
-    "Query_Start",
-    "Query_End",
-    "Target_Start",
-    "Target_End",
+    "cs",
 ];
 
+/// The A-vs-B comparison columns, emitted after both per-side blocks. Grouped to
+/// mirror `READINFO_DATA_COLS`: orientation/identity, score, event diffs,
+/// query-space junctions, genomic-space junctions, then the object lists.
 fn comparison_col_names() -> Vec<&'static str> {
     vec![
+        // Orientation & identity.
         "Strand_Match",
+        "seqid_Diff",
+        "QueryAlnCov_Diff",
+        "QueryAlnLen_Diff",
+        // Score.
         "AS_Diff",
         "ms_Diff",
         "AS_Ratio",
         "ms_Ratio",
-        "seqid_Diff",
-        "QueryAlnLen_Diff",
-        "QueryAlnCov_Diff",
+        // Event-count diffs.
+        "N_Substitution_Bases_Diff",
+        "N_Substitution_Bases_Ratio",
         "N_Insertion_Bases_Diff",
         "N_Insertion_Bases_Ratio",
         "N_Deletion_Bases_Diff",
         "N_Deletion_Bases_Ratio",
-        "N_Substitution_Bases_Diff",
-        "N_Substitution_Bases_Ratio",
         "N_SoftClipped_Bases_Start_Diff",
         "N_SoftClipped_Bases_End_Diff",
-        "Junction_Distance",
-        "N_Unmatched_Junctions",
-        "Junc_Dist_V2",
+        // Query-space junction set comparison.
         "N_Matched_Junctions",
+        "N_Unmatched_Junctions",
         "N_Junctions_OnlyA",
         "N_Junctions_OnlyB",
+        "Junction_Distance",
+        "Junc_Dist_V2",
+        // Genomic-space junction set comparison.
         "Genomic_N_Matched_Junctions",
         "Genomic_N_Unmatched_Junctions",
         "Genomic_N_Junctions_OnlyA",
@@ -280,7 +291,7 @@ where
     let j_only_a_str = format_junction_tuple(&j_only_a_vec);
     let j_only_b_str = format_junction_tuple(&j_only_b_vec);
 
-    // Genomic-junction set comparison (always emitted in `full` mode).
+    // Genomic-junction set comparison.
     let (g_matched, g_only_a, g_only_b, g_unmatched, g_only_a_str, g_only_b_str) = {
         let a_genomic = get_a("genomic_junctions");
         let b_genomic = get_b("genomic_junctions");
@@ -312,29 +323,38 @@ where
     for f in &b_raw_fields {
         write!(out, "\t{}", escape_tsv_field(f))?;
     }
+    // The comparison block. Field order here MUST match `comparison_col_names()`.
+    let seqid_diff_s = fmt_float(seqid_diff);
+    let qac_diff_s = fmt_float(qac_diff);
+
+    // Orientation & identity, then score.
     write!(
         out,
-        "\t{strand_match}\t\
-         {as_diff}\t{ms_diff}\t{as_ratio}\t{ms_ratio}\t{}\t{qal_diff}\t{}\t\
-         {n_ins_diff}\t{n_ins_ratio}\t\
-         {n_del_diff}\t{n_del_ratio}\t\
-         {n_sub_diff}\t{n_sub_ratio}\t\
-         {n_sc_start_diff}\t{n_sc_end_diff}\t\
-         {junction_distance_val}\t{n_unmatched}\t{junc_dist_v2}\t{n_matched}\
-         \t{n_only_a}\t{n_only_b}",
-        fmt_float(seqid_diff),
-        fmt_float(qac_diff),
+        "\t{strand_match}\t{seqid_diff_s}\t{qac_diff_s}\t{qal_diff}\
+         \t{as_diff}\t{ms_diff}\t{as_ratio}\t{ms_ratio}"
     )?;
-    write!(out, "\t{g_matched}\t{g_unmatched}\t{g_only_a}\t{g_only_b}")?;
+    // Event-count diffs.
     write!(
         out,
-        "\t{}\t{}",
+        "\t{n_sub_diff}\t{n_sub_ratio}\
+         \t{n_ins_diff}\t{n_ins_ratio}\
+         \t{n_del_diff}\t{n_del_ratio}\
+         \t{n_sc_start_diff}\t{n_sc_end_diff}"
+    )?;
+    // Query-space junction set comparison.
+    write!(
+        out,
+        "\t{n_matched}\t{n_unmatched}\t{n_only_a}\t{n_only_b}\
+         \t{junction_distance_val}\t{junc_dist_v2}"
+    )?;
+    // Genomic-space junction set comparison.
+    write!(out, "\t{g_matched}\t{g_unmatched}\t{g_only_a}\t{g_only_b}")?;
+    // Object lists last.
+    write!(
+        out,
+        "\t{}\t{}\t{}\t{}",
         escape_tsv_field(&j_only_a_str),
         escape_tsv_field(&j_only_b_str),
-    )?;
-    write!(
-        out,
-        "\t{}\t{}",
         escape_tsv_field(&g_only_a_str),
         escape_tsv_field(&g_only_b_str),
     )?;
@@ -487,16 +507,8 @@ pub fn run(args: &CompareReadinfoArgs) -> Result<()> {
     // Open output
     let mut out = open_output(Some(&args.output))?;
 
-    // `junctions` mode emits the splice-focused 49-col view (genomic-junction
-    // metrics always on); `full` mode emits the full per-read comparison.
-    let junctions_mode = matches!(args.mode, CompareMode::Junctions);
-
     // Write header
-    if junctions_mode {
-        write_compare_junctions_header(&mut out)?;
-    } else {
-        write_compare_header(&mut out)?;
-    }
+    write_compare_header(&mut out)?;
 
     eprintln!("[INFO] Starting comparison...");
 
@@ -512,27 +524,15 @@ pub fn run(args: &CompareReadinfoArgs) -> Result<()> {
             n_a_total += 1;
             n_b_total += 1;
 
-            if junctions_mode {
-                emit_compare_junctions_row(
-                    &mut out,
-                    &key_a.name,
-                    key_a.len,
-                    &args.label_a,
-                    &args.label_b,
-                    |c| reader_a.get_col(c).unwrap_or(""),
-                    |c| reader_b.get_col(c).unwrap_or(""),
-                )?;
-            } else {
-                emit_compare_row(
-                    &mut out,
-                    &key_a.name,
-                    key_a.len,
-                    &args.label_a,
-                    &args.label_b,
-                    |c| reader_a.get_col(c).unwrap_or(""),
-                    |c| reader_b.get_col(c).unwrap_or(""),
-                )?;
-            }
+            emit_compare_row(
+                &mut out,
+                &key_a.name,
+                key_a.len,
+                &args.label_a,
+                &args.label_b,
+                |c| reader_a.get_col(c).unwrap_or(""),
+                |c| reader_b.get_col(c).unwrap_or(""),
+            )?;
 
             n_merged += 1;
             if n_merged % 100000 == 0 {

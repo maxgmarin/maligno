@@ -61,16 +61,6 @@ results/Splice_vs_SpliceHQ.Splice.readinfo.tsv.gz    results/Splice_vs_SpliceHQ.
 results/Splice_vs_SpliceHQ.compare.tsv.gz
 ```
 
-For the splice-focused view (fewer columns, junction-centric):
-
-```bash
-maligno compare --mode junctions \
-  -a test_data/Splice.AlnToHG38.PriAln.paf.gz   --label-a Splice \
-  -b test_data/SpliceHQ.AlnToHG38.PriAln.paf.gz --label-b SpliceHQ \
-  -o results/ --prefix Splice_vs_SpliceHQ
-# → results/Splice_vs_SpliceHQ.compare.junctions.tsv.gz
-```
-
 All inputs/outputs transparently support gzip (`.gz`) and stdin/stdout (`-`) —
 except `compare`'s `-a`/`-b`, which require real file paths (no stdin), since
 `compare` always needs two independent inputs.
@@ -98,7 +88,6 @@ For each read to be compared, the following is done.
 | `--label-a`, `--label-b` | names for each set, used in filenames and recorded in the comparison table's `Label_A` / `Label_B` columns |
 | `-o`, `--outdir` | output directory |
 | `-p`, `--prefix` | filename prefix for all outputs |
-| `--mode` | `full` (default, 96 cols) or `junctions` (49-col splice view) |
 | `--sort-mem` | in-RAM sort buffer per file (default `1G`; `K`/`M`/`G`) |
 | `--sort-threads` | sort threads (default `1`) |
 | `--presorted` | skip the sort — inputs already hold the same reads in the same order |
@@ -118,23 +107,28 @@ A `compare` run writes, under `--outdir`, files prefixed with `--prefix`:
 |------|------|----------|
 | `{prefix}.{label}.alninfo.tsv.gz` | 35 | **per-alignment** table — one row per PAF alignment (every alignment, per set) |
 | `{prefix}.{label}.readinfo.tsv.gz` | 33 | **per-read** table — the chosen best alignment for each read (per set) |
-| `{prefix}.compare.tsv.gz` | 96 | the **comparison** table (`full` mode) |
-| `{prefix}.compare.junctions.tsv.gz` | 49 | the **comparison** table (`junctions` mode) |
-| `{prefix}.compare[.junctions].summary.tsv` | 2 | **aggregate summary statistics** (see below) |
+| `{prefix}.compare.tsv.gz` | 96 | the **comparison** table |
+| `{prefix}.compare.summary.tsv` | 2 | **aggregate summary statistics** (see below) |
 | `{prefix}.query_diff_reads.tsv.gz`, `{prefix}.query_diff_regions.{A,B}.bed.gz`, `{prefix}.query_diff_summary.tsv` | — | **query-different reads + regions** (see below); skip with `--skip-find-query-diff` |
 
 ### The comparison table
 
-One row per read, organized in column groups (left to right):
+One row per read, 96 columns, organized in column groups (left to right):
 
-| Group | `full` (96) | `junctions` (49) | What it holds |
-|-------|:-----------:|:----------------:|---------------|
-| **Join keys** | 1–2 | 1–2 | `Read_Name`, `Read_Len` |
-| **Set labels** | 3–4 | 3–4 | `Label_A`, `Label_B` — the `--label-a` / `--label-b` values, repeated on every row |
-| **Per-side data — A** | 5–35 | 5–19 | the best alignment's stats for set A, each column suffixed `_A` |
-| **Per-side data — B** | 36–66 | 20–34 | the same columns for set B, suffixed `_B` |
-| **Comparison metrics** | 67–92 | 35–45 | A-vs-B differences/ratios: `Strand_Match`, score diffs (`AS_Diff`, `ms_Diff`, …), `seqid_Diff`, coverage/indel/soft-clip diffs (full only), and junction-set counts |
-| **Non-overlap objects** | 93–96 | 46–49 | the actual junctions that failed to overlap: `Junctions_OnlyA/B` and `Genomic_Junctions_OnlyA/B` |
+| Group | Cols | What it holds |
+|-------|:----:|---------------|
+| **Join keys** | 1–2 | `Read_Name`, `Read_Len` |
+| **Set labels** | 3–4 | `Label_A`, `Label_B` — the `--label-a` / `--label-b` values, repeated on every row |
+| **Per-side data — A** | 5–35 | the best alignment's stats for set A, each column suffixed `_A` |
+| **Per-side data — B** | 36–66 | the same columns for set B, suffixed `_B` |
+| **Comparison metrics** | 67–92 | A-vs-B differences/ratios: `Strand_Match`, `seqid_Diff`, coverage/length diffs, score diffs (`AS_Diff`, `ms_Diff`, …), indel/soft-clip diffs, and junction-set counts in both query and genomic space |
+| **Non-overlap objects** | 93–96 | the actual junctions that failed to overlap: `Junctions_OnlyA/B` and `Genomic_Junctions_OnlyA/B` |
+
+Within each per-side block the columns are grouped by topic — locus and span,
+alignment selection and score, identity and coverage, junction counts, cs-derived
+event counts, then the three long strings (`junctions`, `genomic_junctions`, `cs`)
+last. Inspect the exact layout of any table with
+`gzip -dc … | head -1 | tr '\t' '\n' | nl`.
 
 Per-side columns always use the **fixed** `_A` / `_B` suffixes — never the
 dataset label — so column names are identical for every comparison and stay
@@ -180,7 +174,7 @@ To get the same summary from an existing comparison table (e.g. from the manual
 maligno compare-summary -i AvsB.compare.tsv.gz -o AvsB.compare.summary.tsv
 ```
 
-It works on either `--mode` (the identity check uses columns present in both).
+Columns are resolved by name, so column order in the input does not matter.
 Full definitions are in the [reference](docs/REFERENCE.md#compare-readinfo-and-the-comparison-core).
 
 ### Query-different reads & regions
@@ -241,16 +235,10 @@ maligno compare \
   -b test_data/SpliceHQ.AlnToHG38.PriAln.paf.gz --label-b SpliceHQ \
   -o test_data/test_results/ --prefix Splice_vs_SpliceHQ
 
-# Splice-focused (49-col) view.
-maligno compare --mode junctions \
-  -a test_data/Splice.AlnToHG38.PriAln.paf.gz   --label-a Splice \
-  -b test_data/SpliceHQ.AlnToHG38.PriAln.paf.gz --label-b SpliceHQ \
-  -o test_data/test_results/ --prefix Splice_vs_SpliceHQ
-
 # Inspect a comparison header (column number → name).
 zcat < test_data/test_results/Splice_vs_SpliceHQ.compare.tsv.gz | head -1 | tr '\t' '\n' | nl
 
-# Sanity-check column counts (expect 35, 33, 96, 49).
+# Sanity-check column counts (expect 35, 33, 96).
 for f in test_data/test_results/Splice_vs_SpliceHQ.*.tsv.gz; do
   printf '%s\t' "$f"; zcat < "$f" | awk -F'\t' '{print NF}' | sort -u | paste -sd, -
 done
