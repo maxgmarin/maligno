@@ -484,11 +484,38 @@ cannot accidentally match.
 > escaped once, and the TSV escapes them again, so Parquet holds the *less* escaped
 > form.
 >
-> **`--format parquet` requires `--skip-find-query-diff`**, because the
-> `find-query-diff` step `compare` runs at the end reads the comparison TSV.
-> `compare-summary` and `find-query-diff` cannot read Parquet yet; until they can,
-> `both` remains the default. The exact-pinned `arrow-array` / `arrow-schema` /
-> `parquet` dependencies must be bumped together.
+> `compare-summary` and `find-query-diff` read TSV only, so `--format parquet`
+> produces a table they cannot consume; `both` remains the default until they can
+> read Parquet. (Before v0.17.0, `--format parquet` was additionally rejected
+> unless `--skip-find-query-diff` was passed, because `compare` ran
+> `find-query-diff` itself. That coupling is gone.) The exact-pinned `arrow-array`
+> / `arrow-schema` / `parquet` dependencies must be bumped together.
+
+> **Breaking change (v0.17.0) — `compare` no longer runs `find-query-diff`.** It
+> now produces the per-set alninfo + readinfo tables, the comparison table
+> (`--format`), and `{prefix}.compare.summary.tsv`. The four query-diff outputs —
+> `{prefix}.query_diff_reads.tsv[.gz]`, `{prefix}.query_diff_regions.{A,B}.bed[.gz]`
+> and `{prefix}.query_diff_summary.tsv` — are no longer produced by `compare`.
+>
+> Why: `compare` wrote the comparison table and then **re-read the whole thing** to
+> produce those four files — a second full pass, for outputs the caller may not
+> want. Splitting the commands removes that pass, lets `find-query-diff` be re-run
+> with different options without redoing the comparison, and makes `--format`
+> orthogonal (it no longer has to guarantee a TSV for an internal consumer).
+>
+> **Migration** — add one command after `compare`:
+> ```bash
+> maligno find-query-diff -i results/AvsB.compare.tsv.gz \
+>   --outdir results/ --prefix AvsB --coord-side both --gzip --compare-by all
+> ```
+> Those are exactly the settings the fused step used, and they reproduce the four
+> files **byte-for-byte** — verified against the v0.16.0 gate baseline for all four
+> comparison scenarios. Any other `--coord-side` / `--gzip` / `--compare-by`
+> combination is now equally available.
+>
+> `--skip-find-query-diff` is removed; passing it is an unknown-argument error. The
+> summary table is unaffected — it is accumulated *during* the merge pass, not by
+> re-reading the table.
 
 **Strand tracking and renames (v0.2.1+).** Each side now carries a `Strand_A` / `Strand_B` data
 column (the best alignment's strand), and the comparison block starts with a `Strand_Match`
@@ -779,16 +806,15 @@ reports every read whose alignment is **not** `query_identical` (the exact same
 counts as identical), plus merged genomic regions showing where those differing
 reads cluster.
 
-**Run automatically by `compare`.** After writing the comparison table, `compare`
-runs `find-query-diff` on it as a final step — always `--coord-side both`, always
-gzip'd (neither is exposed as a `compare`-level flag), reusing `compare`'s own
-`--outdir`/`--prefix`. Skip it with `--skip-find-query-diff`. This is a plain
-function call on the freshly written `compare_out` file — not a re-architected
-fused pass — so its output is **byte-identical** to running the standalone
-command on that same file.
+**A separate command since v0.17.0.** `compare` used to run this itself as a final
+step, which meant re-reading the comparison table it had just written — a second
+full pass for outputs the caller may not want. `compare` now prints the exact
+command to run instead. Running it by hand reproduces the previous outputs
+byte-for-byte, given the defaults the fused step used
+(`--coord-side both --gzip --compare-by all`).
 
-**Standalone command** (for the manual workflow, or to choose `--coord-side`
-`a`/`b`, opt out of `--gzip`, or select `--compare-by`):
+**Usage** (choose `--coord-side` `a`/`b`, opt out of `--gzip`, or select
+`--compare-by`):
 
 ```bash
 maligno find-query-diff -i AvsB.compare.tsv.gz --outdir results/ --prefix AvsB \

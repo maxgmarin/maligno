@@ -84,10 +84,10 @@ separates `query_identical` (7) from `reference_identical` (6).
 
 ```bash
 ./scripts/schema-stability-manifest.sh ./target/release/maligno /tmp/w > after.txt
-diff test_data/schema_manifest.v0.16.0.txt after.txt && echo "OUTPUT UNCHANGED"
+diff test_data/schema_manifest.v0.17.0.txt after.txt && echo "OUTPUT UNCHANGED"
 ```
 
-`test_data/schema_manifest.v0.16.0.txt` is the committed baseline: 50 SHA-256
+`test_data/schema_manifest.v0.17.0.txt` is the committed baseline: 34 SHA-256
 fingerprints over the decompressed outputs of six scenarios. The filename carries
 a version on purpose — an output change must rename it, which makes regenerating
 the baseline a deliberate act rather than an invisible overwrite.
@@ -109,6 +109,12 @@ Its history is a good illustration of what the gate is for:
   `--format both` now writes it. All 46 pre-existing fingerprints stayed
   identical, which is the claim "the TSV path is untouched" being measured
   rather than asserted.
+
+- **v0.17.0** (`compare` no longer runs `find-query-diff`) moved **nothing** and
+  *removed* 16 lines — the four `query_diff_*` outputs from each of the four
+  `compare` scenarios. Every surviving fingerprint stayed identical, and running
+  `find-query-diff` by hand reproduced all 16 removed files byte-for-byte, which is
+  how "the outputs were relocated, not altered" was checked rather than assumed.
 
 > **A `parquet` dependency bump will move those 4 lines.** The footer records
 > `created_by: parquet-rs version <x>`, so the file bytes change even when the

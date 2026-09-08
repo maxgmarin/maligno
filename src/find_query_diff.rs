@@ -98,27 +98,6 @@ pub struct FindQueryDiffArgs {
     emit_identical_reads: bool,
 }
 
-impl FindQueryDiffArgs {
-    /// Construct args for `compare`'s built-in invocation of this command: always
-    /// both coordinate sides, always gzip'd output — `compare` does not expose
-    /// either as its own option, so those defaults live here in exactly one place.
-    /// `emit_identical_reads` stays off and is not exposed via `compare`.
-    /// `compare_by` is pinned to `All` so the compare-fused run is byte-identical
-    /// to the historical behavior; `--compare-by junctions` is not exposed via
-    /// `compare` — re-run `find-query-diff` standalone on the comparison table.
-    pub(crate) fn for_compare(input: String, outdir: String, prefix: String) -> Self {
-        Self {
-            input,
-            outdir,
-            prefix,
-            coord_side: CoordSide::Both,
-            gzip: true,
-            compare_by: CompareBy::All,
-            emit_identical_reads: false,
-        }
-    }
-}
-
 /// Whether a differing read is mapped on both sides or only this coordinate
 /// space's side (rendered as `n_only_A` / `n_only_B` depending on the table).
 #[derive(Clone, Copy)]

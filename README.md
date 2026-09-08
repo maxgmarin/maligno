@@ -58,8 +58,24 @@ This writes a results directory with the per-set tables and the comparison table
 ```
 results/Splice_vs_SpliceHQ.Splice.alninfo.tsv.gz     results/Splice_vs_SpliceHQ.SpliceHQ.alninfo.tsv.gz
 results/Splice_vs_SpliceHQ.Splice.readinfo.tsv.gz    results/Splice_vs_SpliceHQ.SpliceHQ.readinfo.tsv.gz
-results/Splice_vs_SpliceHQ.compare.tsv.gz
+results/Splice_vs_SpliceHQ.compare.tsv.gz            results/Splice_vs_SpliceHQ.compare.parquet
+results/Splice_vs_SpliceHQ.compare.summary.tsv
 ```
+
+Then, to find the reads that align differently and where they cluster on the
+genome, run **`find-query-diff`** on that table:
+
+```bash
+maligno find-query-diff \
+  -i results/Splice_vs_SpliceHQ.compare.tsv.gz \
+  --outdir results/ --prefix Splice_vs_SpliceHQ --gzip
+```
+
+These are two commands on purpose (since v0.17.0). `compare` used to run
+`find-query-diff` itself, which meant re-reading the whole table it had just
+written — a second pass for outputs you may not want. Splitting them also lets you
+re-run `find-query-diff` with different options (`--compare-by junctions`,
+`--coord-side`) without redoing the comparison.
 
 All inputs/outputs transparently support gzip (`.gz`) and stdin/stdout (`-`) —
 except `compare`'s `-a`/`-b`, which require real file paths (no stdin), since
@@ -94,7 +110,6 @@ For each read to be compared, the following is done.
 | `--allow-id-mismatch` | compare the shared intersection instead of erroring when read-ID sets differ |
 | `--format` | which serialization(s) of the comparison table: `tsv`, `parquet`, or `both` (default) |
 | `--no-alninfo`, `--no-readinfo` | skip writing those per-set tables |
-| `--skip-find-query-diff` | skip the automatic `find-query-diff` step run after the comparison table is written |
 | `--keep-sorted-paf` | keep the intermediate sorted PAFs |
 
 
@@ -111,7 +126,6 @@ A `compare` run writes, under `--outdir`, files prefixed with `--prefix`:
 | `{prefix}.compare.tsv.gz` | 96 | the **comparison** table (unless `--format parquet`) |
 | `{prefix}.compare.parquet` | 96 | the same table as Parquet (unless `--format tsv`) |
 | `{prefix}.compare.summary.tsv` | 2 | **aggregate summary statistics** (see below) |
-| `{prefix}.query_diff_reads.tsv.gz`, `{prefix}.query_diff_regions.{A,B}.bed.gz`, `{prefix}.query_diff_summary.tsv` | — | **query-different reads + regions** (see below); skip with `--skip-find-query-diff` |
 
 ### Choosing a format
 
@@ -143,9 +157,9 @@ numbers to text or escape 66 fields per row. The costs are ~31% more disk (six
 long-string columns dominate this table, and gzip compresses across the whole row
 stream where Parquet compresses each column alone) and more memory while writing.
 
-The default is `both` because `find-query-diff` — which `compare` runs for you at the
-end — still reads the TSV. `--format parquet` therefore requires
-`--skip-find-query-diff`, and says so rather than silently dropping outputs.
+The default is `both` because `find-query-diff` and `compare-summary` still read
+TSV only. If you pass `--format parquet` you will not be able to run them on the
+result until they learn to read Parquet — keep a TSV if you intend to.
 
 In Python:
 
@@ -229,11 +243,14 @@ Full definitions are in the [reference](docs/REFERENCE.md#compare-readinfo-and-t
 
 ### Query-different reads & regions
 
-After writing the comparison table, `compare` also runs **`find-query-diff`** —
-it finds every read whose alignment is **not** `query_identical` (using the exact
-same definition as above), and reports where those reads cluster on the genome.
-This runs by default (always both coordinate sides, gzip'd — not configurable);
-skip it with `--skip-find-query-diff`.
+**`find-query-diff`** is a separate command that reads a comparison table and finds
+every read whose alignment is **not** `query_identical` (using the exact definition
+above), then reports where those reads cluster on the genome:
+
+```bash
+maligno find-query-diff -i results/AvsB.compare.tsv.gz \
+  --outdir results/ --prefix AvsB --gzip
+```
 
 Outputs: `{prefix}.query_diff_reads.tsv.gz` (one row per differing read + its
 category — `diff_aln_to_both` / `diff_aln_only_A` / `diff_aln_only_B`), a merged, `bedtools
@@ -241,12 +258,8 @@ merge`-style region table per side (`{prefix}.query_diff_regions.{A,B}.bed.gz` �
 `chrom, start, end, n_reads, n_both, n_only_A`/`n_only_B`, `n_plus, n_minus`), and a
 category-tally `{prefix}.query_diff_summary.tsv`.
 
-To run it on an existing comparison table (e.g. from the manual workflow, or with
-different `--coord-side`/`--gzip`/`--compare-by` choices), use the standalone command:
-
-```bash
-maligno find-query-diff -i AvsB.compare.tsv.gz --outdir results/ --prefix AvsB
-```
+Useful options: `--coord-side` (emit only the A- or B-coordinate region table),
+`--gzip`, and `--compare-by` below.
 
 **`--compare-by`** selects what counts as a difference between the two sets:
 

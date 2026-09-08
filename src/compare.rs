@@ -33,7 +33,6 @@ use crate::comparison_row::{write_compare_header, ComparisonRow};
 use crate::parquet_out::{ComparisonParquetWriter, OutputFormat};
 use crate::compare_summary::{classify, CompareSummary};
 use crate::external_sort::{parse_mem, read_id_set_check, sort_paf_to_file};
-use crate::find_query_diff::{self, FindQueryDiffArgs};
 use crate::io_utils::{open_input, open_output};
 use crate::paf_groups::PafGroups;
 use crate::readinfo::{collapse_group, ReadInfoRow, READINFO_HEADER};
@@ -114,15 +113,12 @@ pub struct CompareArgs {
     #[arg(long = "no-readinfo")]
     no_readinfo: bool,
 
-    /// Skip the "find-query-diff" step run at the end of the comparison.
-    #[arg(long = "skip-find-query-diff")]
-    skip_find_query_diff: bool,
-
     /// Which serialization(s) of the comparison table to write: `tsv`
     /// ({prefix}.compare.tsv.gz), `parquet` ({prefix}.compare.parquet), or `both`.
     /// Parquet is typed and column-pruned, so re-reading a few columns is far
-    /// faster; it is somewhat larger on disk for this table. `parquet` alone
-    /// requires --skip-find-query-diff, which still reads the TSV.
+    /// faster; it is somewhat larger on disk for this table. Note that
+    /// `find-query-diff` and `compare-summary` cannot read Parquet yet, so keep a
+    /// TSV if you intend to run them on this table.
     #[arg(long = "format", value_enum, default_value_t = OutputFormat::Both)]
     format: OutputFormat,
 }
@@ -136,17 +132,6 @@ pub fn run(args: &CompareArgs) -> Result<()> {
             "--label-a and --label-b are both '{}' — they must differ (they name \
              the per-set output files)",
             args.label_a
-        );
-    }
-    // `find-query-diff` reads the comparison TSV, so a Parquet-only run has nothing
-    // for it. Refuse rather than silently dropping four outputs — the same stance
-    // the read-ID set check takes, naming the flag that opts in.
-    if !args.format.writes_tsv() && !args.skip_find_query_diff {
-        bail!(
-            "--format parquet writes no TSV, but the find-query-diff step run at the \
-             end of `compare` reads the comparison TSV. Re-run with \
-             --skip-find-query-diff to accept that (no query-diff reads or region \
-             BEDs will be produced), or with --format both to keep them."
         );
     }
     let outdir = Path::new(&args.outdir);
@@ -316,20 +301,16 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         eprintln!("  {b_sorted}");
     }
 
-    // ── find-query-diff (default-on): query-different reads + merged regions ──
-    if !args.skip_find_query_diff {
+    // Point at the companion command rather than running it. Until v0.17.0 `compare`
+    // invoked find-query-diff itself, which meant re-reading the table it had just
+    // written — a second full pass for outputs the caller may not want.
+    if let Some(tsv) = &compare_tsv {
+        eprintln!();
+        eprintln!("For the query-different reads and the genomic regions where they cluster:");
         eprintln!(
-            "[INFO] running find-query-diff on the comparison table \
-             (skip with --skip-find-query-diff)..."
+            "  maligno find-query-diff -i {tsv} --outdir {} --prefix {}",
+            args.outdir, args.prefix
         );
-        let fq_args = FindQueryDiffArgs::for_compare(
-            compare_tsv
-                .clone()
-                .expect("guarded above: find-query-diff runs only when the TSV is written"),
-            args.outdir.clone(),
-            args.prefix.clone(),
-        );
-        find_query_diff::run(&fq_args)?;
     }
 
     Ok(())
