@@ -40,12 +40,62 @@ use crate::compare_summary::{
 use crate::interval_merge::{merge_and_count, Ivl, Locus};
 use crate::io_utils::{open_input, open_output};
 use crate::junction::{junction_set_stats, parse_junction_str};
+use crate::parquet_out::{is_parquet_path, ParquetRowReader};
 
-#[derive(Clone, Copy, Debug, clap::ValueEnum)]
-pub enum CoordSide {
-    A,
-    B,
-    Both,
+/// Serialization of `--input`. `auto` (default) picks Parquet for a
+/// `.parquet`-named path and TSV otherwise — the same extension convention
+/// `compare`/`compare-readinfo` already use on the output side.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum InputFormat {
+    #[default]
+    Auto,
+    Tsv,
+    Parquet,
+}
+
+/// One data row's cells, in header/column order, from either input format.
+enum RowSource {
+    Tsv(Box<dyn BufRead>),
+    Parquet(ParquetRowReader),
+}
+
+impl RowSource {
+    /// The header/column names, in file order.
+    fn header(&mut self) -> Result<Vec<String>> {
+        match self {
+            RowSource::Tsv(r) => {
+                let mut header = String::new();
+                if r.read_line(&mut header)? == 0 {
+                    bail!("comparison table is empty");
+                }
+                Ok(header
+                    .trim_end_matches(['\n', '\r'])
+                    .split('\t')
+                    .map(String::from)
+                    .collect())
+            }
+            RowSource::Parquet(pr) => Ok(pr.columns().to_vec()),
+        }
+    }
+
+    /// The next data row as owned cells, in header order. `None` at EOF. Blank
+    /// TSV lines are skipped, matching the pre-Parquet behavior.
+    fn next_row(&mut self) -> Result<Option<Vec<String>>> {
+        match self {
+            RowSource::Tsv(r) => loop {
+                let mut line = String::new();
+                if r.read_line(&mut line)? == 0 {
+                    return Ok(None);
+                }
+                let line = line.trim_end_matches(['\n', '\r']);
+                if line.is_empty() {
+                    continue;
+                }
+                return Ok(Some(line.split('\t').map(String::from).collect()));
+            },
+            RowSource::Parquet(pr) => pr.next_row(),
+        }
+    }
 }
 
 /// What aspect of the alignment defines a difference between A and B.
@@ -62,9 +112,17 @@ pub enum CompareBy {
 /// genomic regions where they cluster.
 #[derive(clap::Args, Debug)]
 pub struct FindQueryDiffArgs {
-    /// Comparison TSV from `compare` / `compare-readinfo` (`.gz` ok; `-` = stdin).
-    #[arg(short = 'i', long = "input", value_name = "compare.tsv")]
+    /// Comparison table from `compare` / `compare-readinfo`: TSV (`.gz` ok;
+    /// `-` = stdin) or Parquet (`--format parquet` / `-o x.parquet`). See
+    /// `--input-format`.
+    #[arg(short = 'i', long = "input", value_name = "compare.tsv|compare.parquet")]
     input: String,
+
+    /// Input serialization. `auto` (default) selects Parquet for a
+    /// `.parquet`-named `--input` and TSV otherwise. Parquet requires a real
+    /// file path — it cannot be read from stdin (`-`).
+    #[arg(long = "input-format", value_enum, default_value = "auto")]
+    input_format: InputFormat,
 
     /// Output directory (created if it does not exist).
     #[arg(long = "outdir", value_name = "DIR")]
@@ -73,11 +131,6 @@ pub struct FindQueryDiffArgs {
     /// Filename prefix for all outputs.
     #[arg(long = "prefix", value_name = "STR")]
     prefix: String,
-
-    /// Which coordinate-space region table(s) to emit. `both` (default) writes
-    /// both A and B tables. The read TSV and summary are always written in full.
-    #[arg(long = "coord-side", value_enum, default_value = "both")]
-    coord_side: CoordSide,
 
     /// Gzip the read TSV and region tables (appends `.gz`).
     #[arg(long = "gzip")]
@@ -176,8 +229,6 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
     fs::create_dir_all(outdir)
         .with_context(|| format!("cannot create --outdir '{}'", args.outdir))?;
 
-    let want_a = matches!(args.coord_side, CoordSide::A | CoordSide::Both);
-    let want_b = matches!(args.coord_side, CoordSide::B | CoordSide::Both);
     let ext = if args.gzip { ".gz" } else { "" };
     // Non-default mode gets a `.junctions` filename segment so its outputs never
     // clobber the default (`all`) run at the same --outdir/--prefix, and so the
@@ -193,15 +244,32 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
     let summary_out = path(format!("{}.query_diff_summary{}.tsv", args.prefix, tag));
     let identical_out = path(format!("{}.query_identical_reads{}.tsv{}", args.prefix, tag, ext));
 
-    // ── Header: column index, labels, per-side indices ────────────────────────
-    let mut reader = open_input(&args.input)
-        .with_context(|| format!("opening comparison table '{}'", args.input))?;
-    let mut header = String::new();
-    if reader.read_line(&mut header)? == 0 {
-        bail!("comparison table '{}' is empty", args.input);
+    // ── Input format: resolve, then open ───────────────────────────────────────
+    let want_parquet = match args.input_format {
+        InputFormat::Parquet => true,
+        InputFormat::Tsv => false,
+        InputFormat::Auto => args.input != "-" && is_parquet_path(&args.input),
+    };
+    if want_parquet && args.input == "-" {
+        bail!("--input-format parquet cannot read from stdin ('-'); pass a Parquet file path");
     }
-    let header = header.trim_end_matches(['\n', '\r']);
-    let cols: Vec<&str> = header.split('\t').collect();
+    let mut source = if want_parquet {
+        RowSource::Parquet(
+            ParquetRowReader::open(&args.input)
+                .with_context(|| format!("opening comparison table '{}'", args.input))?,
+        )
+    } else {
+        RowSource::Tsv(
+            open_input(&args.input)
+                .with_context(|| format!("opening comparison table '{}'", args.input))?,
+        )
+    };
+
+    // ── Header: column index, labels, per-side indices ────────────────────────
+    let cols_owned = source
+        .header()
+        .with_context(|| format!("reading comparison table '{}'", args.input))?;
+    let cols: Vec<&str> = cols_owned.iter().map(String::as_str).collect();
     let col_index: HashMap<&str, usize> =
         cols.iter().copied().enumerate().map(|(i, c)| (c, i)).collect();
     require_ab_schema(&cols)?;
@@ -253,12 +321,8 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
     let mut vec_b: Vec<Ivl<DiffMeta>> = Vec::new();
     let mut n_bad_interval: u64 = 0;
 
-    for line in reader.lines() {
-        let line = line?;
-        if line.is_empty() {
-            continue;
-        }
-        let fields: Vec<&str> = line.split('\t').collect();
+    while let Some(fields_owned) = source.next_row()? {
+        let fields: Vec<&str> = fields_owned.iter().map(String::as_str).collect();
         if !seen_row {
             (label_a, label_b) = labels_from_row(&col_index, &fields);
             seen_row = true;
@@ -312,13 +376,13 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
         writeln!(reads_w, "{read_name}\t{category}")?;
 
         let outcome = if in_a && in_b { Outcome::Both } else { Outcome::OnlySide };
-        if in_a && want_a {
+        if in_a {
             match build_ivl(&get_a, outcome) {
                 Some(iv) => vec_a.push(iv),
                 None => n_bad_interval += 1,
             }
         }
-        if in_b && want_b {
+        if in_b {
             match build_ivl(&get_b, outcome) {
                 Some(iv) => vec_b.push(iv),
                 None => n_bad_interval += 1,
@@ -330,15 +394,11 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
         w.flush()?;
     }
 
-    // ── Pass 2: merge each selected coordinate space → region tables ──────────
-    if want_a {
-        let loci = merge_and_count(vec_a, DiffAcc::default, fold_diff);
-        write_region_table(&regions_a_out, &loci, "A", &label_a, "n_only_A", &args.input)?;
-    }
-    if want_b {
-        let loci = merge_and_count(vec_b, DiffAcc::default, fold_diff);
-        write_region_table(&regions_b_out, &loci, "B", &label_b, "n_only_B", &args.input)?;
-    }
+    // ── Pass 2: merge each coordinate space → region tables ────────────────────
+    let loci_a = merge_and_count(vec_a, DiffAcc::default, fold_diff);
+    write_region_table(&regions_a_out, &loci_a, "A", &label_a, "n_only_A", &args.input)?;
+    let loci_b = merge_and_count(vec_b, DiffAcc::default, fold_diff);
+    write_region_table(&regions_b_out, &loci_b, "B", &label_b, "n_only_B", &args.input)?;
 
     // ── Summary (TSV + stderr) ────────────────────────────────────────────────
     let compare_by_str = match args.compare_by {
@@ -368,12 +428,8 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
     }
     eprintln!("Outputs in {}:", args.outdir);
     eprintln!("  {reads_out}");
-    if want_a {
-        eprintln!("  {regions_a_out}");
-    }
-    if want_b {
-        eprintln!("  {regions_b_out}");
-    }
+    eprintln!("  {regions_a_out}");
+    eprintln!("  {regions_b_out}");
     eprintln!("  {summary_out}");
     if args.emit_identical_reads {
         eprintln!("  {identical_out}");

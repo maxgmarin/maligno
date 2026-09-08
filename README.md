@@ -74,8 +74,8 @@ maligno find-query-diff \
 These are two commands on purpose (since v0.17.0). `compare` used to run
 `find-query-diff` itself, which meant re-reading the whole table it had just
 written — a second pass for outputs you may not want. Splitting them also lets you
-re-run `find-query-diff` with different options (`--compare-by junctions`,
-`--coord-side`) without redoing the comparison.
+re-run `find-query-diff` with different options (e.g. `--compare-by junctions`)
+without redoing the comparison.
 
 All inputs/outputs transparently support gzip (`.gz`) and stdin/stdout (`-`) —
 except `compare`'s `-a`/`-b`, which require real file paths (no stdin), since
@@ -258,8 +258,7 @@ merge`-style region table per side (`{prefix}.query_diff_regions.{A,B}.bed.gz` �
 `chrom, start, end, n_reads, n_both, n_only_A`/`n_only_B`, `n_plus, n_minus`), and a
 category-tally `{prefix}.query_diff_summary.tsv`.
 
-Useful options: `--coord-side` (emit only the A- or B-coordinate region table),
-`--gzip`, and `--compare-by` below.
+Useful options: `--gzip` and `--compare-by` below.
 
 **`--compare-by`** selects what counts as a difference between the two sets:
 

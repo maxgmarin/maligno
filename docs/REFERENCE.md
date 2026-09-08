@@ -506,12 +506,12 @@ cannot accidentally match.
 > **Migration** — add one command after `compare`:
 > ```bash
 > maligno find-query-diff -i results/AvsB.compare.tsv.gz \
->   --outdir results/ --prefix AvsB --coord-side both --gzip --compare-by all
+>   --outdir results/ --prefix AvsB --gzip --compare-by all
 > ```
 > Those are exactly the settings the fused step used, and they reproduce the four
 > files **byte-for-byte** — verified against the v0.16.0 gate baseline for all four
-> comparison scenarios. Any other `--coord-side` / `--gzip` / `--compare-by`
-> combination is now equally available.
+> comparison scenarios. Any other `--gzip` / `--compare-by` combination is now
+> equally available.
 >
 > `--skip-find-query-diff` is removed; passing it is an unknown-argument error. The
 > summary table is unaffected — it is accumulated *during* the merge pass, not by
@@ -811,15 +811,14 @@ step, which meant re-reading the comparison table it had just written — a seco
 full pass for outputs the caller may not want. `compare` now prints the exact
 command to run instead. Running it by hand reproduces the previous outputs
 byte-for-byte, given the defaults the fused step used
-(`--coord-side both --gzip --compare-by all`).
+(`--gzip --compare-by all`).
 
-**Usage** (choose `--coord-side` `a`/`b`, opt out of `--gzip`, or select
-`--compare-by`):
+**Usage** (opt out of `--gzip`, or select `--compare-by`):
 
 ```bash
 maligno find-query-diff -i AvsB.compare.tsv.gz --outdir results/ --prefix AvsB \
-  [--coord-side a|b|both] [--gzip] [--compare-by all|junctions] [--emit-identical-reads]
-# -i: a compare / compare-readinfo table (.gz or - ok)
+  [--gzip] [--compare-by all|junctions] [--emit-identical-reads]
+# -i: a compare / compare-readinfo table (.gz, .parquet, or - ok)
 ```
 
 Like `compare-summary`, the fixed `TargetChr_A` / `TargetChr_B` columns are required, and set names come from the `Label_A` / `Label_B`

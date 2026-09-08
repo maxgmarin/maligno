@@ -32,6 +32,7 @@
 //! rather than nested `aln_a`/`aln_b`/`diff` structs, because the consumers are
 //! pandas/polars/DuckDB, where `read_parquet` should be a drop-in for `read_csv`.
 
+use std::fs::File;
 use std::io::Write;
 use std::sync::Arc;
 
@@ -39,8 +40,12 @@ use anyhow::{Context, Result};
 use arrow_array::builder::{
     BooleanBuilder, Float64Builder, Int64Builder, StringBuilder, UInt64Builder,
 };
-use arrow_array::{ArrayRef, RecordBatch};
+use arrow_array::{
+    Array, ArrayRef, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
+    UInt64Array,
+};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::metadata::KeyValue;
@@ -49,6 +54,7 @@ use parquet::file::properties::WriterProperties;
 use crate::comparison_row::{
     comparison_col_names, ComparisonRow, DiffValue, READINFO_DATA_COLS,
 };
+use crate::io_utils::fmt_float;
 
 /// Bumped when the Parquet column set, types or null semantics change. Recorded in
 /// the file footer so a reader can detect a schema it does not understand.
@@ -409,6 +415,82 @@ pub(crate) fn is_parquet_path(path: &str) -> bool {
     path.ends_with(".parquet")
 }
 
+/// Render one Arrow cell back to the string a TSV reader would see for the
+/// same value: a null becomes `NaN` for a float column (the "undefined"
+/// convention from `append_raw`/`append_diff`) and an empty cell otherwise.
+/// Used by the round-trip test below and by `find-query-diff`'s Parquet
+/// reader (`ParquetRowReader`), so both input formats hand identical strings
+/// to the same downstream parsing/comparison code.
+pub(crate) fn arrow_cell_to_string(a: &dyn Array, row: usize) -> String {
+    if a.is_null(row) {
+        return match a.data_type() {
+            DataType::Float64 => "NaN".to_string(),
+            _ => String::new(),
+        };
+    }
+    match a.data_type() {
+        DataType::Utf8 => a.as_any().downcast_ref::<StringArray>().unwrap().value(row).to_string(),
+        DataType::UInt64 => a.as_any().downcast_ref::<UInt64Array>().unwrap().value(row).to_string(),
+        DataType::Int64 => a.as_any().downcast_ref::<Int64Array>().unwrap().value(row).to_string(),
+        DataType::Float64 => fmt_float(a.as_any().downcast_ref::<Float64Array>().unwrap().value(row)),
+        DataType::Boolean => a.as_any().downcast_ref::<BooleanArray>().unwrap().value(row).to_string(),
+        other => panic!("unexpected type {other:?}"),
+    }
+}
+
+/// Row-by-row Parquet reader for the comparison table's **input** side.
+/// Cells come out already stringified via `arrow_cell_to_string`, so a
+/// consumer written against tab-split TSV rows (column-name → index lookup,
+/// then string comparisons/parses) works unchanged against either format.
+///
+/// Requires a seekable file, so `-` (stdin) is not supported — callers must
+/// reject that combination before opening.
+pub(crate) struct ParquetRowReader {
+    reader: ParquetRecordBatchReader,
+    columns: Vec<String>,
+    current: Option<RecordBatch>,
+    row_in_batch: usize,
+}
+
+impl ParquetRowReader {
+    pub(crate) fn open(path: &str) -> Result<Self> {
+        let file = File::open(path).with_context(|| format!("cannot open '{path}'"))?;
+        let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+            .with_context(|| format!("'{path}' is not a valid Parquet file"))?;
+        let columns = builder.schema().fields().iter().map(|f| f.name().clone()).collect();
+        let reader = builder
+            .build()
+            .with_context(|| format!("reading Parquet file '{path}'"))?;
+        Ok(Self { reader, columns, current: None, row_in_batch: 0 })
+    }
+
+    pub(crate) fn columns(&self) -> &[String] {
+        &self.columns
+    }
+
+    /// The next data row as owned string cells, in column order. `None` at EOF.
+    pub(crate) fn next_row(&mut self) -> Result<Option<Vec<String>>> {
+        loop {
+            if let Some(batch) = &self.current {
+                if self.row_in_batch < batch.num_rows() {
+                    let row: Vec<String> = (0..batch.num_columns())
+                        .map(|c| arrow_cell_to_string(batch.column(c).as_ref(), self.row_in_batch))
+                        .collect();
+                    self.row_in_batch += 1;
+                    return Ok(Some(row));
+                }
+            }
+            match self.reader.next() {
+                Some(batch) => {
+                    self.current = Some(batch.context("reading a Parquet row group")?);
+                    self.row_in_batch = 0;
+                }
+                None => return Ok(None),
+            }
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
@@ -416,11 +498,7 @@ pub(crate) fn is_parquet_path(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::io_utils::{escape_tsv_field, fmt_float};
-    use arrow_array::{
-        Array, BooleanArray, Float64Array, Int64Array, StringArray, UInt64Array,
-    };
-    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    use crate::io_utils::escape_tsv_field;
 
     fn lookup(pairs: &[(&str, &'static str)], col: &str) -> &'static str {
         pairs.iter().find(|(k, _)| *k == col).map(|(_, v)| *v).unwrap_or("")
@@ -471,23 +549,7 @@ mod tests {
 
     /// The documented inverse: render a Parquet cell back to its TSV form.
     fn cell_to_tsv(batch: &RecordBatch, col: usize, row: usize) -> String {
-        let a = batch.column(col);
-        if a.is_null(row) {
-            // A null means "undefined". Its TSV spelling depends on the type:
-            // NaN for a float, an empty cell for anything else.
-            return match a.data_type() {
-                DataType::Float64 => "NaN".to_string(),
-                _ => String::new(),
-            };
-        }
-        match a.data_type() {
-            DataType::Utf8 => a.as_any().downcast_ref::<StringArray>().unwrap().value(row).to_string(),
-            DataType::UInt64 => a.as_any().downcast_ref::<UInt64Array>().unwrap().value(row).to_string(),
-            DataType::Int64 => a.as_any().downcast_ref::<Int64Array>().unwrap().value(row).to_string(),
-            DataType::Float64 => fmt_float(a.as_any().downcast_ref::<Float64Array>().unwrap().value(row)),
-            DataType::Boolean => a.as_any().downcast_ref::<BooleanArray>().unwrap().value(row).to_string(),
-            other => panic!("unexpected type {other:?}"),
-        }
+        arrow_cell_to_string(batch.column(col).as_ref(), row)
     }
 
     // ── the schema is derived, not restated ──────────────────────────────────
