@@ -36,7 +36,7 @@ use std::fs::File;
 use std::io::Write;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use arrow_array::builder::{
     BooleanBuilder, Float64Builder, Int64Builder, StringBuilder, UInt64Builder,
 };
@@ -46,7 +46,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchReaderBuilder};
-use parquet::arrow::ArrowWriter;
+use parquet::arrow::{ArrowWriter, ProjectionMask};
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
@@ -382,17 +382,17 @@ impl<W: Write + Send> ComparisonParquetWriter<W> {
 /// `error: invalid value 'xml' for '--format <FORMAT>' [possible values: tsv,
 /// parquet, both]`.
 ///
-/// The default is `both` rather than `parquet` for one concrete reason: `compare`
-/// runs `find-query-diff` as a second pass **over the TSV**, so a Parquet-only run
-/// has nothing for it to read. Once `find-query-diff` and `compare-summary` can
-/// read Parquet, this default can move to `parquet`.
+/// The default is `both` for backward compatibility: existing scripts expect
+/// the gzipped TSV. `find-query-diff` and `compare-summary` can read either
+/// format (`--input-format`), so a Parquet-only run works standalone with
+/// both of them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub(crate) enum OutputFormat {
-    /// Gzipped TSV only — the pre-v0.16.0 behaviour.
+    /// Gzipped TSV only.
     Tsv,
-    /// Parquet only. Requires `--skip-find-query-diff`, which cannot read it yet.
+    /// Parquet only.
     Parquet,
-    /// Both the TSV and the Parquet.
+    /// Both TSV and Parquet.
     #[default]
     Both,
 }
@@ -453,11 +453,42 @@ pub(crate) struct ParquetRowReader {
 }
 
 impl ParquetRowReader {
-    pub(crate) fn open(path: &str) -> Result<Self> {
+    /// `columns`: `None` reads every column, in the file's schema order.
+    /// `Some(names)` projects to just those columns — the reader never
+    /// decodes the rest, which is where Parquet's per-column storage
+    /// actually pays off (see the benchmark in this module's doc comment) —
+    /// and bails with a clear error if any requested name isn't in the
+    /// file's schema. Row order always matches the file's schema order
+    /// restricted to the requested set, not the order `columns` was given
+    /// in (this is `ProjectionMask`'s documented behavior).
+    pub(crate) fn open(path: &str, columns: Option<&[&str]>) -> Result<Self> {
         let file = File::open(path).with_context(|| format!("cannot open '{path}'"))?;
         let builder = ParquetRecordBatchReaderBuilder::try_new(file)
             .with_context(|| format!("'{path}' is not a valid Parquet file"))?;
-        let columns = builder.schema().fields().iter().map(|f| f.name().clone()).collect();
+        let all_columns: Vec<String> =
+            builder.schema().fields().iter().map(|f| f.name().clone()).collect();
+
+        let (columns, builder) = match columns {
+            None => (all_columns, builder),
+            Some(wanted) => {
+                let missing: Vec<&str> = wanted
+                    .iter()
+                    .copied()
+                    .filter(|w| !all_columns.iter().any(|c| c == w))
+                    .collect();
+                if !missing.is_empty() {
+                    bail!(
+                        "'{path}' is missing column(s) needed for this command: {}",
+                        missing.join(", ")
+                    );
+                }
+                let projected: Vec<String> =
+                    all_columns.into_iter().filter(|c| wanted.contains(&c.as_str())).collect();
+                let mask = ProjectionMask::columns(builder.parquet_schema(), wanted.iter().copied());
+                (projected, builder.with_projection(mask))
+            }
+        };
+
         let reader = builder
             .build()
             .with_context(|| format!("reading Parquet file '{path}'"))?;
@@ -770,5 +801,66 @@ mod tests {
         assert!(!is_parquet_path("x.tsv"));
         assert!(!is_parquet_path("-"), "stdout keeps writing TSV");
         assert!(!is_parquet_path("x.parquet.gz"), "Parquet compresses internally");
+    }
+
+    // ── ParquetRowReader ─────────────────────────────────────────────────────
+
+    /// Write one row to a temp Parquet file (reusing the writer above) and
+    /// return its path. Caller is responsible for removing the file.
+    fn write_temp_parquet(tag: &str) -> String {
+        let path = std::env::temp_dir()
+            .join(format!("maligno_pq_row_reader_{tag}_{}.parquet", std::process::id()));
+        let a = [("TargetChr", "chr1"), ("Strand", "+"), ("cs", ":100"),
+            ("Query_Start", "0"), ("Query_End", "100"),
+            ("Target_Start", "500"), ("Target_End", "600")];
+        let b = [("TargetChr", "chr1"), ("Strand", "+"), ("cs", ":50*at:49"),
+            ("Query_Start", "0"), ("Query_End", "100"),
+            ("Target_Start", "500"), ("Target_End", "600")];
+        let mut w = ComparisonParquetWriter::new(std::fs::File::create(&path).unwrap())
+            .expect("writer");
+        let row = ComparisonRow::build("read1", 100, "SetA", "SetB", |c| lookup(&a, c), |c| lookup(&b, c));
+        w.append(&row).expect("append");
+        assert_eq!(w.finish().unwrap(), 1);
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn unprojected_reader_yields_every_column_in_schema_order() {
+        let path = write_temp_parquet("full");
+        let mut r = ParquetRowReader::open(&path, None).unwrap();
+        assert_eq!(r.columns().len(), 96, "no projection: every column present");
+        assert_eq!(r.columns(), build_schema().fields().iter().map(|f| f.name().clone()).collect::<Vec<_>>().as_slice());
+        let row = r.next_row().unwrap().expect("one row");
+        assert_eq!(row.len(), 96);
+        assert!(r.next_row().unwrap().is_none(), "only one row was written");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn projected_reader_yields_only_the_requested_columns_in_schema_order() {
+        let path = write_temp_parquet("proj");
+        // Deliberately out of schema order and with a duplicate-ish adjacent
+        // pair, to confirm the reader restores file/schema order regardless.
+        let wanted = ["Target_End_B", "TargetChr_A", "Strand_A", "Read_Name"];
+        let mut r = ParquetRowReader::open(&path, Some(&wanted)).unwrap();
+        // Schema order (Read_Name is column 0; per-side block is A-then-B,
+        // READINFO_DATA_COLS order): Read_Name, TargetChr_A, Strand_A, ..., Target_End_B.
+        assert_eq!(r.columns(), &["Read_Name", "TargetChr_A", "Strand_A", "Target_End_B"]);
+        let row = r.next_row().unwrap().expect("one row");
+        assert_eq!(row, vec!["read1", "chr1", "+", "600"]);
+        assert!(r.next_row().unwrap().is_none());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn projecting_a_nonexistent_column_is_a_clear_error() {
+        let path = write_temp_parquet("missing");
+        let wanted = ["TargetChr_A", "Not_A_Real_Column"];
+        let err = match ParquetRowReader::open(&path, Some(&wanted)) {
+            Ok(_) => panic!("expected an error for a nonexistent column"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("Not_A_Real_Column"), "unexpected error: {err}");
+        let _ = std::fs::remove_file(&path);
     }
 }

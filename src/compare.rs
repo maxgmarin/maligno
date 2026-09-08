@@ -113,12 +113,7 @@ pub struct CompareArgs {
     #[arg(long = "no-readinfo")]
     no_readinfo: bool,
 
-    /// Which serialization(s) of the comparison table to write: `tsv`
-    /// ({prefix}.compare.tsv.gz), `parquet` ({prefix}.compare.parquet), or `both`.
-    /// Parquet is typed and column-pruned, so re-reading a few columns is far
-    /// faster; it is somewhat larger on disk for this table. Note that
-    /// `find-query-diff` and `compare-summary` cannot read Parquet yet, so keep a
-    /// TSV if you intend to run them on this table.
+    /// Output format for the comparison table.
     #[arg(long = "format", value_enum, default_value_t = OutputFormat::Both)]
     format: OutputFormat,
 }

@@ -29,74 +29,18 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, Write};
+use std::io::Write;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 
 use crate::compare_summary::{
     classify, labels_from_row, require_ab_schema, CompareSummary, MapStatus, ReadClass,
 };
 use crate::interval_merge::{merge_and_count, Ivl, Locus};
-use crate::io_utils::{open_input, open_output};
+use crate::io_utils::open_output;
 use crate::junction::{junction_set_stats, parse_junction_str};
-use crate::parquet_out::{is_parquet_path, ParquetRowReader};
-
-/// Serialization of `--input`. `auto` (default) picks Parquet for a
-/// `.parquet`-named path and TSV otherwise — the same extension convention
-/// `compare`/`compare-readinfo` already use on the output side.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
-pub enum InputFormat {
-    #[default]
-    Auto,
-    Tsv,
-    Parquet,
-}
-
-/// One data row's cells, in header/column order, from either input format.
-enum RowSource {
-    Tsv(Box<dyn BufRead>),
-    Parquet(ParquetRowReader),
-}
-
-impl RowSource {
-    /// The header/column names, in file order.
-    fn header(&mut self) -> Result<Vec<String>> {
-        match self {
-            RowSource::Tsv(r) => {
-                let mut header = String::new();
-                if r.read_line(&mut header)? == 0 {
-                    bail!("comparison table is empty");
-                }
-                Ok(header
-                    .trim_end_matches(['\n', '\r'])
-                    .split('\t')
-                    .map(String::from)
-                    .collect())
-            }
-            RowSource::Parquet(pr) => Ok(pr.columns().to_vec()),
-        }
-    }
-
-    /// The next data row as owned cells, in header order. `None` at EOF. Blank
-    /// TSV lines are skipped, matching the pre-Parquet behavior.
-    fn next_row(&mut self) -> Result<Option<Vec<String>>> {
-        match self {
-            RowSource::Tsv(r) => loop {
-                let mut line = String::new();
-                if r.read_line(&mut line)? == 0 {
-                    return Ok(None);
-                }
-                let line = line.trim_end_matches(['\n', '\r']);
-                if line.is_empty() {
-                    continue;
-                }
-                return Ok(Some(line.split('\t').map(String::from).collect()));
-            },
-            RowSource::Parquet(pr) => pr.next_row(),
-        }
-    }
-}
+use crate::table_input::{open_table, InputFormat};
 
 /// What aspect of the alignment defines a difference between A and B.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -244,26 +188,25 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
     let summary_out = path(format!("{}.query_diff_summary{}.tsv", args.prefix, tag));
     let identical_out = path(format!("{}.query_identical_reads{}.tsv{}", args.prefix, tag, ext));
 
+    // `junctions` (query-space set) is only read by `--compare-by junctions`, but is
+    // required unconditionally: it is always present in the comparison table, so
+    // demanding it up front turns a mid-stream surprise into an early, clear error.
+    const NEEDED: [&str; 8] = [
+        "TargetChr", "Strand", "cs", "Query_Start", "Query_End", "Target_Start", "Target_End",
+        "junctions",
+    ];
+
     // ── Input format: resolve, then open ───────────────────────────────────────
-    let want_parquet = match args.input_format {
-        InputFormat::Parquet => true,
-        InputFormat::Tsv => false,
-        InputFormat::Auto => args.input != "-" && is_parquet_path(&args.input),
-    };
-    if want_parquet && args.input == "-" {
-        bail!("--input-format parquet cannot read from stdin ('-'); pass a Parquet file path");
-    }
-    let mut source = if want_parquet {
-        RowSource::Parquet(
-            ParquetRowReader::open(&args.input)
-                .with_context(|| format!("opening comparison table '{}'", args.input))?,
-        )
-    } else {
-        RowSource::Tsv(
-            open_input(&args.input)
-                .with_context(|| format!("opening comparison table '{}'", args.input))?,
-        )
-    };
+    // For a Parquet input, project down to just the columns this command reads
+    // (19 of the comparison table's 96) — Parquet skips decoding the rest, which
+    // is where its per-column storage actually pays off.
+    let wanted: Vec<String> = ["Read_Name", "Label_A", "Label_B"]
+        .into_iter()
+        .map(String::from)
+        .chain(["A", "B"].iter().flat_map(|side| NEEDED.iter().map(move |b| format!("{b}_{side}"))))
+        .collect();
+    let wanted_refs: Vec<&str> = wanted.iter().map(String::as_str).collect();
+    let mut source = open_table(&args.input, args.input_format, Some(&wanted_refs))?;
 
     // ── Header: column index, labels, per-side indices ────────────────────────
     let cols_owned = source
@@ -277,13 +220,6 @@ pub fn run(args: &FindQueryDiffArgs) -> Result<()> {
         .get("Read_Name")
         .context("comparison table is missing column 'Read_Name'")?;
 
-    // `junctions` (query-space set) is only read by `--compare-by junctions`, but is
-    // required unconditionally: it is always present in the comparison table, so
-    // demanding it up front turns a mid-stream surprise into an early, clear error.
-    const NEEDED: [&str; 8] = [
-        "TargetChr", "Strand", "cs", "Query_Start", "Query_End", "Target_Start", "Target_End",
-        "junctions",
-    ];
     let resolve = |side: &str| -> Result<HashMap<&'static str, usize>> {
         let mut m = HashMap::new();
         for base in NEEDED {

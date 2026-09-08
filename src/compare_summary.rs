@@ -23,12 +23,13 @@
 //! length/position — is still compared exactly.
 
 use std::collections::HashMap;
-use std::io::{BufRead, Write};
+use std::io::Write;
 
 use anyhow::{bail, Context, Result};
 
 use crate::cs_parser::{cs_revcomp, cs_strip_splice_motifs};
-use crate::io_utils::{open_input, open_output};
+use crate::io_utils::open_output;
+use crate::table_input::{open_table, InputFormat};
 
 /// Whether each side's representative alignment is mapped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -227,9 +228,17 @@ impl CompareSummary {
 
 #[derive(clap::Args, Debug)]
 pub struct CompareSummaryArgs {
-    /// Comparison TSV from `compare` / `compare-readinfo` (`.gz` ok; `-` for stdin).
-    #[arg(short = 'i', long = "input", value_name = "compare.tsv")]
+    /// Comparison table from `compare` / `compare-readinfo`: TSV (`.gz` ok;
+    /// `-` = stdin) or Parquet (`--format parquet` / `-o x.parquet`). See
+    /// `--input-format`.
+    #[arg(short = 'i', long = "input", value_name = "compare.tsv|compare.parquet")]
     input: String,
+
+    /// Input serialization. `auto` (default) selects Parquet for a
+    /// `.parquet`-named `--input` and TSV otherwise. Parquet requires a real
+    /// file path — it cannot be read from stdin (`-`).
+    #[arg(long = "input-format", value_enum, default_value = "auto")]
+    input_format: InputFormat,
 
     /// Write the summary TSV here (default: stderr only). `.gz` ok; `-` for stdout.
     #[arg(short = 'o', long = "output", value_name = "summary.tsv")]
@@ -289,26 +298,33 @@ pub(crate) fn labels_from_row(col_index: &HashMap<&str, usize>, fields: &[&str])
 }
 
 pub fn run(args: &CompareSummaryArgs) -> Result<()> {
-    let mut reader = open_input(&args.input)
-        .with_context(|| format!("opening comparison table '{}'", args.input))?;
+    // The unsuffixed columns `classify` reads; resolve each side's index up front.
+    const NEEDED: [&str; 7] = [
+        "TargetChr", "Strand", "cs", "Query_Start", "Query_End", "Target_Start", "Target_End",
+    ];
+
+    // For a Parquet input, project down to just the 16 columns this command
+    // reads (of the comparison table's 96) — Parquet skips decoding the rest,
+    // which is where its per-column storage actually pays off.
+    let wanted: Vec<String> = ["Label_A", "Label_B"]
+        .into_iter()
+        .map(String::from)
+        .chain(["A", "B"].iter().flat_map(|side| NEEDED.iter().map(move |b| format!("{b}_{side}"))))
+        .collect();
+    let wanted_refs: Vec<&str> = wanted.iter().map(String::as_str).collect();
+    let mut source = open_table(&args.input, args.input_format, Some(&wanted_refs))?;
 
     // Header → column index map.
-    let mut header = String::new();
-    if reader.read_line(&mut header)? == 0 {
-        bail!("comparison table '{}' is empty", args.input);
-    }
-    let header = header.trim_end_matches(['\n', '\r']);
-    let cols: Vec<&str> = header.split('\t').collect();
+    let cols_owned = source
+        .header()
+        .with_context(|| format!("reading comparison table '{}'", args.input))?;
+    let cols: Vec<&str> = cols_owned.iter().map(String::as_str).collect();
     let col_index: HashMap<&str, usize> =
         cols.iter().copied().enumerate().map(|(i, c)| (c, i)).collect();
 
     // Require the v0.13+ fixed `_A` / `_B` side suffixes.
     require_ab_schema(&cols)?;
 
-    // The unsuffixed columns `classify` reads; resolve each side's index up front.
-    const NEEDED: [&str; 7] = [
-        "TargetChr", "Strand", "cs", "Query_Start", "Query_End", "Target_Start", "Target_End",
-    ];
     let resolve = |side: &str| -> Result<HashMap<&'static str, usize>> {
         let mut m = HashMap::new();
         for base in NEEDED {
@@ -330,12 +346,8 @@ pub fn run(args: &CompareSummaryArgs) -> Result<()> {
     let mut seen_row = false;
 
     let mut summary = CompareSummary::default();
-    for line in reader.lines() {
-        let line = line?;
-        if line.is_empty() {
-            continue;
-        }
-        let fields: Vec<&str> = line.split('\t').collect();
+    while let Some(fields_owned) = source.next_row()? {
+        let fields: Vec<&str> = fields_owned.iter().map(String::as_str).collect();
         if !seen_row {
             (label_a, label_b) = labels_from_row(&col_index, &fields);
             seen_row = true;

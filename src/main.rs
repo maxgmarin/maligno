@@ -42,6 +42,7 @@ mod find_query_diff;   // `find-query-diff` command (query-different reads + reg
 mod interval_merge;     // generic sort+sweep interval merge (bedtools merge -c -o count)
 mod cs_parser;          // cs-tag parser  (PAF → alninfo path; also extracts genomic junctions)
 mod io_utils;
+mod table_input;        // TSV/Parquet dispatch for reading a two-sided comparison table
 mod junction;
 mod paf;
 mod compare;            // primary `compare` command (on-rails: sort → tables → compare)
