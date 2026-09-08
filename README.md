@@ -118,25 +118,30 @@ A `compare` run writes, under `--outdir`, files prefixed with `--prefix`:
 `--format` selects how the comparison table is serialized. Both carry the same 96
 columns with the same names, in the same order.
 
-| | `tsv.gz` | `parquet` |
-|---|---|---|
-| Read 16 of 96 columns¹ | 16.2 s | **1.1 s** |
-| Read all 96 columns¹ | 20.4 s | **4.7 s** |
-| Count rows where query junctions differ¹ | 14.0 s | **0.03 s** |
-| Write¹ | 10.8 s | **4.5 s** |
-| Size¹ | **64.4 MB** | 86.3 MB |
-| Peak RSS while writing¹ | **35 MB** | 306 MB |
-| Inspect with `zcat \| head` | yes | no — use `duckdb`, `polars`, `pandas` |
-| Readable by `compare-summary` / `find-query-diff` | yes | **not yet** |
+| | `tsv.gz` | `parquet` | |
+|---|---|---|---|
+| Read 16 of 96 columns¹ | 2.01 s | **0.55 s** | 3.6× |
+| Read all 96 columns¹ | 3.97 s | **2.31 s** | 1.7× |
+| Count rows where query junctions differ¹ | 0.85 s | **0.02 s** | 48× |
+| Write² | 10.8 s | **4.5 s** | 2.4× |
+| Size² | **64.4 MB** | 86.3 MB | |
+| Peak RSS while writing² | **35 MB** | 306 MB | |
+| Inspect with `zcat \| head` | yes | no — use `duckdb`, `polars`, `pandas` | |
+| Readable by `compare-summary` / `find-query-diff` | yes | **not yet** | |
 
-¹ measured on the 507,365-transcript GENCODE Splice-vs-SpliceHQ comparison.
+¹ DuckDB 1.5.5 on the 507,365-transcript GENCODE Splice-vs-SpliceHQ comparison, best
+of three, with DuckDB's **default** CSV sampling. Passing `sample_size=-1` forces a
+full-file type-inference scan before any row is read and makes the TSV side look
+2–4× worse than it is — a cost neither maligno nor a normal reader pays.
+² measured with maligno itself on the same data (`compare-readinfo`, one format).
 
 Parquet is typed and column-pruned, so reading a few columns skips the rest of the
-file entirely — which is what makes re-analysis 4–15× faster. It is *also* faster to
-write, because zstd beats gzip here and the Parquet path does not format numbers to
-text or escape 66 fields per row. The costs are ~31% more disk (six long-string
-columns dominate this table, and gzip compresses across the whole row stream where
-Parquet compresses each column alone) and more memory while writing.
+file entirely — worth **1.7–48×** depending on how many of the 96 columns you touch:
+a two-column aggregate barely reads anything, a full scan gains little. It is *also*
+faster to write, because zstd beats gzip here and the Parquet path does not format
+numbers to text or escape 66 fields per row. The costs are ~31% more disk (six
+long-string columns dominate this table, and gzip compresses across the whole row
+stream where Parquet compresses each column alone) and more memory while writing.
 
 The default is `both` because `find-query-diff` — which `compare` runs for you at the
 end — still reads the TSV. `--format parquet` therefore requires

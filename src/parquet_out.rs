@@ -1,18 +1,27 @@
 //! Parquet output for the comparison table.
 //!
-//! An **additional** output alongside the TSV, not a replacement: `compare
-//! --parquet` writes both, and `compare-readinfo -o x.parquet` picks Parquet by
-//! extension. The TSV remains the default so nothing downstream changes.
+//! Selected by `compare --format tsv|parquet|both` (default `both`), and by
+//! `compare-readinfo -o x.parquet`, which picks Parquet from the extension.
 //!
 //! Why it exists: the comparison table is written once and re-read many times —
 //! by the notebooks, and by `find-query-diff` re-run standalone with
-//! `--compare-by junctions`. Each TSV read decompresses the whole stream to reach
-//! a handful of columns. Measured on the 507,365-row Splice-vs-SpliceHQ table:
-//! reading the 16 columns `find-query-diff` needs takes 16.2 s from `tsv.gz`
-//! versus 1.1 s from Parquet, and a two-column aggregate over it drops from 14 s
-//! to 0.03 s. The cost is size — Parquet+zstd is ~31% larger here (85 MB vs
+//! `--compare-by junctions`. Parquet stores each column separately, so a reader
+//! touching a few of the 96 columns never pays for the rest. Note the cost being
+//! avoided is **splitting every row into 96 fields**, not decompression:
+//! gunzipping the whole 408 MB table takes only 0.22 s.
+//!
+//! Measured on the 507,365-row Splice-vs-SpliceHQ table (DuckDB 1.5.5, default CSV
+//! sampling, best of three): the 16 columns `find-query-diff` needs take 2.01 s
+//! from `tsv.gz` versus 0.55 s from Parquet (3.6×); a two-column aggregate drops
+//! from 0.85 s to 0.02 s (48×); a full 96-column scan gains least, 3.97 s to
+//! 2.31 s (1.7×). Writing is faster too — 4.5 s versus 10.8 s, measured with
+//! maligno itself. The cost is size: Parquet+zstd is ~31% larger here (85 MB vs
 //! 65 MB), because six long-string columns dominate the table and gzip compresses
 //! across the whole row stream where Parquet compresses each column alone.
+//!
+//! (Benchmark those numbers with DuckDB's *default* sampling. `sample_size=-1`
+//! forces a full-file type-inference scan before any row is read, which maligno
+//! never pays and which inflates the TSV side 2–4×.)
 //!
 //! **The schema is derived, never restated.** Column names and order come from
 //! `comparison_row`'s `READINFO_DATA_COLS` and `comparison_col_names()`, the same

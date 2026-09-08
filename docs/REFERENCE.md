@@ -451,13 +451,24 @@ cannot accidentally match.
 > Parquet in addition to, or instead of, the gzipped TSV. Same 96 columns, same
 > names, same order — `pd.read_parquet` is a drop-in for `pd.read_csv`.
 >
-> Why: the table is written once and read many times. Measured on the 507,365-row
-> Splice-vs-SpliceHQ comparison — reading the 16 columns `find-query-diff` needs
-> takes 16.2 s from `tsv.gz` and 1.1 s from Parquet; a two-column aggregate drops
-> from 14 s to 0.03 s; and writing is *faster* too (4.5 s vs 10.8 s), because zstd
-> beats gzip here and the Parquet path neither formats numbers to text nor escapes
-> 66 fields per row. Costs: ~31% more disk (85 vs 65 MB — six long-string columns
-> dominate this table) and ~306 MB peak RSS while writing versus 35 MB.
+> Why: the table is written once and read many times, and column pruning means a
+> reader touching a few of the 96 columns skips the rest of the file. Measured on
+> the 507,365-row Splice-vs-SpliceHQ comparison (DuckDB 1.5.5, default CSV
+> sampling, best of three) — the 16 columns `find-query-diff` needs take 2.01 s
+> from `tsv.gz` and 0.55 s from Parquet (3.6×); a two-column aggregate drops from
+> 0.85 s to 0.02 s (48×); a full 96-column scan gains least, 3.97 s to 2.31 s
+> (1.7×). Writing is *faster* too — 4.5 s vs 10.8 s, measured with maligno itself —
+> because zstd beats gzip here and the Parquet path neither formats numbers to text
+> nor escapes 66 fields per row. Costs: ~31% more disk (85 vs 65 MB — six
+> long-string columns dominate this table) and ~306 MB peak RSS while writing
+> versus 35 MB.
+>
+> Benchmark caveat worth recording: an earlier version of this note quoted 15× and
+> 470×, measured with DuckDB's `sample_size=-1`. That forces a full-file
+> type-inference scan before any row is read — a cost neither maligno nor a normal
+> reader pays — and inflated the TSV side 2–4×. Note also that decompression is not
+> the bottleneck it might appear: gunzipping the whole 408 MB table takes 0.22 s.
+> The cost being avoided is splitting every row into 96 fields.
 >
 > **Nulls mean "undefined", nothing else.** A null appears where the TSV carries
 > `NaN` in a float column, or an empty `cs`. Values that mean something are kept as
