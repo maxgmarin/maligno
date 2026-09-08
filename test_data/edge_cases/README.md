@@ -84,14 +84,26 @@ separates `query_identical` (7) from `reference_identical` (6).
 
 ```bash
 ./scripts/schema-stability-manifest.sh ./target/release/maligno /tmp/w > after.txt
-diff test_data/schema_manifest.v0.14.0.txt after.txt && echo "OUTPUT UNCHANGED"
+diff test_data/schema_manifest.v0.15.0.txt after.txt && echo "OUTPUT UNCHANGED"
 ```
 
-`test_data/schema_manifest.v0.14.0.txt` is the committed v0.14.0 baseline: 46
-SHA-256 fingerprints over the decompressed outputs of six scenarios. Against
-v0.13.0 it reports 41 identical and exactly 4 changed — the four `compare.tsv`
-files, whose column order v0.14.0 deliberately regrouped — which is what a
-naming-and-ordering-only change should look like.
+`test_data/schema_manifest.v0.15.0.txt` is the committed baseline: 46 SHA-256
+fingerprints over the decompressed outputs of six scenarios. The filename carries
+a version on purpose — an output change must rename it, which makes regenerating
+the baseline a deliberate act rather than an invisible overwrite.
+
+Its history is a good illustration of what the gate is for:
+
+- **v0.14.0** (column regroup) moved exactly 4 of 45 fingerprints — the four
+  `compare.tsv` files — and left every summary and region output identical, which
+  is what a naming-and-ordering-only change should look like.
+- **v0.14.1** (typed `ComparisonRow`) moved **nothing**: 46 of 46 identical, as a
+  pure refactor must.
+- **v0.15.0** (unmapped soft-clip fix) moved exactly the 15 `alninfo`/`readinfo`/
+  `compare` fingerprints of the three edge scenarios and **not one chr22
+  fingerprint** — because chr22 contains no unmapped reads, so only this fixture
+  could see the change. Every summary and `find-query-diff` output stayed
+  identical too, confirming the classifier never reads soft-clip.
 
 ## Regenerating
 

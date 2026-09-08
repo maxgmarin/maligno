@@ -421,6 +421,31 @@ cannot accidentally match.
 > `Junc_Dist_V2`, and the four object lists. `compare` no longer writes
 > `{prefix}.compare.junctions.tsv.gz` / `.compare.junctions.summary.tsv`.
 
+> **Bug fix changing emitted values (v0.15.0) — unmapped reads no longer report
+> soft-clipping.** For an unmapped record, `N_SoftClipped_Bases_Start` was reported
+> as the full read length and `N_SoftClipped_Events` as `1`. Both are now `0`.
+> Affects the `alninfo`, `readinfo` and comparison tables, and in the comparison
+> table also `N_SoftClipped_Bases_Start_Diff`. `N_SoftClipped_Bases_End` was already
+> `0` and is unchanged.
+>
+> Why: soft-clip length is computed from the alignment geometry
+> (`query_start`/`query_end`/`strand`), not from the cs tag. An unmapped PAF record
+> carries a placeholder interval of `(0, 0)` and strand `*`, so the minus/unknown
+> branch of the formula returned `query_len - 0` — mechanically concluding that the
+> whole read was soft-clipped. There is no alignment, so there are no unaligned
+> *ends*; `0` is now reported, consistent with every other alignment-derived field,
+> all of which already came out `0`/`NaN` for unmapped rows.
+>
+> **Classification is unaffected.** The identity classifier reads `TargetChr`,
+> `Strand`, `cs`, `Query_Start`/`Query_End` and `Target_Start`/`Target_End` — never
+> soft-clip — so `query_identical`, `reference_identical`, every `…summary.tsv`
+> count and all `find-query-diff` output are byte-identical across this change.
+>
+> **Pre-v0.15.0 tables carry the wrong values** for unmapped reads. They remain
+> readable and every other column is unaffected, so regenerate only if soft-clip
+> statistics on unmapped reads matter to your analysis. Reads that aligned in both
+> sets were never affected.
+
 **Strand tracking and renames (v0.2.1+).** Each side now carries a `Strand_A` / `Strand_B` data
 column (the best alignment's strand), and the comparison block starts with a `Strand_Match`
 (true/false) metric that flags strand-flips between A and B. The legacy column name

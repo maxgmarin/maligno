@@ -76,9 +76,20 @@ impl AlnInfo {
         // Python's get_softclip_lengths():
         //   +strand: start = query_start,          end = query_len - query_end
         //   -strand: start = query_len - query_end, end = query_start
-        let (sc_start, sc_end) = softclip_lengths(
-            rec.query_len, rec.query_start, rec.query_end, rec.strand,
-        );
+        //
+        // Unmapped records must be excluded (v0.15.0). Their query_start/query_end are
+        // placeholder zeros and their strand is '*', so `softclip_lengths` would take
+        // the non-'+' arm and conclude `start = query_len - 0 = query_len` — reporting
+        // the whole read as soft-clipped, with one soft-clip event. That is a real
+        // computation fed inputs that do not mean what the formula assumes: there is no
+        // alignment interval, so there are no unaligned *ends*. Zero here keeps
+        // soft-clip consistent with every other alignment-derived field, all of which
+        // already come out 0/NaN for unmapped rows.
+        let (sc_start, sc_end) = if rec.is_unmapped {
+            (0, 0)
+        } else {
+            softclip_lengths(rec.query_len, rec.query_start, rec.query_end, rec.strand)
+        };
         let n_softclipped_events = u32::from(sc_start > 0) + u32::from(sc_end > 0);
 
         // ── Junction coordinates ──────────────────────────────────────────
@@ -322,5 +333,96 @@ fn write_genomic_junction_tuple<W: Write>(
             }
             write!(w, ")")
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::paf::parse_line;
+
+    fn aln(line: &str) -> AlnInfo {
+        let rec = parse_line(line, 1).expect("test PAF line should parse");
+        AlnInfo::from_paf(&rec)
+    }
+
+    // ── soft-clip lengths ────────────────────────────────────────────────────
+
+    #[test]
+    fn unmapped_record_reports_no_softclipping() {
+        // The canonical unmapped row `sam2paf --convert-unaligned` emits: strand and
+        // target are '*', and the query interval is a placeholder (0, 0). Before
+        // v0.15.0 this reported the entire read as soft-clipped (start = query_len,
+        // events = 1), because the '*' strand fell through to the non-'+' arm of
+        // `softclip_lengths` and `query_len - 0` is `query_len`.
+        let a = aln("read1\t67\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0");
+        assert_eq!(a.n_softclipped_bases_start, 0, "no alignment means no clipped start");
+        assert_eq!(a.n_softclipped_bases_end, 0);
+        assert_eq!(a.n_softclipped_events, 0);
+    }
+
+    #[test]
+    fn unmapped_record_zeroes_softclip_for_any_read_length() {
+        for qlen in [1u64, 78, 79, 100_000] {
+            let a = aln(&format!("read1\t{qlen}\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0"));
+            assert_eq!(
+                (a.n_softclipped_bases_start, a.n_softclipped_bases_end, a.n_softclipped_events),
+                (0, 0, 0),
+                "query_len {qlen} must not leak into the soft-clip stats"
+            );
+        }
+    }
+
+    #[test]
+    fn plus_strand_softclip_is_start_then_tail() {
+        // qlen 100, aligned [5, 90) on '+': 5 clipped at the start, 10 at the end.
+        let a = aln("read1\t100\t5\t90\t+\tchr1\t1000\t200\t285\t85\t85\t60\tcs:Z::85");
+        assert_eq!(a.n_softclipped_bases_start, 5);
+        assert_eq!(a.n_softclipped_bases_end, 10);
+        assert_eq!(a.n_softclipped_events, 2);
+    }
+
+    #[test]
+    fn minus_strand_softclip_is_swapped_relative_to_plus() {
+        // Same interval on '-': the two ends trade places (Python parity).
+        let a = aln("read1\t100\t5\t90\t-\tchr1\t1000\t200\t285\t85\t85\t60\tcs:Z::85");
+        assert_eq!(a.n_softclipped_bases_start, 10);
+        assert_eq!(a.n_softclipped_bases_end, 5);
+        assert_eq!(a.n_softclipped_events, 2);
+    }
+
+    #[test]
+    fn fully_aligned_read_has_no_softclipping_and_no_events() {
+        let a = aln("read1\t100\t0\t100\t+\tchr1\t1000\t200\t300\t100\t100\t60\tcs:Z::100");
+        assert_eq!(a.n_softclipped_bases_start, 0);
+        assert_eq!(a.n_softclipped_bases_end, 0);
+        assert_eq!(a.n_softclipped_events, 0);
+    }
+
+    #[test]
+    fn one_sided_clip_counts_a_single_event() {
+        let a = aln("read1\t100\t0\t90\t+\tchr1\t1000\t200\t290\t90\t90\t60\tcs:Z::90");
+        assert_eq!(a.n_softclipped_bases_start, 0);
+        assert_eq!(a.n_softclipped_bases_end, 10);
+        assert_eq!(a.n_softclipped_events, 1, "only the tail is clipped");
+    }
+
+    // ── the rest of an unmapped record stays zeroed/NaN ──────────────────────
+
+    #[test]
+    fn unmapped_record_has_empty_cs_and_zeroed_event_counts() {
+        let a = aln("read1\t67\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0");
+        assert_eq!(a.cs, "");
+        assert_eq!(a.n_match_events, 0);
+        assert_eq!(a.n_match_bases, 0);
+        assert_eq!(a.n_splice_junction_events, 0);
+        assert_eq!(a.aln_score, 0);
+        assert_eq!(a.ms, 0);
+        assert!(a.junctions.is_empty());
+        assert!(a.seqid.is_nan(), "identity is undefined without an alignment");
     }
 }
