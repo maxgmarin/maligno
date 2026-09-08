@@ -1,0 +1,16 @@
+identical_single_exon	ENST00000194152.4
+identical_single_exon	ENST00000194155.7
+identical_multi_junction	ENST00000001008.6
+identical_multi_junction	ENST00000002125.9
+identical_minus_strand	ENST00000000412.8
+identical_minus_strand	ENST00000001146.7
+juncdiff	ENST00000054668.5
+juncdiff	ENST00000233836.5
+juncdiff	ENST00000254043.8
+csdiff_only	ENST00000229771.11
+csdiff_only	ENST00000242066.10
+csdiff_only	ENST00000242770.9
+unmapped_both	ENST00000290239.7
+unmapped_both	ENST00000362102.3
+aligned_only_B	ENST00000578854.1
+identical_revcomp	ENST00000619436.1
