@@ -87,8 +87,7 @@ enum Commands {
     Compare(CompareArgs),
     /// SAM -> PAF converter (conversion utility).
     Sam2paf(Sam2pafArgs),
-    /// Comparison table → differing reads and the merged genomic regions where
-    /// they cluster, in query or reference space.
+    /// Comparison table → find differing reads and the regions where they cluster.
     #[command(name = "find-aln-diff")]
     FindAlnDiff(FindAlnDiffArgs),
     /// Lower-level building blocks and analysis steps used internally by `compare`.

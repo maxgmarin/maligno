@@ -68,7 +68,7 @@ genome, run **`find-aln-diff`** on that table:
 ```bash
 maligno find-aln-diff \
   -i results/Splice_vs_SpliceHQ.compare.tsv.gz \
-  --outdir results/ --prefix Splice_vs_SpliceHQ --gzip
+  --outdir results/ --prefix Splice_vs_SpliceHQ
 ```
 
 These are two commands on purpose (since v0.17.0). `compare` used to run
@@ -255,16 +255,22 @@ on the genome:
 
 ```bash
 maligno find-aln-diff -i results/AvsB.compare.tsv.gz \
-  --outdir results/ --prefix AvsB --gzip
+  --outdir results/ --prefix AvsB
 ```
 
-Outputs: `{prefix}.query_diff_reads.tsv.gz` (one row per differing read + its
-category — `diff_aln_to_both` / `diff_aln_only_A` / `diff_aln_only_B`), a merged, `bedtools
-merge`-style region table per side (`{prefix}.query_diff_regions.{A,B}.bed.gz` —
-`chrom, start, end, n_reads, n_both, n_only_A`/`n_only_B`, `n_plus, n_minus`), and a
-category-tally `{prefix}.query_diff_summary.tsv`.
+Outputs (gzipped by default; `--no-gzip` to opt out): `{prefix}.query_diff_reads.tsv.gz`
+— one row per differing read: `Read_Name`, `outcome` (category — `diff_aln_to_both` /
+`diff_aln_only_A` / `diff_aln_only_B`), plus 8 classification booleans (`1`/`0`) computed
+the same way regardless of `--space`/`--compare-by` — `query_identical_same_strand`,
+`query_identical_revcomp`, `query_junctions_identical`, `ref_same_position_same_aln`,
+`ref_same_position_diff_aln`, `ref_diff_position_same_aln`, `ref_diff_position_diff_aln`,
+`ref_same_position_same_junctions`. So a single run can show, e.g., a read that's
+query-different but reference-identical, without a second run in the other `--space`.
+Also written: a merged, `bedtools merge`-style region table per side
+(`{prefix}.query_diff_regions.{A,B}.bed.gz` — `chrom, start, end, n_reads, n_both,
+n_only_A`/`n_only_B`, `n_plus, n_minus`), and a category-tally `{prefix}.query_diff_summary.tsv`.
 
-Useful options: `--gzip`, `--space`, and `--compare-by` below.
+Useful options: `--no-gzip`, `--space`, and `--compare-by` below.
 
 **`--space`** selects the coordinate space a difference is judged in: `query`
 (default, shown above) compares each side's alignment relative to the read;
@@ -285,15 +291,15 @@ definitions are in the [reference](docs/REFERENCE.md#differing-reads--regions-fi
   identical junctions but differing mismatches/indels/soft-clips count as the
   **same**. Reads aligned in only one set are still reported (they have no
   junctions to compare on the missing side). In this mode the outputs gain a
-  `.junctions` filename segment (e.g. `{prefix}.query_diff_reads.junctions.tsv`),
+  `.junctions` filename segment (e.g. `{prefix}.query_diff_reads.junctions.tsv.gz`),
   so a `junctions` run never clobbers an `all` run at the same prefix. The
   junctions-different read set is always a subset of the `all`-different set.
   `--compare-by` is a standalone-only option — `compare` always uses `all`.
 
-Add **`--emit-identical-reads`** to also write `{prefix}.query_identical_reads.tsv`
-(`Read_Name` + `query_identical_same_strand`/`query_identical_revcomp`, or
-`query_identical_junctions` under `--compare-by junctions`) — the complement of the
-diff-reads file. Off by default; not used by `compare`'s built-in invocation.
+Add **`--emit-identical-reads`** to also write `{prefix}.query_identical_reads.tsv.gz`
+— same shape as the diff-reads file (`Read_Name`, `category`, and the same 8
+classification booleans) but for the complementary, identical read set. Off by
+default; not used by `compare`'s built-in invocation.
 
 ---
 

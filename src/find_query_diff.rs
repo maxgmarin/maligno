@@ -33,8 +33,17 @@
 //!     missing side).
 //!
 //! Outputs (to `--outdir`, `--prefix`-named; `query_diff`/`query_identical` or
-//! `reference_diff`/`reference_identical` depending on `--space`):
-//!   1. `{prefix}.{stem}_reads.tsv[.gz]`      — one row per differing read + category
+//! `reference_diff`/`reference_identical` depending on `--space`; gzipped by
+//! default, `--no-gzip` to opt out):
+//!   1. `{prefix}.{stem}_reads.tsv[.gz]`      — one row per differing read:
+//!      `Read_Name`, `outcome`, plus 8 classification booleans (`1`/`0`)
+//!      computed the same way regardless of `--space`/`--compare-by` —
+//!      `query_identical_same_strand`, `query_identical_revcomp`,
+//!      `query_junctions_identical`, `ref_same_position_same_aln`,
+//!      `ref_same_position_diff_aln`, `ref_diff_position_same_aln`,
+//!      `ref_diff_position_diff_aln`, `ref_same_position_same_junctions`.
+//!      `{prefix}.{identical_stem}_reads.tsv[.gz]` (`--emit-identical-reads`)
+//!      carries the same 8 columns for the complementary read set.
 //!   2. `{prefix}.{stem}_regions.A.bed[.gz]`  — merged A-coordinate loci
 //!   3. `{prefix}.{stem}_regions.B.bed[.gz]`  — merged B-coordinate loci
 //!   4. `{prefix}.{stem}_summary.tsv`         — category tally (+ stderr)
@@ -47,7 +56,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use crate::compare_summary::{
-    classify, labels_from_row, require_ab_schema, CompareSummary, MapStatus, ReadClass,
+    classify, labels_from_row, require_ab_schema, CompareSummary, MapStatus, ReadClass, RefClass,
 };
 use crate::interval_merge::{merge_and_count, Ivl, Locus};
 use crate::io_utils::open_output;
@@ -112,9 +121,9 @@ pub struct FindAlnDiffArgs {
     #[arg(long = "prefix", value_name = "STR")]
     prefix: String,
 
-    /// Gzip the read TSV and region tables (appends `.gz`).
-    #[arg(long = "gzip")]
-    gzip: bool,
+    /// Do not gzip the read and region output tables (gzipped by default).
+    #[arg(long = "no-gzip")]
+    no_gzip: bool,
 
     /// What defines a difference: `all` (default) compares the full cs tag,
     /// motif-blind (intron donor/acceptor letters ignored) — any other
@@ -234,7 +243,7 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
     fs::create_dir_all(outdir)
         .with_context(|| format!("cannot create --outdir '{}'", args.outdir))?;
 
-    let ext = if args.gzip { ".gz" } else { "" };
+    let ext = if args.no_gzip { "" } else { ".gz" };
     // Non-default mode gets a `.junctions` filename segment so its outputs never
     // clobber the default (`all`) run at the same --outdir/--prefix, and so the
     // default run stays byte-for-byte backward-compatible.
@@ -314,12 +323,20 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
     let mut seen_row = false;
 
     // ── Pass 1: stream rows → read TSV + differing-interval vectors ────────────
+    // These 8 columns are computed the same way regardless of `--space`/
+    // `--compare-by` (see the computation block in the row loop below), so a
+    // single run shows e.g. a query-different-but-reference-identical read
+    // without needing a second run in the other `--space`.
+    const BOOL_COLS: &str = "query_identical_same_strand\tquery_identical_revcomp\t\
+        query_junctions_identical\tref_same_position_same_aln\tref_same_position_diff_aln\t\
+        ref_diff_position_same_aln\tref_diff_position_diff_aln\tref_same_position_same_junctions";
+
     let mut reads_w = open_output(Some(&reads_out))?;
-    writeln!(reads_w, "Read_Name\toutcome")?;
+    writeln!(reads_w, "Read_Name\toutcome\t{BOOL_COLS}")?;
 
     let mut identical_w: Option<Box<dyn Write>> = if args.emit_identical_reads {
         let mut w = open_output(Some(&identical_out))?;
-        writeln!(w, "Read_Name\tcategory")?;
+        writeln!(w, "Read_Name\tcategory\t{BOOL_COLS}")?;
         Some(w)
     } else {
         None
@@ -351,6 +368,28 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
         // single `class`, so the outputs and summary stay consistent by
         // construction.
         let base = classify(&get_a, &get_b);
+
+        // The 8 classification booleans, computed unconditionally (independent
+        // of `--space`/`--compare-by`) so every emitted row carries the full
+        // picture regardless of which mode selected it. `base` already gives
+        // the query-space and reference-space (`RefClass`) axes; the two
+        // junctions-based checks are called here rather than only under
+        // `--compare-by junctions`.
+        let both_mapped = matches!(base.map_status, MapStatus::BothMapped);
+        let bool_cols = format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            (base.query_identical && !base.query_identical_rc) as u8,
+            (base.query_identical && base.query_identical_rc) as u8,
+            (both_mapped && junctions_identical(&get_a, &get_b)) as u8,
+            matches!(base.ref_class, Some(RefClass::SamePositionSameAln)) as u8,
+            matches!(base.ref_class, Some(RefClass::SamePositionDiffAln)) as u8,
+            matches!(base.ref_class, Some(RefClass::DiffPositionSameAln)) as u8,
+            matches!(base.ref_class, Some(RefClass::DiffPositionDiffAln)) as u8,
+            (both_mapped
+                && base.ref_class.map(|rc| rc.same_position()).unwrap_or(false)
+                && genomic_junctions_identical(&get_a, &get_b)) as u8,
+        );
+
         let (identical, identical_rc) = match (args.space, args.compare_by) {
             (DiffSpace::Query, CompareBy::All) => (base.query_identical, base.query_identical_rc),
             (DiffSpace::Query, CompareBy::Junctions) => (
@@ -389,7 +428,7 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
                         CompareBy::All => "query_identical_same_strand",
                     },
                 };
-                writeln!(w, "{read_name}\t{cat}")?;
+                writeln!(w, "{read_name}\t{cat}\t{bool_cols}")?;
             }
         }
 
@@ -408,7 +447,7 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
             _ => continue,
         };
 
-        writeln!(reads_w, "{read_name}\t{category}")?;
+        writeln!(reads_w, "{read_name}\t{category}\t{bool_cols}")?;
 
         let outcome = if in_a && in_b { Outcome::Both } else { Outcome::OnlySide };
         if in_a {

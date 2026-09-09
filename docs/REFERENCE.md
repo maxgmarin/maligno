@@ -137,7 +137,7 @@ maligno compare -a A.paf -b B.paf --label-a A --label-b B --outdir results/ --pr
 What it does, in order:
 1. **Sorts** both PAFs by `Query_Name` (byte-lex) with an in-process external sort
    (`ext-sort`: buffers up to `--sort-mem`, default 1G, spilling to temp files under
-   `--tmp-dir`, default `--outdir`). This guarantees grouping and a consistent
+   `--sort-tmp-dir`, default `--outdir`). This guarantees grouping and a consistent
    matching order — it can't silently mis-compare unsorted input.
 2. **Verifies** both PAFs carry the **same `Query_Name` set** (O(1) memory). By
    default it **errors** if they differ, reporting how many IDs are shared / only
@@ -515,15 +515,15 @@ cannot accidentally match.
 > orthogonal (it no longer has to guarantee a TSV for an internal consumer).
 >
 > **Migration** — add one command after `compare` (later renamed to
-> `find-aln-diff`; the settings below are unchanged):
+> `find-aln-diff`, and gzip later became the default output, so the flag below
+> is no longer needed to match the settings the fused step used):
 > ```bash
 > maligno find-aln-diff -i results/AvsB.compare.tsv.gz \
->   --outdir results/ --prefix AvsB --gzip --compare-by all
+>   --outdir results/ --prefix AvsB --compare-by all
 > ```
-> Those are exactly the settings the fused step used, and they reproduce the four
-> files **byte-for-byte** — verified against the v0.16.0 gate baseline for all four
-> comparison scenarios. Any other `--gzip` / `--compare-by` combination is now
-> equally available.
+> Those reproduce the four files **byte-for-byte** — verified against the
+> v0.16.0 gate baseline for all four comparison scenarios. Any other `--compare-by`
+> choice is now equally available (as is `--no-gzip`, for plain-text output).
 >
 > `--skip-find-query-diff` is removed; passing it is an unknown-argument error. The
 > summary table is unaffected — it is accumulated *during* the merge pass, not by
@@ -837,13 +837,13 @@ step, which meant re-reading the comparison table it had just written — a seco
 full pass for outputs the caller may not want. `compare` now prints the exact
 command to run instead. Running it by hand with `--space query` (the default)
 reproduces the previous fused-step outputs byte-for-byte, given the defaults the
-fused step used (`--gzip --compare-by all`).
+fused step used (`--compare-by all`; gzip is on by default).
 
 **Usage:**
 
 ```bash
 maligno find-aln-diff -i AvsB.compare.tsv.gz --outdir results/ --prefix AvsB \
-  [--space query|reference] [--gzip] [--compare-by all|junctions] [--emit-identical-reads]
+  [--space query|reference] [--no-gzip] [--compare-by all|junctions] [--emit-identical-reads]
 # -i: a compare / compare-pipeline merge-readinfo table (.gz, .parquet, or - ok)
 ```
 
@@ -881,7 +881,7 @@ placeholder vs. minimap2's true motif) doesn't count as a difference under
 `all` either, motif-blind in both spaces.
 
 In `junctions` mode every output filename gains a `.junctions` segment (e.g.
-`{prefix}.query_diff_reads.junctions.tsv`) so it never clobbers an `all` run at the
+`{prefix}.query_diff_reads.junctions.tsv.gz`) so it never clobbers an `all` run at the
 same `--outdir`/`--prefix`. Both modes write leading `space<TAB><query|reference>`
 and `compare_by<TAB><all|junctions>` rows in the summary TSV so the file is
 self-describing.
@@ -905,18 +905,42 @@ Reconciliation: `reads_compared == <total> + <identical_total> + aligned_neither
 
 Filenames use the `query_diff`/`query_identical` stem under `--space query`
 (default) or `reference_diff`/`reference_identical` under `--space reference`;
-the table below uses the query-space names.
+the table below uses the query-space names. `[.gz]` is present by default —
+`--no-gzip` omits it (covers both per-read tables and both region tables).
 
 | File | Contents |
 |------|----------|
-| `{prefix}.query_diff_reads.tsv[.gz]` | one row per differing read: `Read_Name`, `outcome` (the canonical category name above) |
+| `{prefix}.query_diff_reads.tsv[.gz]` | one row per differing read: `Read_Name`, `outcome` (the canonical category name above), plus 8 classification booleans (see below) |
 | `{prefix}.query_diff_regions.A.bed[.gz]` | merged loci over reads with an A placement (both-mapped-and-differing + `diff_aln_only_A`) |
 | `{prefix}.query_diff_regions.B.bed[.gz]` | merged loci over reads with a B placement (both-mapped-and-differing + `diff_aln_only_B`) |
-| `{prefix}.query_diff_summary.tsv` | the category tally above (+ stderr) |
-| `{prefix}.query_identical_reads.tsv[.gz]` | *(opt-in, `--emit-identical-reads`)* one row per identical read: `Read_Name`, `category` (`query_identical_same_strand` / `query_identical_revcomp` / `query_identical_junctions` under `--space query`; `reference_identical` under `--space reference`) — the complement of the diff-reads file. Off by default; **not** produced by `compare`'s built-in invocation. |
+| `{prefix}.query_diff_summary.tsv` | the category tally above (+ stderr); never gzipped |
+| `{prefix}.query_identical_reads.tsv[.gz]` | *(opt-in, `--emit-identical-reads`)* one row per identical read: `Read_Name`, `category` (`query_identical_same_strand` / `query_identical_revcomp` / `query_identical_junctions` under `--space query`; `reference_identical` under `--space reference`), plus the same 8 classification booleans — the complement of the diff-reads file. Off by default; **not** produced by `compare`'s built-in invocation. |
 
 Under `--compare-by junctions` every filename above gains a `.junctions` segment
-(e.g. `{prefix}.query_diff_reads.junctions.tsv`).
+(e.g. `{prefix}.query_diff_reads.junctions.tsv.gz`).
+
+#### Classification booleans
+
+Both per-read tables above carry the same 8 boolean columns (`1`/`0`) after
+`outcome`/`category`, computed the same way **regardless of the active
+`--space`/`--compare-by`** — so one run shows, e.g., a read that's
+query-different but reference-identical, without a second run in the other
+`--space`. `false`/`0` for a read where the axis doesn't apply (e.g. all 8 are
+`0` for a read mapped on only one side).
+
+| Column | `1` when |
+|---|---|
+| `query_identical_same_strand` | `query_identical` and reached via the same-strand branch |
+| `query_identical_revcomp` | `query_identical` and reached via the reverse-complement branch |
+| `query_junctions_identical` | both mapped and the **query-space** junction sets match (`junction_set_stats`) — computed unconditionally, not just under `--compare-by junctions` |
+| `ref_same_position_same_aln` | `RefClass::SamePositionSameAln` (reference-identical) |
+| `ref_same_position_diff_aln` | `RefClass::SamePositionDiffAln` |
+| `ref_diff_position_same_aln` | `RefClass::DiffPositionSameAln` (relocated) |
+| `ref_diff_position_diff_aln` | `RefClass::DiffPositionDiffAln` |
+| `ref_same_position_same_junctions` | both mapped, same position, and the **genomic-coordinate** junction sets match (`genomic_junction_set_stats`) — computed unconditionally |
+
+For a both-mapped read, exactly one of the four `ref_*` columns is `1` (they
+partition `RefClass`); all four are `0` for a read mapped on only one side.
 
 Region-table columns: `#chrom  start  end  n_reads  n_both  n_only_<A\|B>  n_plus  n_minus`
 — `n_reads = n_both + n_only_*`; `n_plus + n_minus <= n_reads`. Loci are formed by

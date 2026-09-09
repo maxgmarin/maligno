@@ -78,27 +78,14 @@ pub struct CompareArgs {
     #[arg(short = 'p', long = "prefix", value_name = "NAME")]
     prefix: String,
 
-
-    /// In-memory sort buffer per file (K/M/G suffix, or plain bytes).
-    #[arg(long = "sort-mem", value_name = "SIZE", default_value = "1G")]
-    sort_mem: String,
-
-    /// Temp directory for temp out of memory sort files (default: --outdir).
-    #[arg(long = "tmp-dir", value_name = "DIR")]
-    tmp_dir: Option<String>,
-
-    /// Number of sort threads (default: 1).
-    #[arg(long = "sort-threads", value_name = "N", default_value_t = 1)]
-    sort_threads: usize,
+    /// Output format for the comparison table.
+    #[arg(long = "format", value_enum, default_value_t = OutputFormat::Both)]
+    format: OutputFormat,
 
     /// Compare the shared intersection of aligned sequences instead of erroring when the two PAFs do
     /// not carry the exact same "Query_Name" set.
     #[arg(long = "allow-id-mismatch")]
     allow_id_mismatch: bool,
-
-    /// Keep the intermediate sorted PAFs instead of deleting them at the end.
-    #[arg(long = "keep-sorted-paf")]
-    keep_sorted_paf: bool,
 
     /// Skip the internal sort: assume both PAFs already contain the same reads,
     /// grouped by "Query_Name" and in the same relative order.
@@ -114,9 +101,21 @@ pub struct CompareArgs {
     #[arg(long = "no-readinfo")]
     no_readinfo: bool,
 
-    /// Output format for the comparison table.
-    #[arg(long = "format", value_enum, default_value_t = OutputFormat::Both)]
-    format: OutputFormat,
+    /// In-memory sort buffer per file (K/M/G suffix, or plain bytes).
+    #[arg(long = "sort-mem", value_name = "SIZE", default_value = "1G")]
+    sort_mem: String,
+
+    /// Temp directory for temp out of memory sort files (default: --outdir).
+    #[arg(long = "sort-tmp-dir", value_name = "DIR")]
+    tmp_dir: Option<String>,
+
+    /// Number of sort threads (default: 1).
+    #[arg(long = "sort-threads", value_name = "N", default_value_t = 1)]
+    sort_threads: usize,
+
+    /// Keep the intermediate sorted PAFs instead of deleting them at the end.
+    #[arg(long = "keep-sorted-paf")]
+    keep_sorted_paf: bool,
 }
 
 pub fn run(args: &CompareArgs) -> Result<()> {
