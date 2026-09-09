@@ -9,23 +9,31 @@
 //!      set. Then it writes the per-set alninfo + readinfo tables AND the comparison
 //!      table. 
 //!
-//!   2. Manual building blocks (full control):
-//!        `maligno paf2tables -i A.sorted.paf --alninfo A.alninfo.tsv.gz --readinfo A.readinfo.tsv.gz`
+//!   2. Manual building blocks (full control), grouped under `compare-pipeline`:
+//!        `maligno compare-pipeline paf2tables -i A.sorted.paf --alninfo A.alninfo.tsv.gz --readinfo A.readinfo.tsv.gz`
 //!        (same for B), then
-//!        `maligno compare-readinfo -a A.readinfo.tsv.gz -b B.readinfo.tsv.gz -o compare.tsv.gz`
+//!        `maligno compare-pipeline merge-readinfo -a A.readinfo.tsv.gz -b B.readinfo.tsv.gz -o compare.tsv.gz`
 //!
 //! Commands:
 //!
-//!   1. `compare`            end-to-end comparison of all input alignments
-//!                           (PRIMARY analysis entry point). Emits the single
-//!                           96-column comparison table.
-//!   2. `sam2paf`            SAM → PAF converter (utility; use before paf2tables/compare)
-//!   3. `paf2tables`         PAF → alninfo TSV and/or readinfo TSV tables
-//!   4. `compare-readinfo`   two readinfo TSVs → per-read comparison TSV
-//!   5. `compare-summary`    comparison TSV → aggregate summary statistics
-//!                           (alignment status + query/reference identity)
-//!   6. `find-query-diff`   comparison TSV → query-different reads + the merged
-//!                           genomic regions where they cluster
+//!   1. `compare`                        end-to-end comparison of all input
+//!                                       alignments (PRIMARY analysis entry
+//!                                       point). Emits the single 96-column
+//!                                       comparison table.
+//!   2. `sam2paf`                        SAM → PAF converter (utility; use
+//!                                       before compare-pipeline/compare)
+//!   3. `find-aln-diff`                  comparison table → differing reads +
+//!                                       the merged genomic regions where they
+//!                                       cluster, in query or reference space
+//!   4. `compare-pipeline paf2tables`    PAF → alninfo TSV and/or readinfo TSV
+//!                                       tables — a decomposed piece of what
+//!                                       `compare` does internally
+//!   5. `compare-pipeline merge-readinfo` two readinfo TSVs → per-read
+//!                                       comparison TSV — ditto
+//!   6. `compare-pipeline summary`       comparison table → aggregate summary
+//!                                       statistics (alignment status +
+//!                                       query/reference identity) — the same
+//!                                       thing `compare` tallies inline
 //!
 //! The comparison itself is a streaming merge-join (constant memory): only reads
 //! present in BOTH inputs (matched on Read_Name + Read_Len) produce an output row.
@@ -36,9 +44,9 @@
 mod cigar_junctions;    // CIGAR-based intron extractor (utility; not yet wired in)
 mod comparison_row;     // comparison-table schema: column lists, row type, TSV writers
 mod parquet_out;        // Parquet writer for the comparison table (schema derived from comparison_row)
-mod compare_streaming;  // `compare-readinfo` command + merge-join machinery
-mod compare_summary;    // `compare-summary` command + shared classifier/accumulator
-mod find_query_diff;   // `find-query-diff` command (query-different reads + regions)
+mod compare_streaming;  // `compare-pipeline merge-readinfo` command + merge-join machinery
+mod compare_summary;    // `compare-pipeline summary` command + shared classifier/accumulator
+mod find_query_diff;   // `find-aln-diff` command (differing reads + regions, query or reference space)
 mod interval_merge;     // generic sort+sweep interval merge (bedtools merge -c -o count)
 mod cs_parser;          // cs-tag parser  (PAF → alninfo path; also extracts genomic junctions)
 mod io_utils;
@@ -59,9 +67,9 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use compare::CompareArgs;
-use compare_streaming::CompareReadinfoArgs;
+use compare_streaming::MergeReadinfoArgs;
 use compare_summary::CompareSummaryArgs;
-use find_query_diff::FindQueryDiffArgs;
+use find_query_diff::FindAlnDiffArgs;
 use paf2tables::Paf2TablesArgs;
 use sam2paf::Sam2pafArgs;
 
@@ -79,28 +87,39 @@ enum Commands {
     Compare(CompareArgs),
     /// SAM -> PAF converter (conversion utility).
     Sam2paf(Sam2pafArgs),
+    /// Comparison table → differing reads and the merged genomic regions where
+    /// they cluster, in query or reference space.
+    #[command(name = "find-aln-diff")]
+    FindAlnDiff(FindAlnDiffArgs),
+    /// Lower-level building blocks and analysis steps used internally by `compare`.
+    #[command(name = "compare-pipeline")]
+    ComparePipeline {
+        #[command(subcommand)]
+        command: PipelineCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum PipelineCommands {
     /// PAF -> alninfo TSV and/or readinfo TSV tables.
     Paf2tables(Paf2TablesArgs),
     /// Two readinfo TSVs -> per-read comparison TSV.
-    CompareReadinfo(CompareReadinfoArgs),
-    /// Comparison TSV → aggregate summary statistics
-    CompareSummary(CompareSummaryArgs),
-    /// Comparison TSV → query-different reads and the merged genomic regions where they cluster.
-    #[command(name = "find-query-diff")]
-    FindQueryDiff(FindQueryDiffArgs),
+    #[command(name = "merge-readinfo")]
+    MergeReadinfo(MergeReadinfoArgs),
+    /// Comparison table → aggregate summary statistics.
+    Summary(CompareSummaryArgs),
 }
-
-
-
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match &cli.command {
-        Commands::Compare(args)          => compare::run(args),
-        Commands::Sam2paf(args)          => sam2paf::run(args),
-        Commands::Paf2tables(args)       => paf2tables::run(args),
-        Commands::CompareReadinfo(args)  => compare_streaming::run(args),
-        Commands::CompareSummary(args)   => compare_summary::run(args),
-        Commands::FindQueryDiff(args)    => find_query_diff::run(args),
+        Commands::Compare(args)      => compare::run(args),
+        Commands::Sam2paf(args)      => sam2paf::run(args),
+        Commands::FindAlnDiff(args)  => find_query_diff::run(args),
+        Commands::ComparePipeline { command } => match command {
+            PipelineCommands::Paf2tables(args)    => paf2tables::run(args),
+            PipelineCommands::MergeReadinfo(args) => compare_streaming::run(args),
+            PipelineCommands::Summary(args)       => compare_summary::run(args),
+        },
     }
 }

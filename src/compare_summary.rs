@@ -6,9 +6,10 @@
 //!   1. Built into `compare`: each matched read is `observe`d as its row streams
 //!      out (O(1) memory — only counters are kept), and the summary is written as
 //!      `{prefix}.compare.summary.tsv` plus an stderr block.
-//!   2. The standalone `compare-summary` command: streams an existing comparison
-//!      TSV (`compare` / `compare-readinfo` output) row-by-row and emits the same
-//!      summary. Serves the manual `paf2tables` → `compare-readinfo` workflow.
+//!   2. The `compare-pipeline summary` command: streams an existing comparison
+//!      table (`compare` / `compare-pipeline merge-readinfo` output) row-by-row
+//!      and emits the same summary. Serves the manual `compare-pipeline
+//!      paf2tables` → `compare-pipeline merge-readinfo` workflow.
 //!
 //! `classify` reads per-side values by **unsuffixed** readinfo column name through
 //! two accessor closures, resolving them via a name→index map, so it is insensitive
@@ -21,6 +22,15 @@
 //! STAR's `nn..nn` placeholder) does not by itself make two alignments "different".
 //! Every other structural detail — matches, substitutions, indels, intron
 //! length/position — is still compared exactly.
+//!
+//! Reference-space classification (`RefClass`) is a second, independent axis for
+//! both-mapped reads: whether the two sides land at the same genomic **position**
+//! (`TargetChr` + `Strand` + `Target_Start` — the cs tag's own operations
+//! determine the alignment's length, so a matching start plus matching cs implies
+//! a matching end too) and/or report the same **alignment** (`cs`, motif-blind).
+//! This is a strict, literal comparison: unlike `query_identical`, there is no
+//! reverse-complement accommodation — a real strand difference always means a
+//! different position.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -40,6 +50,36 @@ pub(crate) enum MapStatus {
     NeitherMapped,
 }
 
+/// Reference-space classification of one both-mapped read: whether the two
+/// sides share the same genomic position (`TargetChr` + `Strand` +
+/// `Target_Start`) and/or report the same alignment (`cs`, motif-blind). See
+/// the module doc comment for why this is a strict, literal comparison with
+/// no reverse-complement accommodation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RefClass {
+    /// Same position, same alignment — reference-identical.
+    SamePositionSameAln,
+    /// Same position, different alignment (e.g. a different indel placement
+    /// at the same site).
+    SamePositionDiffAln,
+    /// Same alignment, different position — the alignment was relocated.
+    DiffPositionSameAln,
+    /// Both position and alignment differ.
+    DiffPositionDiffAln,
+}
+
+impl RefClass {
+    /// Whether this classification's position axis matched.
+    pub(crate) fn same_position(&self) -> bool {
+        matches!(self, Self::SamePositionSameAln | Self::SamePositionDiffAln)
+    }
+
+    /// Whether this classification's alignment (`cs`) axis matched.
+    pub(crate) fn same_aln(&self) -> bool {
+        matches!(self, Self::SamePositionSameAln | Self::DiffPositionSameAln)
+    }
+}
+
 /// The classification of one matched read (one comparison row).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ReadClass {
@@ -50,9 +90,8 @@ pub(crate) struct ReadClass {
     /// `query_identical` was reached via the reverse-complement (opposite-strand)
     /// branch — i.e. an inverted placement.
     pub query_identical_rc: bool,
-    /// Same alignment relative to the reference (same-strand query identity plus
-    /// identical TargetChr and target start/end).
-    pub reference_identical: bool,
+    /// Reference-space classification. `None` unless both sides are mapped.
+    pub ref_class: Option<RefClass>,
 }
 
 /// A `TargetChr` value indicates an unmapped read when it is empty or `"*"`.
@@ -80,29 +119,26 @@ where
 
     let mut query_identical = false;
     let mut query_identical_rc = false;
-    let mut reference_identical = false;
+    let mut ref_class = None;
 
     if mapped_a && mapped_b {
+        // Compare cs tags with intron donor/acceptor motif letters blanked out
+        // (`~ct..ac` and `~nn..nn` compare equal if the intron length/position
+        // match). Some aligners (e.g. STAR) report `nn` placeholders instead of
+        // the true motif bases that minimap2 reports for the same splice site —
+        // that's a limitation of the aligner's own output, not a real alignment
+        // difference, so it must not by itself make two alignments "different".
+        let cs_a = cs_strip_splice_motifs(get_a("cs"));
+        let cs_b = cs_strip_splice_motifs(get_b("cs"));
+
         // Query span is in forward-read coordinates in PAF (strand-independent),
         // so it must match in both the same-strand and reverse-complement cases.
         let same_span = get_a("Query_Start") == get_b("Query_Start")
             && get_a("Query_End") == get_b("Query_End");
         if same_span {
-            // Compare cs tags with intron donor/acceptor motif letters blanked out
-            // (`~ct..ac` and `~nn..nn` compare equal if the intron length/position
-            // match). Some aligners (e.g. STAR) report `nn` placeholders instead of
-            // the true motif bases that minimap2 reports for the same splice site —
-            // that's a limitation of the aligner's own output, not a real alignment
-            // difference, so it must not by itself make two alignments "different".
-            let cs_a = cs_strip_splice_motifs(get_a("cs"));
             if get_a("Strand") == get_b("Strand") {
-                let cs_b = cs_strip_splice_motifs(get_b("cs"));
                 if cs_a == cs_b {
                     query_identical = true;
-                    // Reference identity only applies to the same-strand case.
-                    reference_identical = get_a("TargetChr") == get_b("TargetChr")
-                        && get_a("Target_Start") == get_b("Target_Start")
-                        && get_a("Target_End") == get_b("Target_End");
                 }
             } else if cs_a == cs_strip_splice_motifs(&cs_revcomp(get_b("cs"))) {
                 // Opposite strands but the alignment is an exact reverse-complement
@@ -111,13 +147,29 @@ where
                 query_identical_rc = true;
             }
         }
+
+        // Reference-space classification: independent of query span, and a
+        // strict literal comparison (no reverse-complement accommodation — a
+        // real strand difference always means a different position). A
+        // matching start plus matching cs implies a matching end too, since
+        // the cs tag's own operations determine the alignment's length.
+        let same_position = get_a("TargetChr") == get_b("TargetChr")
+            && get_a("Strand") == get_b("Strand")
+            && get_a("Target_Start") == get_b("Target_Start");
+        let same_aln = cs_a == cs_b;
+        ref_class = Some(match (same_position, same_aln) {
+            (true, true) => RefClass::SamePositionSameAln,
+            (true, false) => RefClass::SamePositionDiffAln,
+            (false, true) => RefClass::DiffPositionSameAln,
+            (false, false) => RefClass::DiffPositionDiffAln,
+        });
     }
 
     ReadClass {
         map_status,
         query_identical,
         query_identical_rc,
-        reference_identical,
+        ref_class,
     }
 }
 
@@ -132,7 +184,10 @@ pub(crate) struct CompareSummary {
     pub query_identical: u64,
     pub query_identical_same_strand: u64,
     pub query_identical_rc: u64,
-    pub reference_identical: u64,
+    pub ref_same_position_same_aln: u64,
+    pub ref_same_position_diff_aln: u64,
+    pub ref_diff_position_same_aln: u64,
+    pub ref_diff_position_diff_aln: u64,
     pub a_only_by_id: u64,
     pub b_only_by_id: u64,
 }
@@ -155,8 +210,12 @@ impl CompareSummary {
                 self.query_identical_same_strand += 1;
             }
         }
-        if c.reference_identical {
-            self.reference_identical += 1;
+        match c.ref_class {
+            Some(RefClass::SamePositionSameAln) => self.ref_same_position_same_aln += 1,
+            Some(RefClass::SamePositionDiffAln) => self.ref_same_position_diff_aln += 1,
+            Some(RefClass::DiffPositionSameAln) => self.ref_diff_position_same_aln += 1,
+            Some(RefClass::DiffPositionDiffAln) => self.ref_diff_position_diff_aln += 1,
+            None => {}
         }
     }
 
@@ -193,7 +252,10 @@ impl CompareSummary {
             ("query_identical_same_strand".to_string(), self.query_identical_same_strand),
             ("query_identical_revcomp".to_string(), self.query_identical_rc),
             ("query_not_identical".to_string(), self.query_not_identical()),
-            ("reference_identical".to_string(), self.reference_identical),
+            ("ref_same_position_same_aln".to_string(), self.ref_same_position_same_aln),
+            ("ref_same_position_diff_aln".to_string(), self.ref_same_position_diff_aln),
+            ("ref_diff_position_same_aln".to_string(), self.ref_diff_position_same_aln),
+            ("ref_diff_position_diff_aln".to_string(), self.ref_diff_position_diff_aln),
             ("present_only_in_A_by_id".to_string(), self.a_only_by_id),
             ("present_only_in_B_by_id".to_string(), self.b_only_by_id),
         ]
@@ -224,11 +286,11 @@ impl CompareSummary {
     }
 }
 
-// ── Standalone `compare-summary` command ────────────────────────────────────────
+// ── `compare-pipeline summary` command ──────────────────────────────────────────
 
 #[derive(clap::Args, Debug)]
 pub struct CompareSummaryArgs {
-    /// Comparison table from `compare` / `compare-readinfo`: TSV (`.gz` ok;
+    /// Comparison table from `compare` / `compare-pipeline merge-readinfo`: TSV (`.gz` ok;
     /// `-` = stdin) or Parquet (`--format parquet` / `-o x.parquet`). See
     /// `--input-format`.
     #[arg(short = 'i', long = "input", value_name = "compare.tsv|compare.parquet")]
@@ -246,7 +308,7 @@ pub struct CompareSummaryArgs {
 }
 
 /// Confirm a compare-table header uses the fixed `_A` / `_B` side suffixes
-/// introduced in v0.13.0. Shared by `compare-summary` and `find-query-diff`.
+/// introduced in v0.13.0. Shared by `compare-pipeline summary` and `find-aln-diff`.
 ///
 /// Pre-v0.13.0 tables suffixed per-side columns with the dataset *label*
 /// (`TargetChr_Splice`), which made column names dataset-specific and ambiguous
@@ -268,7 +330,7 @@ pub(crate) fn require_ab_schema(cols: &[&str]) -> Result<()> {
     if !legacy.is_empty() {
         bail!(
             "this comparison table uses the pre-v0.13.0 label-suffixed schema ({}) \
-             — regenerate it with maligno v0.13+ (`compare` / `compare-readinfo`), \
+             — regenerate it with maligno v0.13+ (`compare` / `compare-pipeline merge-readinfo`), \
              which writes fixed `TargetChr_A` / `TargetChr_B` columns plus \
              `Label_A` / `Label_B`",
             legacy.join(", ")

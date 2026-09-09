@@ -1,17 +1,18 @@
 //! Parquet output for the comparison table.
 //!
 //! Selected by `compare --format tsv|parquet|both` (default `both`), and by
-//! `compare-readinfo -o x.parquet`, which picks Parquet from the extension.
+//! `compare-pipeline merge-readinfo -o x.parquet`, which picks Parquet from
+//! the extension.
 //!
 //! Why it exists: the comparison table is written once and re-read many times —
-//! by the notebooks, and by `find-query-diff` re-run standalone with
+//! by the notebooks, and by `find-aln-diff` re-run standalone with
 //! `--compare-by junctions`. Parquet stores each column separately, so a reader
 //! touching a few of the 96 columns never pays for the rest. Note the cost being
 //! avoided is **splitting every row into 96 fields**, not decompression:
 //! gunzipping the whole 408 MB table takes only 0.22 s.
 //!
 //! Measured on the 507,365-row Splice-vs-SpliceHQ table (DuckDB 1.5.5, default CSV
-//! sampling, best of three): the 16 columns `find-query-diff` needs take 2.01 s
+//! sampling, best of three): the 16 columns `find-aln-diff` needs take 2.01 s
 //! from `tsv.gz` versus 0.55 s from Parquet (3.6×); a two-column aggregate drops
 //! from 0.85 s to 0.02 s (48×); a full 96-column scan gains least, 3.97 s to
 //! 2.31 s (1.7×). Writing is faster too — 4.5 s versus 10.8 s, measured with
@@ -383,9 +384,9 @@ impl<W: Write + Send> ComparisonParquetWriter<W> {
 /// parquet, both]`.
 ///
 /// The default is `both` for backward compatibility: existing scripts expect
-/// the gzipped TSV. `find-query-diff` and `compare-summary` can read either
-/// format (`--input-format`), so a Parquet-only run works standalone with
-/// both of them.
+/// the gzipped TSV. `find-aln-diff` and `compare-pipeline summary` can read
+/// either format (`--input-format`), so a Parquet-only run works standalone
+/// with both of them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub(crate) enum OutputFormat {
     /// Gzipped TSV only.
@@ -418,7 +419,7 @@ pub(crate) fn is_parquet_path(path: &str) -> bool {
 /// Render one Arrow cell back to the string a TSV reader would see for the
 /// same value: a null becomes `NaN` for a float column (the "undefined"
 /// convention from `append_raw`/`append_diff`) and an empty cell otherwise.
-/// Used by the round-trip test below and by `find-query-diff`'s Parquet
+/// Used by the round-trip test below and by `find-aln-diff`'s Parquet
 /// reader (`ParquetRowReader`), so both input formats hand identical strings
 /// to the same downstream parsing/comparison code.
 pub(crate) fn arrow_cell_to_string(a: &dyn Array, row: usize) -> String {
@@ -788,8 +789,8 @@ mod tests {
         assert!(OutputFormat::Parquet.writes_parquet());
         assert!(OutputFormat::Both.writes_tsv());
         assert!(OutputFormat::Both.writes_parquet());
-        // `both` is the default while find-query-diff still reads the TSV; see the
-        // enum's doc comment.
+        // `both` is the default for backward compatibility; see the enum's doc
+        // comment.
         assert_eq!(OutputFormat::default(), OutputFormat::Both);
     }
 

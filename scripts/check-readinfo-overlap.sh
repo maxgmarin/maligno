@@ -2,7 +2,7 @@
 # -----------------------------------------------------------------------------
 # Sort-order / overlap diagnostic for two readinfo TSVs.
 #
-# The `compare` and `compare-readinfo` subcommands use a streaming merge-join
+# The `compare` and `compare-pipeline merge-readinfo` subcommands use a streaming merge-join
 # on the (Read_Name, Read_Len) key, which assumes both inputs are sorted in
 # the same byte-lexicographic order. If they aren't, matches are silently
 # missed and the `matched` count in the comparison summary will be lower than

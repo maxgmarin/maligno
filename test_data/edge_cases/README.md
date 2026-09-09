@@ -53,6 +53,10 @@ does exactly that as its `edge_swapped` scenario.
 | `query_identical_same_strand` | ✅ | ✅ 6 |
 | `query_identical_revcomp` | ❌ | ✅ 1 (`ENST00000619436.1`) |
 | `query_not_identical` | ✅ | ✅ 6 |
+| `ref_same_position_same_aln` | ✅ | ✅ 6 |
+| `ref_same_position_diff_aln` | ✅ | ✅ 6 |
+| `ref_diff_position_same_aln` (relocated) | ❌ | ❌ — not yet covered |
+| `ref_diff_position_diff_aln` | ✅ | ✅ 1 (`ENST00000619436.1`) |
 | junction-set difference | ✅ | ✅ 3 |
 | cs difference with **identical** junctions | ✅ | ✅ 3 |
 | `present_only_in_{A,B}_by_id` | ❌ | ✅ (idmismatch variant) |
@@ -64,11 +68,20 @@ does exactly that as its `edge_swapped` scenario.
 
 `ENST00000619436.1` is the one revcomp case in all 507,365 transcripts: the same
 transcript aligned to chrY on `+` by `splice` and on `−` by `splice:hq`, at
-different loci, with cs tags that are exact reverse complements. It also
-separates `query_identical` (7) from `reference_identical` (6).
+different loci, with cs tags that are exact reverse complements. It's the one
+read separating `query_identical` (7, via the revcomp branch) from the
+reference-space classification, which has no reverse-complement accommodation:
+this read's opposite strands make it `ref_diff_position_diff_aln`, alongside
+the fixture's 6 `ref_same_position_same_aln` and 6 `ref_same_position_diff_aln`
+reads (`6 + 6 + 0 + 1 = 13 = aligned_both`).
 
 ### Still not covered
 
+- **`ref_diff_position_same_aln`** ("relocated": identical `cs` but a different
+  `TargetChr`/`Strand`/`Target_Start`) — no read in either the chr22 pair or
+  this fixture exercises it. Would need a pair of records with matching
+  alignment content aligned to two different loci (e.g. a duplicated region on
+  two contigs, or two different reference assemblies).
 - **Multiple alignments per read** (`Num_Aln > 1`). Both this fixture and the
   chr22 pair are primary-alignment-only, one row per read, so
   `readinfo.rs::collapse_group`'s tie-breaking (ms → AS → MQ) is never

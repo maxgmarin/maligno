@@ -30,47 +30,54 @@ and the comparison table.
 maligno compare -a A.paf -b B.paf --label-a A --label-b B --outdir results/ --prefix AvsB
 ```
 
-**2. Manual building blocks — `paf2tables` then `compare-readinfo`:** full
-control (you sort and pick exactly what to produce).
+**2. Manual building blocks — `compare-pipeline paf2tables` then
+`compare-pipeline merge-readinfo`:** full control (you sort and pick exactly
+what to produce).
 
 ```
   A.paf ──paf2tables──▶ A.readinfo.tsv ─┐
-                                         ├─ compare-readinfo ─▶ compare.tsv
+                                         ├─ merge-readinfo ─▶ compare.tsv
   B.paf ──paf2tables──▶ B.readinfo.tsv ─┘
 ```
 ```bash
 LC_ALL=C sort -t$'\t' -k1,1 <(gzcat A.paf.gz) | gzip > A.sorted.paf.gz   # (and B)
-maligno paf2tables -i A.sorted.paf.gz --readinfo A.readinfo.tsv.gz
-maligno paf2tables -i B.sorted.paf.gz --readinfo B.readinfo.tsv.gz
-maligno compare-readinfo -a A.readinfo.tsv.gz -b B.readinfo.tsv.gz -o compare.tsv.gz
+maligno compare-pipeline paf2tables -i A.sorted.paf.gz --readinfo A.readinfo.tsv.gz
+maligno compare-pipeline paf2tables -i B.sorted.paf.gz --readinfo B.readinfo.tsv.gz
+maligno compare-pipeline merge-readinfo -a A.readinfo.tsv.gz -b B.readinfo.tsv.gz -o compare.tsv.gz
 ```
 
 | Subcommand    | Input                              | Output                                  |
 |---------------|------------------------------------|-----------------------------------------|
 | **`compare`** | two PAFs (`-a`, `-b`; file paths only, no stdin) | **a results directory** (`--outdir`/`--prefix`): per-set alninfo + readinfo for A and B, plus the comparison TSV — **the primary entry point**. Sorts inputs and verifies read-ID sets match. Emits the single 96-column comparison table as TSV, Parquet or both (`--format`) |
-| `paf2tables`  | PAF (`-i`, `.gz`/`-` ok)           | **alninfo TSV** (`--alninfo`, 35 cols) and/or **readinfo TSV** (`--readinfo`, 33 cols), in one pass |
-| `compare-readinfo` | two readinfo TSVs (`-a`, `-b`) | per-read comparison table (`-o`, 96 cols); the same table `compare` writes. Writes Parquet when `-o` ends in `.parquet`, TSV otherwise |
+| `compare-pipeline paf2tables`  | PAF (`-i`, `.gz`/`-` ok)           | **alninfo TSV** (`--alninfo`, 35 cols) and/or **readinfo TSV** (`--readinfo`, 33 cols), in one pass |
+| `compare-pipeline merge-readinfo` | two readinfo TSVs (`-a`, `-b`) | per-read comparison table (`-o`, 96 cols); the same table `compare` writes. Writes Parquet when `-o` ends in `.parquet`, TSV otherwise |
 | `sam2paf`     | SAM file or stdin (`-`)            | PAF written to stdout                   |
+
+`compare-pipeline` groups together the lower-level building blocks used
+internally by `compare` (`paf2tables`, `merge-readinfo`, and `summary` — see
+below) — most users only need `compare` itself, `find-aln-diff`, and
+`compare-pipeline summary`.
 
 All inputs/outputs transparently support gzip (`.gz` suffix) and stdin/stdout (`-`) —
 except `compare`'s `-a`/`-b`, which require real file paths (no stdin), since
 `compare` always needs two independent inputs.
 
-### Working with PAF files: `paf2tables` (start here)
+### Working with PAF files: `compare-pipeline paf2tables` (start here)
 
-`paf2tables` is the one command that turns a PAF into the downstream tables. Give
-it the output path(s) you want — it writes the **alninfo** table, the **readinfo**
-table, or **both in a single pass** (reading the PAF only once):
+`compare-pipeline paf2tables` is the one command that turns a PAF into the
+downstream tables. Give it the output path(s) you want — it writes the
+**alninfo** table, the **readinfo** table, or **both in a single pass**
+(reading the PAF only once):
 
 ```bash
 # Both tables in one pass (reads the PAF once):
-maligno paf2tables -i in.paf --alninfo alninfo.tsv.gz --readinfo readinfo.tsv.gz
+maligno compare-pipeline paf2tables -i in.paf --alninfo alninfo.tsv.gz --readinfo readinfo.tsv.gz
 
 # Just the per-alignment table (no grouping required; works on unsorted PAF):
-maligno paf2tables -i in.paf --alninfo alninfo.tsv.gz
+maligno compare-pipeline paf2tables -i in.paf --alninfo alninfo.tsv.gz
 
 # Just the per-read summary (best alignment per read):
-maligno paf2tables -i in.paf --readinfo readinfo.tsv.gz
+maligno compare-pipeline paf2tables -i in.paf --readinfo readinfo.tsv.gz
 ```
 
 At least one of `--alninfo` / `--readinfo` must be given. 
@@ -84,14 +91,14 @@ names (memory ∝ number of distinct reads) and aborts if a `Query_Name` reappea
 non-contiguously:
 
 ```bash
-maligno paf2tables -i in.paf --readinfo readinfo.tsv.gz --strict-grouping
+maligno compare-pipeline paf2tables -i in.paf --readinfo readinfo.tsv.gz --strict-grouping
 ```
 
 The standard way to guarantee grouping (and satisfy the downstream
-`compare-readinfo` byte-lex requirement at the same time) is a single up-front sort:
+`merge-readinfo` byte-lex requirement at the same time) is a single up-front sort:
 
 ```bash
-LC_ALL=C sort -t$'\t' -k1,1 in.paf | maligno paf2tables -i - --readinfo readinfo.tsv.gz
+LC_ALL=C sort -t$'\t' -k1,1 in.paf | maligno compare-pipeline paf2tables -i - --readinfo readinfo.tsv.gz
 ```
 
 #### Handling non-grouped input — current behavior and roadmap
@@ -114,7 +121,7 @@ alninfo never cares. Current behavior + the roadmap for richer handling
 5. **Two-pass offset index on seekable input** *(future; bounded memory).* Pass 1
    indexes `Query_Name → byte offsets`; pass 2 seeks per read (regular files only).
 6. **Actionable auto-detect error** *(future).* On detecting unsorted input, print
-   the exact tailored `LC_ALL=C sort … | maligno paf2tables …` command to run.
+   the exact tailored `LC_ALL=C sort … | maligno compare-pipeline paf2tables …` command to run.
 7. **`--assume-grouped` fast-path** *(future).* Skip all checks for maximum
    throughput when the caller guarantees grouping.
 
@@ -164,7 +171,8 @@ created). Use it to avoid the sort cost when you trust your inputs are aligned.
 Ideal for comparing two parameter sets / references run on the **same** read or
 transcript set. **Precondition:** a `Query_Name` identifies one read/sequence
 (maligno sorts by name only). The comparison table is identical to the manual
-`paf2tables` → `compare-readinfo` path on the same inputs.
+`compare-pipeline paf2tables` → `compare-pipeline merge-readinfo` path on the
+same inputs.
 
 ---
 
@@ -224,7 +232,7 @@ $BIN compare -a refA.paf.gz -b refB.paf.gz \
 #   results/RefA_vs_RefB.compare.tsv.gz
 ```
 
-### Explicit intermediates: `paf2tables` then `compare-readinfo`
+### Explicit intermediates: `compare-pipeline paf2tables` then `compare-pipeline merge-readinfo`
 
 Same result, but materializes the per-file `readinfo` (and optionally `alninfo`)
 tables for other analyses.
@@ -235,11 +243,11 @@ BIN=./target/release/maligno
 
 # 1. PAF → readinfo  (one row per read; best alignment chosen by ms, then AS, then MQ).
 #    Add --alninfo <path> to also emit the 35-col per-alignment table in the same pass.
-$BIN paf2tables -i refA.sorted.paf.gz --readinfo refA.readinfo.tsv.gz
-$BIN paf2tables -i refB.sorted.paf.gz --readinfo refB.readinfo.tsv.gz
+$BIN compare-pipeline paf2tables -i refA.sorted.paf.gz --readinfo refA.readinfo.tsv.gz
+$BIN compare-pipeline paf2tables -i refB.sorted.paf.gz --readinfo refB.readinfo.tsv.gz
 
 # 2. Compare the two readinfo files (streaming, constant memory; strict order by default).
-$BIN compare-readinfo \
+$BIN compare-pipeline merge-readinfo \
   -a refA.readinfo.tsv.gz --label-a RefA \
   -b refB.readinfo.tsv.gz --label-b RefB \
   -o RefA_vs_RefB.compare.tsv.gz
@@ -249,7 +257,7 @@ $BIN compare-readinfo \
 
 ## How each step works
 
-### `paf2tables` (alninfo conversion)
+### `compare-pipeline paf2tables` (alninfo conversion)
 
 Parses each PAF record (12 mandatory fields + `ms:i`, `AS:i`, `cs:Z` tags), walks the
 `cs` tag to accumulate match/substitution/insertion/deletion/splice statistics, computes
@@ -259,7 +267,7 @@ soft-clip lengths, junction coordinates (strand-aware), and derived scalars
 
 **Pure streaming, constant memory** for the alninfo output. Each PAF line is parsed and
 written independently in input order — no internal collect-then-sort. For the explicit
-pipeline (`paf2tables` → `compare-readinfo`), pre-sort the PAF by `Query_Name` once upstream:
+pipeline (`paf2tables` → `merge-readinfo`), pre-sort the PAF by `Query_Name` once upstream:
 
 ```bash
 LC_ALL=C sort -t$'\t' -k1,1 in.paf > sorted.paf
@@ -267,13 +275,13 @@ LC_ALL=C sort -t$'\t' -k1,1 in.paf > sorted.paf
 
 Unix `sort` does external-sort with bounded memory and handles files larger than RAM.
 The pre-sort satisfies both the `--readinfo` contiguity requirement and
-`compare-readinfo`'s byte-lex sort requirement in one pass.
+`merge-readinfo`'s byte-lex sort requirement in one pass.
 
 **Unaligned reads are kept.** A PAF record with `Target_Name == "*"` produces a full row
 with zeroed alignment statistics, allowing unaligned reads to flow through the entire
 pipeline.
 
-### Readinfo collapse (used by `paf2tables --readinfo` and `compare`)
+### Readinfo collapse (used by `compare-pipeline paf2tables --readinfo` and `compare`)
 
 The per-read collapse step. Groups alninfo rows by `Query_Name` (contiguous in sorted input) and collapses each group
 to one summary row:
@@ -305,10 +313,10 @@ to one summary row:
   genomic-region analysis (e.g., `bedtools merge` on filtered subsets of the compare output
   to identify regions where SetA and SetB differ).
 
-### `compare-readinfo` (and the comparison core)
+### `compare-pipeline merge-readinfo` (and the comparison core)
 
 A two-pointer **merge-join** over two sorted readinfo files, matching on
-**(Read_Name, Read_Len)**. This is the engine behind both `compare-readinfo` (readinfo
+**(Read_Name, Read_Len)**. This is the engine behind both `merge-readinfo` (readinfo
 TSVs in) and the primary `compare` (which feeds it collapsed rows straight from PAFs).
 For each matched read it emits the 31 data columns from each
 side (suffixed `_A` / `_B`) plus 30 comparison/object columns
@@ -484,12 +492,15 @@ cannot accidentally match.
 > escaped once, and the TSV escapes them again, so Parquet holds the *less* escaped
 > form.
 >
-> `compare-summary` and `find-query-diff` read TSV only, so `--format parquet`
-> produces a table they cannot consume; `both` remains the default until they can
-> read Parquet. (Before v0.17.0, `--format parquet` was additionally rejected
-> unless `--skip-find-query-diff` was passed, because `compare` ran
-> `find-query-diff` itself. That coupling is gone.) The exact-pinned `arrow-array`
-> / `arrow-schema` / `parquet` dependencies must be bumped together.
+> At the time, `compare-summary` and `find-query-diff` read TSV only, so
+> `--format parquet` produced a table they could not consume; `both` was the
+> default for that reason. (Before v0.17.0, `--format parquet` was additionally
+> rejected unless `--skip-find-query-diff` was passed, because `compare` ran
+> `find-query-diff` itself. That coupling is gone.) Since v0.18.1, `find-aln-diff`
+> and `compare-pipeline summary` (renamed from `find-query-diff` /
+> `compare-summary`) can read Parquet directly via `--input-format`; `both`
+> remains the default anyway, for backward compatibility. The exact-pinned
+> `arrow-array` / `arrow-schema` / `parquet` dependencies must be bumped together.
 
 > **Breaking change (v0.17.0) — `compare` no longer runs `find-query-diff`.** It
 > now produces the per-set alninfo + readinfo tables, the comparison table
@@ -503,9 +514,10 @@ cannot accidentally match.
 > with different options without redoing the comparison, and makes `--format`
 > orthogonal (it no longer has to guarantee a TSV for an internal consumer).
 >
-> **Migration** — add one command after `compare`:
+> **Migration** — add one command after `compare` (later renamed to
+> `find-aln-diff`; the settings below are unchanged):
 > ```bash
-> maligno find-query-diff -i results/AvsB.compare.tsv.gz \
+> maligno find-aln-diff -i results/AvsB.compare.tsv.gz \
 >   --outdir results/ --prefix AvsB --gzip --compare-by all
 > ```
 > Those are exactly the settings the fused step used, and they reproduce the four
@@ -542,8 +554,9 @@ columns — parse with `ast.literal_eval` in Python.
 > ```bash
 > awk -F'\t' 'NR==1{for(i=1;i<=NF;i++)c[$i]=i;next} $c["N_Unmatched_Junctions"]>0'
 > ```
-> Also: if you have older readinfo TSVs with `TargetRef_1st`, rerun `paf2tables --readinfo`
-> to get the renamed column (or rename in your scripts).
+> Also: if you have older readinfo TSVs with `TargetRef_1st`, rerun
+> `compare-pipeline paf2tables --readinfo` to get the renamed column (or rename
+> in your scripts).
 
 **Join semantics — inner join.** Only reads present in **both** files produce an output
 row. Reads present in only one file are dropped but counted in the end-of-run summary
@@ -562,8 +575,8 @@ Read comparison summary:
 
 **Sorting requirement.** The merge-join requires both readinfo files to be in the
 **same** `(Read_Name, Read_Len)` order — byte-lex order is the most convenient guarantee.
-The `paf2tables` alninfo output is pure streaming and order-preserving (it does not sort
-internally). The cleanest fix is a one-time pre-sort upstream on the PAF, which carries
+The `compare-pipeline paf2tables` alninfo output is pure streaming and order-preserving
+(it does not sort internally). The cleanest fix is a one-time pre-sort upstream on the PAF, which carries
 through the entire chain:
 
 ```bash
@@ -643,8 +656,8 @@ Key flags:
 BIN=./target/release/maligno
 
 # PAF → readinfo in one pass (add --alninfo <path> to also keep the per-alignment table).
-time $BIN paf2tables -i test_data/Splice.AlnToHG38.PriAln.paf.gz   --readinfo /tmp/Splice.readinfo.tsv.gz
-time $BIN paf2tables -i test_data/SpliceHQ.AlnToHG38.PriAln.paf.gz --readinfo /tmp/SpliceHQ.readinfo.tsv.gz
+time $BIN compare-pipeline paf2tables -i test_data/Splice.AlnToHG38.PriAln.paf.gz   --readinfo /tmp/Splice.readinfo.tsv.gz
+time $BIN compare-pipeline paf2tables -i test_data/SpliceHQ.AlnToHG38.PriAln.paf.gz --readinfo /tmp/SpliceHQ.readinfo.tsv.gz
 
 # Sort each readinfo on (Read_Name, Read_Len) so the two files share byte-lex order
 # (compare is strict by default — it errors on a read-name mismatch unless inputs match).
@@ -653,7 +666,7 @@ for S in Splice SpliceHQ; do
       LC_ALL=C sort -t$'\t' -k1,1 -k2,2n; } ) | gzip > /tmp/$S.readinfo.sorted.tsv.gz
 done
 
-time $BIN compare-readinfo \
+time $BIN compare-pipeline merge-readinfo \
   -a /tmp/Splice.readinfo.sorted.tsv.gz   --label-a Splice \
   -b /tmp/SpliceHQ.readinfo.sorted.tsv.gz --label-b SpliceHQ \
   -o /tmp/Splice_vs_SpliceHQ.compare.tsv.gz
@@ -728,7 +741,7 @@ gzip -dc < /tmp/Splice_vs_SpliceHQ.compare.tsv.gz | awk -F'\t' '{print NF}' | so
 
 ---
 
-## Summary statistics (`compare-summary`)
+## Summary statistics (`compare-pipeline summary`)
 
 `compare` tallies aggregate summary statistics over the per-read comparison as the
 rows stream out (constant memory) and writes them to
@@ -737,14 +750,14 @@ stderr block. The **same** statistics can be computed from an existing compariso
 table with the standalone command:
 
 ```bash
-maligno compare-summary -i AvsB.compare.tsv.gz -o AvsB.compare.summary.tsv
-# -i: a compare / compare-readinfo table (.gz or - ok); -o: optional (else stderr only)
+maligno compare-pipeline summary -i AvsB.compare.tsv.gz -o AvsB.compare.summary.tsv
+# -i: a compare / compare-pipeline merge-readinfo table (.gz, .parquet, or - ok); -o: optional (else stderr only)
 ```
 
-`compare-summary` requires the fixed `TargetChr_A` / `TargetChr_B` columns, and reads the
-set names from `Label_A` / `Label_B`. Every column is resolved **by name**, so column
-order does not matter. It sees only matched rows, so the `present_only_in_*_by_id` counts
-are always 0 there; the built-in `compare` tally fills those from the read-ID merge.
+`compare-pipeline summary` requires the fixed `TargetChr_A` / `TargetChr_B` columns, and
+reads the set names from `Label_A` / `Label_B`. Every column is resolved **by name**, so
+column order does not matter. It sees only matched rows, so the `present_only_in_*_by_id`
+counts are always 0 there; the built-in `compare` tally fills those from the read-ID merge.
 
 ### Classification (per matched read)
 
@@ -776,9 +789,19 @@ selected for the readinfo/compare output — using these columns: `TargetChr`,
 
   Reported as `query_identical`, split into `query_identical_same_strand` and
   `query_identical_revcomp`; `query_not_identical = aligned_both - query_identical`.
-- **Reference-coordinate identical** — same-strand query-identical **and** identical
-  `TargetChr` + `Target_Start` + `Target_End` (same placement on the reference). The
-  reverse-complement branch never qualifies (inverted placement).
+- **Reference-space classification** — independent of query span, and a strict,
+  literal comparison: no reverse-complement accommodation, so a real strand
+  difference always counts as a different position. Two axes, both motif-blind
+  on `cs`:
+  - **position**: identical `TargetChr` + `Strand` + `Target_Start` (a matching
+    start plus matching `cs` implies a matching `Target_End` too, since the `cs`
+    tag's own operations determine the alignment's length — no need to check it
+    separately).
+  - **alignment**: identical `cs`.
+
+  The four combinations are reported as `ref_same_position_same_aln` (reference-
+  identical), `ref_same_position_diff_aln`, `ref_diff_position_same_aln`
+  (relocated), and `ref_diff_position_diff_aln`.
 
 ### Summary TSV schema
 
@@ -793,81 +816,104 @@ selected for the readinfo/compare output — using these columns: `TargetChr`,
 | `query_identical_same_strand` | …via the same-strand branch |
 | `query_identical_revcomp` | …via the reverse-complement branch |
 | `query_not_identical` | both mapped but not query-identical |
-| `reference_identical` | reference-coordinate identical |
+| `ref_same_position_same_aln` | same `TargetChr`/`Strand`/`Target_Start` **and** same `cs` (motif-blind) — reference-identical |
+| `ref_same_position_diff_aln` | same position, different `cs` |
+| `ref_diff_position_same_aln` | same `cs`, different position — relocated |
+| `ref_diff_position_diff_aln` | both position and `cs` differ |
 | `present_only_in_A_by_id` / `present_only_in_B_by_id` | read present in only one set's PAF (built-in `compare` only; 0 unless `--allow-id-mismatch`) |
 
 ---
 
-## Query-different reads & regions (`find-query-diff`)
+## Differing reads & regions (`find-aln-diff`)
 
-`find-query-diff` reads a `compare` / `compare-readinfo` comparison TSV and
-reports every read whose alignment is **not** `query_identical` (the exact same
-`classify()` used by `compare-summary`, above — a reverse-complement match still
-counts as identical), plus merged genomic regions showing where those differing
-reads cluster.
+`find-aln-diff` (renamed from `find-query-diff`) reads a `compare` /
+`compare-pipeline merge-readinfo` comparison table and reports every read whose
+alignment differs between A and B, in query space or reference space
+(`--space`), plus merged genomic regions showing where those differing reads
+cluster.
 
 **A separate command since v0.17.0.** `compare` used to run this itself as a final
 step, which meant re-reading the comparison table it had just written — a second
 full pass for outputs the caller may not want. `compare` now prints the exact
-command to run instead. Running it by hand reproduces the previous outputs
-byte-for-byte, given the defaults the fused step used
-(`--gzip --compare-by all`).
+command to run instead. Running it by hand with `--space query` (the default)
+reproduces the previous fused-step outputs byte-for-byte, given the defaults the
+fused step used (`--gzip --compare-by all`).
 
-**Usage** (opt out of `--gzip`, or select `--compare-by`):
+**Usage:**
 
 ```bash
-maligno find-query-diff -i AvsB.compare.tsv.gz --outdir results/ --prefix AvsB \
-  [--gzip] [--compare-by all|junctions] [--emit-identical-reads]
-# -i: a compare / compare-readinfo table (.gz, .parquet, or - ok)
+maligno find-aln-diff -i AvsB.compare.tsv.gz --outdir results/ --prefix AvsB \
+  [--space query|reference] [--gzip] [--compare-by all|junctions] [--emit-identical-reads]
+# -i: a compare / compare-pipeline merge-readinfo table (.gz, .parquet, or - ok)
 ```
 
-Like `compare-summary`, the fixed `TargetChr_A` / `TargetChr_B` columns are required, and set names come from the `Label_A` / `Label_B`
-columns, and the classification is mode-independent (`full` and `junctions`
-produce identical `find-query-diff` output for the same input PAFs).
+The fixed `TargetChr_A` / `TargetChr_B` columns are required (same as
+`compare-pipeline summary`), and set names come from the `Label_A` / `Label_B`
+columns.
 
-### `--compare-by` — what defines a difference
+### `--space` — which coordinate space defines a difference
+
+| Value | "Identical" means |
+|-------|-------------------|
+| `query` (default) | `query_identical` (the exact same `classify()` used by `compare-pipeline summary` — a reverse-complement match still counts as identical) |
+| `reference` | `ref_same_position_same_aln` (the reference-space classification above): same `TargetChr`/`Strand`/`Target_Start`, and same alignment content per `--compare-by` below. Strict and literal — no reverse-complement accommodation. |
+
+`--space` picks the output filename stem (`query_diff`/`query_identical` vs.
+`reference_diff`/`reference_identical`), so a `query`-space and
+`reference`-space run at the same `--outdir`/`--prefix` never clobber each
+other.
+
+### `--compare-by` — what defines a difference, within the active `--space`
 
 For reads mapped in **both** sets, `--compare-by` chooses the identity test; the
-map-status handling (only-A / only-B / neither) is unchanged either way.
+map-status handling (only-A / only-B / neither) is unchanged either way, and its
+category names (`diff_aln_only_A` / `diff_aln_only_B`) are the same in both spaces.
 
-| Value | "Identical" means | Notes |
-|-------|-------------------|-------|
-| `all` (default) | the full `cs` tag matches, motif-blind (the `classify()` definition above; reverse-complement counts as identical) | any mismatch/indel/soft-clip/junction-position difference flags the read; a differently-reported intron motif at the same position/length (e.g. STAR's `nn` placeholder vs. minimap2's true motif) does not. Used by `compare`'s built-in invocation; **not** exposed as a `compare`-level flag. |
-| `junctions` | the **query-space splice-junction set** matches (`junction_set_stats` on the `junctions_A` / `junctions_B` columns) | reads with identical junctions but differing mismatches/indels/soft-clips count as the same; both-unspliced reads compare equal. Strand-agnostic — query junctions are stored in plus-strand read coordinates, so no span gate or reverse-complement handling is applied. |
+| Value | Query space (`--space query`) | Reference space (`--space reference`) |
+|-------|-------------------------------|----------------------------------------|
+| `all` (default) | the full `cs` tag matches, motif-blind; reverse-complement counts as identical | same `TargetChr`/`Strand`/`Target_Start` **and** same `cs`, motif-blind (`ref_class.same_position() && ref_class.same_aln()`) |
+| `junctions` | the **query-space** splice-junction set matches (`junction_set_stats` on `junctions_A`/`junctions_B`) | same `TargetChr`/`Strand`/`Target_Start` **and** same **genomic-coordinate** junction set (`genomic_junction_set_stats` on `genomic_junctions_A`/`genomic_junctions_B`, chrom reattached) |
 
-Because only the both-mapped identity test changes, the `junctions`-different read
-set is always a **subset** of the `all`-different set, and `reads_compared` /
-`aligned_neither` are identical between the two modes on the same input.
+Under `--compare-by junctions` (either space), any mismatch/indel/soft-clip
+difference that doesn't move a splice junction no longer counts — a
+differently-reported intron motif at the same position/length (e.g. STAR's `nn`
+placeholder vs. minimap2's true motif) doesn't count as a difference under
+`all` either, motif-blind in both spaces.
 
 In `junctions` mode every output filename gains a `.junctions` segment (e.g.
 `{prefix}.query_diff_reads.junctions.tsv`) so it never clobbers an `all` run at the
-same `--outdir`/`--prefix`. Both modes write a leading `compare_by<TAB><all|junctions>`
-row in the summary TSV so the file is self-describing.
+same `--outdir`/`--prefix`. Both modes write leading `space<TAB><query|reference>`
+and `compare_by<TAB><all|junctions>` rows in the summary TSV so the file is
+self-describing.
 
 ### Categories
 
-Derived from the shared `CompareSummary` counters — no re-derivation of
-`classify()`'s logic:
+Derived from the shared `CompareSummary` counters — no re-derivation of the
+classification logic. Row/category names follow `--space`:
 
-| Category | Definition |
-|----------|------------|
-| `diff_aln_to_both` | mapped in both sets, **not** `query_identical` (`= aligned_both - query_identical`) |
-| `diff_aln_only_A` / `diff_aln_only_B` | mapped in one set only (`= aligned_only_a` / `aligned_only_b`) |
-| `query_different_total` | sum of the three categories above |
-| `query_identical_total` | excluded from all outputs (incl. the reverse-complement branch) |
-| `aligned_neither` | excluded (unmapped in both — no query-space difference to report) |
+| Category (`--space query`) | Category (`--space reference`) | Definition |
+|----------|----------|------------|
+| `diff_aln_to_both` | `reference_diff` | mapped in both sets, not identical under the active space/compare-by (`= aligned_both - <space>_identical`) |
+| `diff_aln_only_A` / `diff_aln_only_B` | *(same names)* | mapped in one set only (`= aligned_only_a` / `aligned_only_b`) — identical in both spaces |
+| `query_different_total` | `reference_diff_total` | sum of the three categories above |
+| `query_identical_total` | `reference_identical_total` | excluded from all outputs |
+| `aligned_neither` | *(same name)* | excluded (unmapped in both — no difference to report) |
 
-Reconciliation: `reads_compared == query_different_total + query_identical_total + aligned_neither`.
+Reconciliation: `reads_compared == <total> + <identical_total> + aligned_neither`.
 
 ### Outputs
+
+Filenames use the `query_diff`/`query_identical` stem under `--space query`
+(default) or `reference_diff`/`reference_identical` under `--space reference`;
+the table below uses the query-space names.
 
 | File | Contents |
 |------|----------|
 | `{prefix}.query_diff_reads.tsv[.gz]` | one row per differing read: `Read_Name`, `outcome` (the canonical category name above) |
-| `{prefix}.query_diff_regions.A.bed[.gz]` | merged loci over reads with an A placement (`diff_aln_to_both` + `diff_aln_only_A`) |
-| `{prefix}.query_diff_regions.B.bed[.gz]` | merged loci over reads with a B placement (`diff_aln_to_both` + `diff_aln_only_B`) |
+| `{prefix}.query_diff_regions.A.bed[.gz]` | merged loci over reads with an A placement (both-mapped-and-differing + `diff_aln_only_A`) |
+| `{prefix}.query_diff_regions.B.bed[.gz]` | merged loci over reads with a B placement (both-mapped-and-differing + `diff_aln_only_B`) |
 | `{prefix}.query_diff_summary.tsv` | the category tally above (+ stderr) |
-| `{prefix}.query_identical_reads.tsv[.gz]` | *(opt-in, `--emit-identical-reads`)* one row per `query_identical` read: `Read_Name`, `category` (`query_identical_same_strand` / `query_identical_revcomp`, or `query_identical_junctions` under `--compare-by junctions`) — the complement of the diff-reads file. Off by default; **not** produced by `compare`'s built-in invocation. |
+| `{prefix}.query_identical_reads.tsv[.gz]` | *(opt-in, `--emit-identical-reads`)* one row per identical read: `Read_Name`, `category` (`query_identical_same_strand` / `query_identical_revcomp` / `query_identical_junctions` under `--space query`; `reference_identical` under `--space reference`) — the complement of the diff-reads file. Off by default; **not** produced by `compare`'s built-in invocation. |
 
 Under `--compare-by junctions` every filename above gains a `.junctions` segment
 (e.g. `{prefix}.query_diff_reads.junctions.tsv`).
@@ -889,9 +935,9 @@ rather than aborting the run.
 
 ## Troubleshooting
 
-### "`compare-readinfo` matched far fewer reads than I expected" — sort-order diagnostic
+### "`merge-readinfo` matched far fewer reads than I expected" — sort-order diagnostic
 
-`compare-readinfo` uses a streaming merge-join keyed on
+`compare-pipeline merge-readinfo` uses a streaming merge-join keyed on
 `(Read_Name, Read_Len)`. The algorithm runs in O(1) memory and O(N+M) time,
 but it **assumes both readinfo files are sorted in the same byte-lexicographic
 order**. (The primary `compare` reads PAFs directly and instead requires both
@@ -899,7 +945,7 @@ PAFs to list reads in the *same order* — see its `--ignore-row-mismatch`.) By 
 notice immediately; passing `--ignore-row-mismatch` reverts to skip-and-count,
 where unmatched reads are dropped and tallied in the end-of-run stderr summary.
 
-The `paf2tables` alninfo output is pure streaming and **preserves input order** —
+The `compare-pipeline paf2tables` alninfo output is pure streaming and **preserves input order** —
 sortedness must be supplied by you upstream of the pipeline (or recovered
 afterward, see Sorting requirement above). The `--readinfo` collapse emits a
 one-time WARNING on stderr if it detects a byte-lex decrease in its input's
@@ -947,7 +993,7 @@ Sort/overlap diagnostic
   intersection by (Name, Len):     1023
   intersection by Name only:       1023
 
-  ⇒ `compare-readinfo`'s 'matched' count should equal 1023. If maligno's reported
+  ⇒ `merge-readinfo`'s 'matched' count should equal 1023. If maligno's reported
     matched count is lower than that, the two readinfo files are not sorted
     in the same byte-lexicographic order. Re-sort each with:
 
@@ -955,7 +1001,7 @@ Sort/overlap diagnostic
         # (keep the header separately)
 
     or pre-sort the PAF once (`LC_ALL=C sort -t$'\t' -k1,1`) and rerun
-    `paf2tables --readinfo` — both readinfo files then share byte-lex order.
+    `compare-pipeline paf2tables --readinfo` — both readinfo files then share byte-lex order.
 ```
 
 If `intersection by Name only` is larger than `intersection by (Name, Len)`,
@@ -975,7 +1021,7 @@ src/
 ├── paf2tables.rs           — PAF → alninfo and/or readinfo (one pass)
 ├── comparison_row.rs       — comparison-table schema: column lists, ComparisonRow/AlignmentRow/AlignmentDiff, TSV writers
 ├── parquet_out.rs          — Parquet writer + OutputFormat; Arrow schema derived from comparison_row's column lists
-├── compare_streaming.rs    — `compare-readinfo` command + the merge-join machinery (ReadKey/ReadInfoReader)
+├── compare_streaming.rs    — `compare-pipeline merge-readinfo` command + the merge-join machinery (ReadKey/ReadInfoReader)
 ├── readinfo.rs             — collapse library (collapse_group/ReadInfoRow/AlnRow); utils-readinfo CLI unregistered but code kept
 ├── paf_groups.rs           — shared PAF → per-read group reader, with optional alninfo tee
 ├── record.rs               — AlnInfo struct + TSV serialisation

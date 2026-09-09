@@ -12,10 +12,11 @@
 //!      alninfo + readinfo tables are tee'd out as side outputs as it goes
 //!      (suppressible with `--no-alninfo` / `--no-readinfo`).
 //!
-//! This is the porcelain over the plumbing subcommands (`paf2tables`,
-//! `compare-readinfo`, …): the comparison table is byte-identical to running
-//! `compare-readinfo` on the sorted readinfo files, and the side outputs are
-//! byte-identical to `paf2tables` on the sorted PAFs.
+//! This is the porcelain over the `compare-pipeline` plumbing subcommands
+//! (`paf2tables`, `merge-readinfo`, …): the comparison table is byte-identical
+//! to running `compare-pipeline merge-readinfo` on the sorted readinfo files,
+//! and the side outputs are byte-identical to `compare-pipeline paf2tables` on
+//! the sorted PAFs.
 //!
 //! Precondition (documented, not enforced): a `Query_Name` uniquely identifies a
 //! single read/sequence — so sorting by name alone (no `Read_Len` secondary key)
@@ -297,13 +298,13 @@ pub fn run(args: &CompareArgs) -> Result<()> {
     }
 
     // Point at the companion command rather than running it. Until v0.17.0 `compare`
-    // invoked find-query-diff itself, which meant re-reading the table it had just
+    // invoked find-aln-diff itself, which meant re-reading the table it had just
     // written — a second full pass for outputs the caller may not want.
     if let Some(tsv) = &compare_tsv {
         eprintln!();
-        eprintln!("For the query-different reads and the genomic regions where they cluster:");
+        eprintln!("For the differing reads and the genomic regions where they cluster:");
         eprintln!(
-            "  maligno find-query-diff -i {tsv} --outdir {} --prefix {}",
+            "  maligno find-aln-diff -i {tsv} --outdir {} --prefix {}",
             args.outdir, args.prefix
         );
     }

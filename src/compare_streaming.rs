@@ -1,4 +1,5 @@
-//! Provides the `compare-readinfo` command (two readinfo TSVs → comparison) plus
+//! Provides the `compare-pipeline merge-readinfo` command (two readinfo TSVs →
+//! comparison) plus
 //! the merge-join machinery it shares with the primary `compare` command
 //! (`compare.rs`): `ReadKey` and `ReadInfoReader`.
 //!
@@ -45,7 +46,7 @@ pub(crate) fn validate_set_label(s: &str) -> Result<String, String> {
 }
 
 #[derive(clap::Args, Debug)]
-pub struct CompareReadinfoArgs {
+pub struct MergeReadinfoArgs {
     /// Readinfo TSV A (must be sorted by Read_Name, Read_Len)
     #[arg(short = 'a', long = "readinfo-a", value_name = "readinfo_a.tsv")]
     pub readinfo_a: String,
@@ -186,7 +187,7 @@ impl ReadInfoReader {
 
 // ── Main streaming comparison function ──────────────────────────────────────
 
-pub fn run(args: &CompareReadinfoArgs) -> Result<()> {
+pub fn run(args: &MergeReadinfoArgs) -> Result<()> {
     eprintln!("[INFO] Opening readinfo files...");
     eprintln!("  A: {}", args.readinfo_a);
     eprintln!("  B: {}", args.readinfo_b);
