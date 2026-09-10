@@ -80,7 +80,7 @@ use sam2paf::Sam2pafArgs;
 
 /// Unified alignment-comparison toolkit.
 #[derive(Parser, Debug)]
-#[command(name = "maligno", version, about)]
+#[command(name = "maligno", version, about, disable_help_subcommand = true)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
