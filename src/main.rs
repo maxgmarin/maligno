@@ -6,9 +6,10 @@
 //!   1. On-rails (primary) — `compare`:
 //!        `maligno compare -a A.paf -b B.paf --outdir results/ --prefix AvsB`
 //!      Sorts both PAFs (consistent order), verifies they share the same read-ID
-//!      set. Then it writes the per-set alninfo + readinfo tables AND the comparison
-//!      table, and by default also `find-aln-diff`'s differing-reads + region
-//!      tables at its default settings (`--skip-find-aln-diff` to opt out).
+//!      set. Then it writes the comparison table, and by default also
+//!      `find-aln-diff`'s differing-reads + region tables at its default
+//!      settings (`--skip-find-aln-diff` to opt out). The per-set alninfo +
+//!      readinfo tables are opt-in (`--emit-alninfo`/`--emit-readinfo`).
 //!
 //!   2. Manual building blocks (full control), grouped under `compare-pipeline`:
 //!        `maligno compare-pipeline paf2tables -i A.sorted.paf --alninfo A.alninfo.tsv.gz --readinfo A.readinfo.tsv.gz`

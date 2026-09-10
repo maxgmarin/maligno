@@ -55,16 +55,12 @@ maligno compare \
   -o results/ --prefix Splice_vs_SpliceHQ
 ```
 
-This writes a results directory with the per-set tables, the comparison table,
-and — by default — the differing reads and the genomic regions where they
-cluster (`find-aln-diff`'s default-mode output, computed in the same pass; see
+This writes a results directory with the comparison table and — by default —
+the differing reads and the genomic regions where they cluster
+(`find-aln-diff`'s default-mode output, computed in the same pass; see
 Step 2):
 
 ```
-results/Splice_vs_SpliceHQ.Splice.alninfo.tsv.gz
-results/Splice_vs_SpliceHQ.SpliceHQ.alninfo.tsv.gz
-results/Splice_vs_SpliceHQ.Splice.readinfo.tsv.gz
-results/Splice_vs_SpliceHQ.SpliceHQ.readinfo.tsv.gz
 results/Splice_vs_SpliceHQ.compare.tsv.gz
 results/Splice_vs_SpliceHQ.compare.parquet
 results/Splice_vs_SpliceHQ.compare.summary.tsv
@@ -72,6 +68,11 @@ results/Splice_vs_SpliceHQ.query_diff_reads.tsv.gz
 results/Splice_vs_SpliceHQ.query_diff_regions.A.bed.gz
 results/Splice_vs_SpliceHQ.query_diff_regions.B.bed.gz
 ```
+
+The per-set `alninfo`/`readinfo` tables are opt-in (`--emit-alninfo`,
+`--emit-readinfo`) — pass them if you want the per-alignment or per-read
+detail tables alongside the comparison output; they roughly double the run's
+disk footprint and add meaningfully to its runtime, so they're off by default.
 
 ### Step 2: Use `maligno find-aln-diff` for reference-space or junctions-only differences
 
@@ -119,7 +120,7 @@ maligno find-aln-diff \
 | `--presorted` | skip the sort — inputs already hold the same reads in the same order |
 | `--allow-id-mismatch` | compare the shared intersection instead of erroring when read-ID sets differ |
 | `--format` | which serialization(s) of the comparison table: `tsv`, `parquet`, or `both` (default) |
-| `--no-alninfo`, `--no-readinfo` | skip writing those per-set tables |
+| `--emit-alninfo`, `--emit-readinfo` | write those per-set tables (off by default) |
 | `--keep-sorted-paf` | keep the intermediate sorted PAFs |
 | `--skip-find-aln-diff` | don't also emit `find-aln-diff`'s default-mode output (differing reads + region tables) |
 
@@ -132,8 +133,8 @@ A `compare` run writes, under `--outdir`, files prefixed with `--prefix`:
 
 | File | Cols | Contents |
 |------|------|----------|
-| `{prefix}.{label}.alninfo.tsv.gz` | 35 | **per-alignment** table — one row per PAF alignment (every alignment, per set) |
-| `{prefix}.{label}.readinfo.tsv.gz` | 33 | **per-read** table — the chosen best alignment for each read (per set) |
+| `{prefix}.{label}.alninfo.tsv.gz` | 35 | **per-alignment** table — one row per PAF alignment (every alignment, per set); opt-in via `--emit-alninfo` |
+| `{prefix}.{label}.readinfo.tsv.gz` | 33 | **per-read** table — the chosen best alignment for each read (per set); opt-in via `--emit-readinfo` |
 | `{prefix}.compare.tsv.gz` | 96 | the **comparison** table (unless `--format parquet`) |
 | `{prefix}.compare.parquet` | 96 | the same table as Parquet (unless `--format tsv`) |
 | `{prefix}.compare.summary.tsv` | 2 | **aggregate summary statistics** (see below) |
@@ -239,11 +240,14 @@ transcripts aligned with minimap2 `--x splice` vs `--x splice:hq`.
 If run from the repo root, the outputs will go to `test_data/test_results/`:
 
 ```bash
-# Full comparison (sort → verify read-IDs → per-set tables + comparison table).
+# Full comparison (sort → verify read-IDs → comparison table), plus the
+# opt-in per-set alninfo/readinfo tables (--emit-alninfo/--emit-readinfo) so
+# this walkthrough can sanity-check all three table shapes below.
 maligno compare \
   -a test_data/Splice.AlnToHG38.PriAln.paf.gz   --label-a Splice \
   -b test_data/SpliceHQ.AlnToHG38.PriAln.paf.gz --label-b SpliceHQ \
-  -o test_data/test_results/ --prefix Splice_vs_SpliceHQ
+  -o test_data/test_results/ --prefix Splice_vs_SpliceHQ \
+  --emit-alninfo --emit-readinfo
 
 # Inspect a comparison header (column number → name).
 zcat < test_data/test_results/Splice_vs_SpliceHQ.compare.tsv.gz | head -1 | tr '\t' '\n' | nl

@@ -18,13 +18,13 @@ you want manual control.
 
 **1. On-rails (primary) — `compare`:** one command that sorts both PAFs (so
 order is guaranteed), verifies they carry the same read-ID
-set, and writes a results directory with the per-set alninfo + readinfo tables
-and the comparison table.
+set, and writes a results directory with the comparison table (the per-set
+alninfo + readinfo tables are opt-in — `--emit-alninfo`/`--emit-readinfo`).
 
 ```
-  A.paf ─┐                                            results/AvsB.{A,B}.alninfo.tsv.gz
-         ├─ compare (sort → verify → tables) ─▶       results/AvsB.{A,B}.readinfo.tsv.gz
-  B.paf ─┘                                            results/AvsB.compare.tsv.gz
+  A.paf ─┐                                            results/AvsB.compare.tsv.gz
+         ├─ compare (sort → verify → compare) ─▶      results/AvsB.{A,B}.alninfo.tsv.gz   (--emit-alninfo)
+  B.paf ─┘                                            results/AvsB.{A,B}.readinfo.tsv.gz  (--emit-readinfo)
 ```
 ```bash
 maligno compare -a A.paf -b B.paf --label-a A --label-b B --outdir results/ --prefix AvsB
@@ -48,7 +48,7 @@ maligno compare-pipeline merge-readinfo -a A.readinfo.tsv.gz -b B.readinfo.tsv.g
 
 | Subcommand    | Input                              | Output                                  |
 |---------------|------------------------------------|-----------------------------------------|
-| **`compare`** | two PAFs (`-a`, `-b`; file paths only, no stdin) | **a results directory** (`--outdir`/`--prefix`): per-set alninfo + readinfo for A and B, the comparison TSV, and (by default) `find-aln-diff`'s default-mode differing-reads + region tables — **the primary entry point**. Sorts inputs and verifies read-ID sets match. Emits the single 96-column comparison table as TSV, Parquet or both (`--format`); `--skip-find-aln-diff` opts out of the fused diff output |
+| **`compare`** | two PAFs (`-a`, `-b`; file paths only, no stdin) | **a results directory** (`--outdir`/`--prefix`): the comparison TSV, and (by default) `find-aln-diff`'s default-mode differing-reads + region tables — **the primary entry point**. Sorts inputs and verifies read-ID sets match. Emits the single 96-column comparison table as TSV, Parquet or both (`--format`); `--skip-find-aln-diff` opts out of the fused diff output; per-set alninfo + readinfo for A and B are opt-in (`--emit-alninfo`/`--emit-readinfo`) |
 | `compare-pipeline paf2tables`  | PAF (`-i`, `.gz`/`-` ok)           | **alninfo TSV** (`--alninfo`, 35 cols) and/or **readinfo TSV** (`--readinfo`, 33 cols), in one pass |
 | `compare-pipeline merge-readinfo` | two readinfo TSVs (`-a`, `-b`) | per-read comparison table (`-o`, 96 cols); the same table `compare` writes. Writes Parquet when `-o` ends in `.parquet`, TSV otherwise |
 | `sam2paf`     | SAM file or stdin (`-`)            | PAF written to stdout                   |
@@ -144,26 +144,31 @@ What it does, in order:
    in A / only in B (with examples). Pass `--allow-id-mismatch` to compare the
    shared intersection instead.
 3. In a **single in-memory pass**, collapses both sorted PAFs in lock-step and
-   feeds the merge-join directly (no readinfo written-then-reread), teeing out the
-   per-set `alninfo` + `readinfo` tables, writing the comparison table, and — by
-   default — driving `find-aln-diff`'s default-mode core (`--space query
-   --compare-by all`) inline, in the same pass, over the same matched-read
-   classification already computed for the summary:
+   feeds the merge-join directly (no readinfo written-then-reread), writing the
+   comparison table and — by default — driving `find-aln-diff`'s default-mode
+   core (`--space query --compare-by all`) inline, in the same pass, over the
+   same matched-read classification already computed for the summary; the
+   per-set `alninfo` + `readinfo` tables are also tee'd out in this pass, but
+   only when requested (`--emit-alninfo`/`--emit-readinfo`):
    ```
-   {prefix}.{label_a}.alninfo.tsv.gz    {prefix}.{label_b}.alninfo.tsv.gz
-   {prefix}.{label_a}.readinfo.tsv.gz   {prefix}.{label_b}.readinfo.tsv.gz
    {prefix}.compare.tsv.gz
    {prefix}.compare.summary.tsv
    {prefix}.query_diff_reads.tsv.gz
    {prefix}.query_diff_regions.A.bed.gz
    {prefix}.query_diff_regions.B.bed.gz
+   {prefix}.{label_a}.alninfo.tsv.gz    {prefix}.{label_b}.alninfo.tsv.gz    (--emit-alninfo)
+   {prefix}.{label_a}.readinfo.tsv.gz   {prefix}.{label_b}.readinfo.tsv.gz   (--emit-readinfo)
    ```
    The sorted PAFs are scratch (removed unless `--keep-sorted-paf`).
 
-Pass **`--no-alninfo`** and/or **`--no-readinfo`** to skip writing those per-set
-tables entirely (no file is created — the bytes are never serialized/compressed;
-`--no-alninfo` is the biggest time/disk saver since alninfo is the largest output).
-The comparison itself is unaffected.
+Pass **`--emit-alninfo`** and/or **`--emit-readinfo`** to additionally write
+those per-set tables (off by default — no file is created and the bytes are
+never serialized/compressed unless requested). On a full genome-wide
+GENCODE v49 benchmark (507,365 transcripts, run outside this repo), these two
+tables accounted for **~49% of `compare`'s total output size** (210M of 430M)
+and **~35% of its runtime** (83.5s → 54.4s with both omitted) — they're the
+biggest disk/time cost in a `compare` run by a wide margin, hence off by
+default. The comparison table itself is unaffected either way.
 
 Pass **`--skip-find-aln-diff`** to skip the fused differing-reads + region-table
 output (the last three files above) and restore `compare`'s pre-fusion output
@@ -587,6 +592,29 @@ cannot accidentally match.
 > give the `--compare-by junctions` "identical" counts directly from
 > `compare.summary.tsv` / `compare-pipeline summary`, without needing a
 > `--compare-by junctions` `find-aln-diff` run just to see them.
+
+> **Breaking change (v0.22.0) — `compare`'s alninfo/readinfo tables are now
+> opt-in.** `compare` used to write the per-set `alninfo` (35-col) and
+> `readinfo` (33-col) tables by default, suppressible with `--no-alninfo` /
+> `--no-readinfo`. Those flags are **removed**; the tables are now off by
+> default, written only when requested via **`--emit-alninfo`** /
+> **`--emit-readinfo`**.
+>
+> Why: a full genome-wide benchmark (GENCODE v49, 507,365 transcripts) showed
+> these two tables account for ~49% of `compare`'s total output size (210M of
+> 430M) and ~35% of its runtime (83.5s → 54.4s with both omitted), yet nothing
+> downstream depends on them — `find-aln-diff` and `compare-pipeline summary`
+> only ever read the comparison table. `compare-pipeline paf2tables` already
+> treated these tables as opt-in (explicit `--alninfo`/`--readinfo` output
+> paths, erroring if neither is given); this makes `compare` consistent with
+> that existing convention instead of the odd one out.
+>
+> **Migration:** add `--emit-alninfo --emit-readinfo` to any `compare`
+> invocation that relied on the old default (including the
+> `scripts/check-readinfo-overlap.sh` troubleshooting flow, which needs
+> readinfo files on hand). The comparison table, its summary, and the fused
+> `find-aln-diff` default output are all unaffected — this only changes the
+> two per-set side tables.
 
 **Strand tracking and renames (v0.2.1+).** Each side now carries a `Strand_A` / `Strand_B` data
 column (the best alignment's strand), and the comparison block starts with a `Strand_Match`

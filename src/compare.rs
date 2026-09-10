@@ -9,8 +9,8 @@
 //!      erroring by default if they differ, then
 //!   3. in a **single in-memory pass**, collapses both sorted PAFs in lock-step
 //!      and feeds the merge-join directly — no readinfo written-then-reread. The
-//!      alninfo + readinfo tables are tee'd out as side outputs as it goes
-//!      (suppressible with `--no-alninfo` / `--no-readinfo`).
+//!      alninfo + readinfo tables are tee'd out as side outputs as it goes, when
+//!      requested (`--emit-alninfo` / `--emit-readinfo`; off by default).
 //!
 //! This is the porcelain over the `compare-pipeline` plumbing subcommands
 //! (`paf2tables`, `merge-readinfo`, …): the comparison table is byte-identical
@@ -102,13 +102,13 @@ pub struct CompareArgs {
     #[arg(long = "presorted", conflicts_with_all = ["allow_id_mismatch", "keep_sorted_paf"])]
     presorted: bool,
 
-    /// Do not write the per-set alninfo (35-col) tables.
-    #[arg(long = "no-alninfo")]
-    no_alninfo: bool,
+    /// Write the per-set alninfo (35-col) tables (off by default).
+    #[arg(long = "emit-alninfo")]
+    emit_alninfo: bool,
 
-    /// Do not write the per-set readinfo (33-col) tables.
-    #[arg(long = "no-readinfo")]
-    no_readinfo: bool,
+    /// Write the per-set readinfo (33-col) tables (off by default).
+    #[arg(long = "emit-readinfo")]
+    emit_readinfo: bool,
 
     /// In-memory sort buffer per file (K/M/G suffix, or plain bytes).
     #[arg(long = "sort-mem", value_name = "SIZE", default_value = "1G")]
@@ -262,10 +262,10 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         &args.label_a,
         &args.label_b,
         compare_tsv.as_deref(),
-        if args.no_readinfo { None } else { Some(&a_readinfo) },
-        if args.no_readinfo { None } else { Some(&b_readinfo) },
-        if args.no_alninfo { None } else { Some(&a_alninfo) },
-        if args.no_alninfo { None } else { Some(&b_alninfo) },
+        if args.emit_readinfo { Some(&a_readinfo) } else { None },
+        if args.emit_readinfo { Some(&b_readinfo) } else { None },
+        if args.emit_alninfo { Some(&a_alninfo) } else { None },
+        if args.emit_alninfo { Some(&b_alninfo) } else { None },
         compare_parquet.as_deref(),
         args.allow_id_mismatch,
         &mut summary,
@@ -284,11 +284,11 @@ pub fn run(args: &CompareArgs) -> Result<()> {
             for p in [compare_tsv.as_deref(), compare_parquet.as_deref()].into_iter().flatten() {
                 let _ = fs::remove_file(p);
             }
-            if !args.no_alninfo {
+            if args.emit_alninfo {
                 let _ = fs::remove_file(&a_alninfo);
                 let _ = fs::remove_file(&b_alninfo);
             }
-            if !args.no_readinfo {
+            if args.emit_readinfo {
                 let _ = fs::remove_file(&a_readinfo);
                 let _ = fs::remove_file(&b_readinfo);
             }
@@ -323,11 +323,11 @@ pub fn run(args: &CompareArgs) -> Result<()> {
     summary.write_tsv(&summary_out, &args.label_a, &args.label_b, &[])?;
     summary.render_stderr(&args.label_a, &args.label_b, &[]);
     eprintln!("Outputs in {}:", args.outdir);
-    if !args.no_alninfo {
+    if args.emit_alninfo {
         eprintln!("  {a_alninfo}");
         eprintln!("  {b_alninfo}");
     }
-    if !args.no_readinfo {
+    if args.emit_readinfo {
         eprintln!("  {a_readinfo}");
         eprintln!("  {b_readinfo}");
     }
