@@ -46,24 +46,29 @@
 //!      carries the same 8 columns for the complementary read set.
 //!   2. `{prefix}.{stem}_regions.A.bed[.gz]`  — merged A-coordinate loci
 //!   3. `{prefix}.{stem}_regions.B.bed[.gz]`  — merged B-coordinate loci
-//!   4. `{prefix}.{stem}_summary.tsv`         — category tally (+ stderr)
+//!   4. `{prefix}.{stem}_summary.tsv`         — the same category-tally schema
+//!      `compare`/`compare-pipeline summary` write (`CompareSummary::rows()`),
+//!      with `space`/`compare_by` provenance rows prepended, so all three
+//!      commands share one column layout. Its counters are mode-independent
+//!      (always the raw `classify()` output) — mode-specific behavior only
+//!      selects which reads land in `{stem}_reads`/region-BED outputs.
+//!
+//! The per-row core of this command (bool-cols + differing-read selection +
+//! genomic interval building) lives in `AlnDiffAccumulator` below so that
+//! `compare` can drive the identical logic inline, in its own single merge
+//! pass, for its default (`--space query --compare-by all`) fused output.
 
-use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::compare_summary::{
-    classify, labels_from_row, require_ab_schema, CompareSummary, MapStatus, ReadClass, RefClass,
-};
+use crate::compare_summary::{classify, labels_from_row, require_ab_schema, CompareSummary, MapStatus, ReadClass, RefClass};
 use crate::interval_merge::{merge_and_count, Ivl, Locus};
 use crate::io_utils::open_output;
-use crate::junction::{
-    genomic_junction_set_stats, junction_set_stats, parse_genomic_junction_str, parse_junction_str,
-};
 use crate::table_input::{open_table, InputFormat};
+use std::collections::HashMap;
 
 /// What aspect of the alignment defines a difference between A and B, within
 /// whichever `--space` is active.
@@ -199,43 +204,160 @@ fn build_ivl<'a>(get: impl Fn(&str) -> &'a str, outcome: Outcome) -> Option<Ivl<
     })
 }
 
-/// Junction-space query identity for one both-mapped read: `true` iff the two
-/// query-space junction *sets* are equal. Strand-agnostic — query junctions are
-/// stored in plus-strand read coordinates (see `record.rs`), so no span gate and
-/// no reverse-complement handling are needed (unlike the cs-tag comparison). Two
-/// reads with no junctions on either side compare equal.
-fn junctions_identical<'a>(
-    get_a: &impl Fn(&str) -> &'a str,
-    get_b: &impl Fn(&str) -> &'a str,
-) -> bool {
-    let ja = parse_junction_str(get_a("junctions"));
-    let jb = parse_junction_str(get_b("junctions"));
-    let (_overlap, only_a, only_b) = junction_set_stats(&ja, &jb);
-    only_a == 0 && only_b == 0
+/// The 8 classification-boolean column names, computed the same way
+/// regardless of `--space`/`--compare-by` (see the module doc comment).
+const BOOL_COLS: &str = "query_identical_same_strand\tquery_identical_revcomp\t\
+    query_junctions_identical\tref_same_position_same_aln\tref_same_position_diff_aln\t\
+    ref_diff_position_same_aln\tref_diff_position_diff_aln\tref_same_position_same_junctions";
+
+/// Result of `AlnDiffAccumulator::finish`.
+pub(crate) struct AlnDiffStats {
+    pub n_diff_rows: u64,
+    pub n_bad_interval: u64,
 }
 
-/// Genomic-coordinate junction-set identity for one both-mapped read, for
-/// `--space reference --compare-by junctions`: `true` iff the two sides' sets
-/// of `(chrom, start, end)` splice junctions are equal. `genomic_junctions`
-/// cells carry only `(start, end)` pairs, so each side's `TargetChr` is
-/// reattached before comparing (mirrors `comparison_row.rs`'s own
-/// genomic-junction diff computation).
-fn genomic_junctions_identical<'a>(
-    get_a: &impl Fn(&str) -> &'a str,
-    get_b: &impl Fn(&str) -> &'a str,
-) -> bool {
-    let chrom_a = get_a("TargetChr");
-    let chrom_b = get_b("TargetChr");
-    let ja: Vec<(String, u64, u64)> = parse_genomic_junction_str(get_a("genomic_junctions"))
-        .into_iter()
-        .map(|(s, e)| (chrom_a.to_string(), s, e))
-        .collect();
-    let jb: Vec<(String, u64, u64)> = parse_genomic_junction_str(get_b("genomic_junctions"))
-        .into_iter()
-        .map(|(s, e)| (chrom_b.to_string(), s, e))
-        .collect();
-    let (_overlap, only_a, only_b) = genomic_junction_set_stats(&ja, &jb);
-    only_a == 0 && only_b == 0
+/// The per-row core of `find-aln-diff`: given one matched read's raw
+/// `classify()` output (`base`), decides whether it's a "difference" under
+/// this accumulator's fixed `--space`/`--compare-by`, writes it to the reads
+/// table if so, and buffers its genomic interval(s) for the region-BED pass.
+///
+/// Shared by the standalone `find-aln-diff` command (`run`, below, built with
+/// its CLI's `--space`/`--compare-by`) and by `compare`'s fused default output
+/// (built fixed at `DiffSpace::Query`/`CompareBy::All` — the passthrough case
+/// in `observe_row`'s mode-match — so `compare` can drive it inline, in its
+/// own single merge pass, with no re-read of its own output table).
+pub(crate) struct AlnDiffAccumulator {
+    reads_w: Box<dyn Write>,
+    vec_a: Vec<Ivl<DiffMeta>>,
+    vec_b: Vec<Ivl<DiffMeta>>,
+    space: DiffSpace,
+    compare_by: CompareBy,
+    n_diff_rows: u64,
+    n_bad_interval: u64,
+}
+
+impl AlnDiffAccumulator {
+    pub(crate) fn new(reads_out: &str, space: DiffSpace, compare_by: CompareBy) -> Result<Self> {
+        let mut reads_w = open_output(Some(reads_out))?;
+        writeln!(reads_w, "Read_Name\toutcome\t{BOOL_COLS}")?;
+        Ok(Self {
+            reads_w,
+            vec_a: Vec::new(),
+            vec_b: Vec::new(),
+            space,
+            compare_by,
+            n_diff_rows: 0,
+            n_bad_interval: 0,
+        })
+    }
+
+    /// Classify one matched read, write it to the reads table if it's a
+    /// difference under this accumulator's active mode, and buffer its
+    /// interval(s). Returns the *effective* (mode-derived) classification —
+    /// `query_identical`/`query_identical_rc` reflect the active
+    /// `--space`/`--compare-by`, everything else is passed through from
+    /// `base` — for the caller's own use (e.g. `--emit-identical-reads`).
+    pub(crate) fn observe_row<'a>(
+        &mut self,
+        read_name: &str,
+        get_a: impl Fn(&str) -> &'a str,
+        get_b: impl Fn(&str) -> &'a str,
+        base: &ReadClass,
+    ) -> Result<ReadClass> {
+        // The 8 classification booleans, computed unconditionally (independent
+        // of `--space`/`--compare-by`) so every emitted row carries the full
+        // picture regardless of which mode selected it.
+        let bool_cols = format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            (base.query_identical && !base.query_identical_rc) as u8,
+            (base.query_identical && base.query_identical_rc) as u8,
+            base.query_junctions_identical.unwrap_or(false) as u8,
+            matches!(base.ref_class, Some(RefClass::SamePositionSameAln)) as u8,
+            matches!(base.ref_class, Some(RefClass::SamePositionDiffAln)) as u8,
+            matches!(base.ref_class, Some(RefClass::DiffPositionSameAln)) as u8,
+            matches!(base.ref_class, Some(RefClass::DiffPositionDiffAln)) as u8,
+            base.ref_same_position_same_junctions.unwrap_or(false) as u8,
+        );
+
+        let (identical, identical_rc) = match (self.space, self.compare_by) {
+            (DiffSpace::Query, CompareBy::All) => (base.query_identical, base.query_identical_rc),
+            (DiffSpace::Query, CompareBy::Junctions) => {
+                (base.query_junctions_identical.unwrap_or(false), false)
+            }
+            (DiffSpace::Reference, compare_by) => {
+                let same_position = base.ref_class.map(|rc| rc.same_position()).unwrap_or(false);
+                let same_aln = match compare_by {
+                    CompareBy::All => base.ref_class.map(|rc| rc.same_aln()).unwrap_or(false),
+                    CompareBy::Junctions => base.ref_same_position_same_junctions.unwrap_or(false),
+                };
+                (same_position && same_aln, false)
+            }
+        };
+        let class = ReadClass {
+            map_status: base.map_status,
+            query_identical: identical,
+            query_identical_rc: identical_rc,
+            ref_class: base.ref_class,
+            query_junctions_identical: base.query_junctions_identical,
+            ref_same_position_same_junctions: base.ref_same_position_same_junctions,
+        };
+
+        // Select differing reads and their placement(s).
+        let both_mapped_diff_category = match self.space {
+            DiffSpace::Query => "diff_aln_to_both",
+            DiffSpace::Reference => "reference_diff",
+        };
+        let (category, in_a, in_b) = match class.map_status {
+            MapStatus::BothMapped if !class.query_identical => {
+                (both_mapped_diff_category, true, true)
+            }
+            MapStatus::OnlyAMapped => ("diff_aln_only_A", true, false),
+            MapStatus::OnlyBMapped => ("diff_aln_only_B", false, true),
+            // query-identical (incl. reverse-complement) or unmapped-both → not a difference
+            _ => return Ok(class),
+        };
+
+        writeln!(self.reads_w, "{read_name}\t{category}\t{bool_cols}")?;
+        self.n_diff_rows += 1;
+
+        let outcome = if in_a && in_b { Outcome::Both } else { Outcome::OnlySide };
+        if in_a {
+            match build_ivl(&get_a, outcome) {
+                Some(iv) => self.vec_a.push(iv),
+                None => self.n_bad_interval += 1,
+            }
+        }
+        if in_b {
+            match build_ivl(&get_b, outcome) {
+                Some(iv) => self.vec_b.push(iv),
+                None => self.n_bad_interval += 1,
+            }
+        }
+        Ok(class)
+    }
+
+    /// Flush the reads table, merge the buffered intervals into region-BED
+    /// tables, and return the run's stats. `source_desc` is a human-readable
+    /// description of where the rows came from, used only in the region
+    /// tables' `[INFO]` log lines.
+    pub(crate) fn finish(
+        mut self,
+        regions_a_out: &str,
+        regions_b_out: &str,
+        label_a: &str,
+        label_b: &str,
+        source_desc: &str,
+    ) -> Result<AlnDiffStats> {
+        self.reads_w.flush()?;
+        let loci_a = merge_and_count(self.vec_a, DiffAcc::default, fold_diff);
+        write_region_table(regions_a_out, &loci_a, "A", label_a, "n_only_A", source_desc)?;
+        let loci_b = merge_and_count(self.vec_b, DiffAcc::default, fold_diff);
+        write_region_table(regions_b_out, &loci_b, "B", label_b, "n_only_B", source_desc)?;
+        Ok(AlnDiffStats {
+            n_diff_rows: self.n_diff_rows,
+            n_bad_interval: self.n_bad_interval,
+        })
+    }
 }
 
 pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
@@ -322,17 +444,7 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
     let mut label_b = "B".to_string();
     let mut seen_row = false;
 
-    // ── Pass 1: stream rows → read TSV + differing-interval vectors ────────────
-    // These 8 columns are computed the same way regardless of `--space`/
-    // `--compare-by` (see the computation block in the row loop below), so a
-    // single run shows e.g. a query-different-but-reference-identical read
-    // without needing a second run in the other `--space`.
-    const BOOL_COLS: &str = "query_identical_same_strand\tquery_identical_revcomp\t\
-        query_junctions_identical\tref_same_position_same_aln\tref_same_position_diff_aln\t\
-        ref_diff_position_same_aln\tref_diff_position_diff_aln\tref_same_position_same_junctions";
-
-    let mut reads_w = open_output(Some(&reads_out))?;
-    writeln!(reads_w, "Read_Name\toutcome\t{BOOL_COLS}")?;
+    let mut acc = AlnDiffAccumulator::new(&reads_out, args.space, args.compare_by)?;
 
     let mut identical_w: Option<Box<dyn Write>> = if args.emit_identical_reads {
         let mut w = open_output(Some(&identical_out))?;
@@ -342,11 +454,11 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
         None
     };
 
+    // The one, mode-independent summary — same schema `compare`/
+    // `compare-pipeline summary` write (see the module doc comment).
     let mut summary = CompareSummary::default();
-    let mut vec_a: Vec<Ivl<DiffMeta>> = Vec::new();
-    let mut vec_b: Vec<Ivl<DiffMeta>> = Vec::new();
-    let mut n_bad_interval: u64 = 0;
 
+    // ── Pass 1: stream rows → read TSV + differing-interval vectors ────────────
     while let Some(fields_owned) = source.next_row()? {
         let fields: Vec<&str> = fields_owned.iter().map(String::as_str).collect();
         if !seen_row {
@@ -360,66 +472,28 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
             idx_b.get(c).and_then(|&i| fields.get(i)).copied().unwrap_or("")
         };
 
-        // `classify` gives map_status (space-independent) plus the query-space
-        // and reference-space identity axes. `class.query_identical` doubles,
-        // across both `--space` and `--compare-by` combinations, as "this read
-        // is NOT a difference under the active mode" — the rest of the
-        // pipeline (read selection, summary, intervals) is driven by this
-        // single `class`, so the outputs and summary stay consistent by
-        // construction.
+        // `base` is the raw, mode-independent classification — observed as-is
+        // into `summary` so its meaning matches `compare`'s and
+        // `compare-pipeline summary`'s (always "query+all" semantics).
         let base = classify(&get_a, &get_b);
+        summary.observe(&base);
 
-        // The 8 classification booleans, computed unconditionally (independent
-        // of `--space`/`--compare-by`) so every emitted row carries the full
-        // picture regardless of which mode selected it. `base` already gives
-        // the query-space and reference-space (`RefClass`) axes; the two
-        // junctions-based checks are called here rather than only under
-        // `--compare-by junctions`.
-        let both_mapped = matches!(base.map_status, MapStatus::BothMapped);
-        let bool_cols = format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            (base.query_identical && !base.query_identical_rc) as u8,
-            (base.query_identical && base.query_identical_rc) as u8,
-            (both_mapped && junctions_identical(&get_a, &get_b)) as u8,
-            matches!(base.ref_class, Some(RefClass::SamePositionSameAln)) as u8,
-            matches!(base.ref_class, Some(RefClass::SamePositionDiffAln)) as u8,
-            matches!(base.ref_class, Some(RefClass::DiffPositionSameAln)) as u8,
-            matches!(base.ref_class, Some(RefClass::DiffPositionDiffAln)) as u8,
-            (both_mapped
-                && base.ref_class.map(|rc| rc.same_position()).unwrap_or(false)
-                && genomic_junctions_identical(&get_a, &get_b)) as u8,
-        );
-
-        let (identical, identical_rc) = match (args.space, args.compare_by) {
-            (DiffSpace::Query, CompareBy::All) => (base.query_identical, base.query_identical_rc),
-            (DiffSpace::Query, CompareBy::Junctions) => (
-                matches!(base.map_status, MapStatus::BothMapped)
-                    && junctions_identical(&get_a, &get_b),
-                false,
-            ),
-            (DiffSpace::Reference, compare_by) => {
-                let same_position = base.ref_class.map(|rc| rc.same_position()).unwrap_or(false);
-                let same_aln = match compare_by {
-                    CompareBy::All => base.ref_class.map(|rc| rc.same_aln()).unwrap_or(false),
-                    CompareBy::Junctions => {
-                        matches!(base.map_status, MapStatus::BothMapped)
-                            && genomic_junctions_identical(&get_a, &get_b)
-                    }
-                };
-                (same_position && same_aln, false)
-            }
-        };
-        let class = ReadClass {
-            map_status: base.map_status,
-            query_identical: identical,
-            query_identical_rc: identical_rc,
-            ref_class: base.ref_class,
-        };
-        summary.observe(&class);
         let read_name = fields.get(read_name_idx).copied().unwrap_or("");
+        let class = acc.observe_row(read_name, get_a, get_b, &base)?;
 
         if class.query_identical {
             if let Some(w) = identical_w.as_mut() {
+                let bool_cols = format!(
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    (base.query_identical && !base.query_identical_rc) as u8,
+                    (base.query_identical && base.query_identical_rc) as u8,
+                    base.query_junctions_identical.unwrap_or(false) as u8,
+                    matches!(base.ref_class, Some(RefClass::SamePositionSameAln)) as u8,
+                    matches!(base.ref_class, Some(RefClass::SamePositionDiffAln)) as u8,
+                    matches!(base.ref_class, Some(RefClass::DiffPositionSameAln)) as u8,
+                    matches!(base.ref_class, Some(RefClass::DiffPositionDiffAln)) as u8,
+                    base.ref_same_position_same_junctions.unwrap_or(false) as u8,
+                );
                 let cat = match args.space {
                     DiffSpace::Reference => "reference_identical",
                     DiffSpace::Query => match args.compare_by {
@@ -431,50 +505,15 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
                 writeln!(w, "{read_name}\t{cat}\t{bool_cols}")?;
             }
         }
-
-        // Select differing reads and their placement(s).
-        let both_mapped_diff_category = match args.space {
-            DiffSpace::Query => "diff_aln_to_both",
-            DiffSpace::Reference => "reference_diff",
-        };
-        let (category, in_a, in_b) = match class.map_status {
-            MapStatus::BothMapped if !class.query_identical => {
-                (both_mapped_diff_category, true, true)
-            }
-            MapStatus::OnlyAMapped => ("diff_aln_only_A", true, false),
-            MapStatus::OnlyBMapped => ("diff_aln_only_B", false, true),
-            // query-identical (incl. reverse-complement) or unmapped-both → not a difference
-            _ => continue,
-        };
-
-        writeln!(reads_w, "{read_name}\t{category}\t{bool_cols}")?;
-
-        let outcome = if in_a && in_b { Outcome::Both } else { Outcome::OnlySide };
-        if in_a {
-            match build_ivl(&get_a, outcome) {
-                Some(iv) => vec_a.push(iv),
-                None => n_bad_interval += 1,
-            }
-        }
-        if in_b {
-            match build_ivl(&get_b, outcome) {
-                Some(iv) => vec_b.push(iv),
-                None => n_bad_interval += 1,
-            }
-        }
     }
-    reads_w.flush()?;
     if let Some(w) = identical_w.as_mut() {
         w.flush()?;
     }
 
     // ── Pass 2: merge each coordinate space → region tables ────────────────────
-    let loci_a = merge_and_count(vec_a, DiffAcc::default, fold_diff);
-    write_region_table(&regions_a_out, &loci_a, "A", &label_a, "n_only_A", &args.input)?;
-    let loci_b = merge_and_count(vec_b, DiffAcc::default, fold_diff);
-    write_region_table(&regions_b_out, &loci_b, "B", &label_b, "n_only_B", &args.input)?;
+    let stats = acc.finish(&regions_a_out, &regions_b_out, &label_a, &label_b, &args.input)?;
 
-    // ── Summary (TSV + stderr) ────────────────────────────────────────────────
+    // ── Summary (TSV + stderr), shared schema with `compare` ───────────────────
     let space_str = match args.space {
         DiffSpace::Query => "query",
         DiffSpace::Reference => "reference",
@@ -483,29 +522,17 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
         CompareBy::All => "all",
         CompareBy::Junctions => "junctions",
     };
-    let rows = summary_rows(&summary, args.space);
-    let mut sw = open_output(Some(&summary_out))?;
-    writeln!(sw, "Category\tCount")?;
-    // Record the active mode and the two set labels in every summary (every
-    // --space/--compare-by combination) so the file is self-describing
-    // regardless of how it was produced.
-    writeln!(sw, "space\t{space_str}")?;
-    writeln!(sw, "compare_by\t{compare_by_str}")?;
-    writeln!(sw, "label_A\t{label_a}")?;
-    writeln!(sw, "label_B\t{label_b}")?;
-    for (k, v) in &rows {
-        writeln!(sw, "{k}\t{v}")?;
-    }
-    sw.flush()?;
+    let extra = [("space", space_str), ("compare_by", compare_by_str)];
+    summary.write_tsv(&summary_out, &label_a, &label_b, &extra)?;
 
     eprintln!(
-        "Diff summary (space={space_str}, compare-by={compare_by_str}, A={label_a}, B={label_b}):"
+        "Diff summary (space={space_str}, compare-by={compare_by_str}, A={label_a}, B={label_b}): \
+         {} differing reads written to {reads_out}",
+        stats.n_diff_rows
     );
-    for (k, v) in &rows {
-        eprintln!("  {k:<24} {v}");
-    }
-    if n_bad_interval > 0 {
-        eprintln!("  ({n_bad_interval} intervals skipped: unparseable or degenerate coordinates)");
+    summary.render_stderr(&label_a, &label_b, &extra);
+    if stats.n_bad_interval > 0 {
+        eprintln!("  ({} intervals skipped: unparseable or degenerate coordinates)", stats.n_bad_interval);
     }
     eprintln!("Outputs in {}:", args.outdir);
     eprintln!("  {reads_out}");
@@ -516,30 +543,6 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
         eprintln!("  {identical_out}");
     }
     Ok(())
-}
-
-/// Derive this command's category rows from the shared `CompareSummary`
-/// counters. `<both>_total == aligned_both - query_identical` (== "not
-/// identical among both-mapped reads"). Row labels follow `--space`, so
-/// `{prefix}.reference_diff_summary.tsv` doesn't say "query" anywhere.
-fn summary_rows(s: &CompareSummary, space: DiffSpace) -> Vec<(String, u64)> {
-    let diff_both = s.aligned_both - s.query_identical;
-    let diff_total = diff_both + s.aligned_only_a + s.aligned_only_b;
-    let (total_label, both_label, identical_label) = match space {
-        DiffSpace::Query => ("query_different_total", "diff_aln_to_both", "query_identical_total"),
-        DiffSpace::Reference => {
-            ("reference_diff_total", "reference_diff", "reference_identical_total")
-        }
-    };
-    vec![
-        ("reads_compared".to_string(), s.reads_compared),
-        (total_label.to_string(), diff_total),
-        (both_label.to_string(), diff_both),
-        ("diff_aln_only_A".to_string(), s.aligned_only_a),
-        ("diff_aln_only_B".to_string(), s.aligned_only_b),
-        (identical_label.to_string(), s.query_identical),
-        ("aligned_neither".to_string(), s.aligned_neither),
-    ]
 }
 
 fn write_region_table(
@@ -564,47 +567,4 @@ fn write_region_table(
     }
     w.flush()?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Build a column accessor that returns `juncs` for the `junctions` column and
-    /// "" otherwise — enough to exercise `junctions_identical`.
-    fn getter(juncs: &'static str) -> impl Fn(&str) -> &'static str {
-        move |c| if c == "junctions" { juncs } else { "" }
-    }
-
-    #[test]
-    fn junctions_identical_empty_equals_empty() {
-        // Both reads unspliced → junction sets both empty → identical.
-        assert!(junctions_identical(&getter("()"), &getter("()")));
-    }
-
-    #[test]
-    fn junctions_identical_same_set() {
-        assert!(junctions_identical(&getter("(10, 20)"), &getter("(10, 20)")));
-    }
-
-    #[test]
-    fn junctions_identical_ignores_order() {
-        // Set semantics: order does not matter.
-        assert!(junctions_identical(&getter("(10, 20)"), &getter("(20, 10)")));
-    }
-
-    #[test]
-    fn junctions_identical_disjoint_is_different() {
-        assert!(!junctions_identical(&getter("(10,)"), &getter("(20,)")));
-    }
-
-    #[test]
-    fn junctions_identical_one_side_empty_is_different() {
-        assert!(!junctions_identical(&getter("(10,)"), &getter("()")));
-    }
-
-    #[test]
-    fn junctions_identical_subset_is_different() {
-        assert!(!junctions_identical(&getter("(10, 20)"), &getter("(10,)")));
-    }
 }

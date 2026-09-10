@@ -46,6 +46,8 @@ A static Linux (musl) build for HPC is described in the
 Compare the two bundled test PAFs (the same `GRCh38-Gencode-Chr22` transcripts aligned with
 differing minimap2 paramters. (`--x splice` vs `--x splice:hq`). This test dataset includes all GENCODE reference transcripts from human chromosome 22 aligned with different `minimap2` alignment parameters. The set of sequenced aligned (ReadIDs) are identical between the two PAF files.
 
+### Step 1: Use `maligno compare` to generate detailed comparisons of each sequence's alignment across the two input alignment files
+
 ```bash
 maligno compare \
   -a test_data/Splice.AlnToHG38.PriAln.paf.gz   --label-a Splice \
@@ -53,50 +55,58 @@ maligno compare \
   -o results/ --prefix Splice_vs_SpliceHQ
 ```
 
-This writes a results directory with the per-set tables and the comparison table:
+This writes a results directory with the per-set tables, the comparison table,
+and — by default — the differing reads and the genomic regions where they
+cluster (`find-aln-diff`'s default-mode output, computed in the same pass; see
+Step 2):
 
 ```
-results/Splice_vs_SpliceHQ.Splice.alninfo.tsv.gz     results/Splice_vs_SpliceHQ.SpliceHQ.alninfo.tsv.gz
-results/Splice_vs_SpliceHQ.Splice.readinfo.tsv.gz    results/Splice_vs_SpliceHQ.SpliceHQ.readinfo.tsv.gz
-results/Splice_vs_SpliceHQ.compare.tsv.gz            results/Splice_vs_SpliceHQ.compare.parquet
+results/Splice_vs_SpliceHQ.Splice.alninfo.tsv.gz
+results/Splice_vs_SpliceHQ.SpliceHQ.alninfo.tsv.gz
+results/Splice_vs_SpliceHQ.Splice.readinfo.tsv.gz
+results/Splice_vs_SpliceHQ.SpliceHQ.readinfo.tsv.gz
+results/Splice_vs_SpliceHQ.compare.tsv.gz
+results/Splice_vs_SpliceHQ.compare.parquet
 results/Splice_vs_SpliceHQ.compare.summary.tsv
+results/Splice_vs_SpliceHQ.query_diff_reads.tsv.gz
+results/Splice_vs_SpliceHQ.query_diff_regions.A.bed.gz
+results/Splice_vs_SpliceHQ.query_diff_regions.B.bed.gz
 ```
 
-Then, to find the reads that align differently and where they cluster on the
-genome, run **`find-aln-diff`** on that table:
+### Step 2: Use `maligno find-aln-diff` for reference-space or junctions-only differences
+
+Step 1 already found the reads that align differently in query space (the
+default, and most common, comparison mode) — no separate command needed for
+that. Run **`find-aln-diff`** standalone only when you need a different
+`--space`/`--compare-by` combination (e.g. reference-space differences, or
+differences restricted to the splice-junction set), or want to regenerate the
+diff outputs from an existing comparison table without re-running `compare`:
 
 ```bash
 maligno find-aln-diff \
   -i results/Splice_vs_SpliceHQ.compare.tsv.gz \
+  --space reference \
   --outdir results/ --prefix Splice_vs_SpliceHQ
 ```
-
-These are two commands on purpose (since v0.17.0). `compare` used to run
-`find-aln-diff` itself, which meant re-reading the whole table it had just
-written — a second pass for outputs you may not want. Splitting them also lets you
-re-run `find-aln-diff` with different options (e.g. `--space reference`,
-`--compare-by junctions`) without redoing the comparison.
-
-All inputs/outputs transparently support gzip (`.gz`) and stdin/stdout (`-`) —
-except `compare`'s `-a`/`-b`, which require real file paths (no stdin), since
-`compare` always needs two independent inputs.
 
 ---
 
 ## The `compare` command
 
-`compare` runs the whole pipeline in three main steps:
+`compare` runs the whole pipeline in four main steps:
 
-1. **Sort** both PAFs by `Query_Name` 
+1. **Sort** both PAFs by `Query_Name`.
 2. **Verify** both PAFs carry the **same read-ID set**. By default it **errors**
    if they differ, reporting how many IDs are shared / only in A / only in B.
-3. **Compare** the representative alignment for each readID between sets A and B.
-For each read to be compared, the following is done.
-  - Select representative alignment for each read (in cases where a read has multiple alignments reported)
-    - The best alignment per read is selected by the following alignment scores: `ms` tag, `AS` tag, alignment `MQ`), 
-  - The selected alignments for each read are then systematically compared and results are written to a final "compare.tsv" that keep track of each alignments info and differences between them.
+3. **Select representative alignment for each readID within each read set (A and B)** —
+   in cases where a read has multiple alignments reported, the best alignment is
+   chosen by alignment score: `ms` tag, then `AS` tag, then alignment `MQ`.
+4. **Compare the representative alignment across sets A and B** — the selected
+   alignments for each read are systematically compared and the results are
+   written to a final `compare.tsv` that keeps track of each alignment's info
+   and the differences between them.
 
-
+### Options
 
 | Flag | Purpose |
 |------|---------|
@@ -111,6 +121,7 @@ For each read to be compared, the following is done.
 | `--format` | which serialization(s) of the comparison table: `tsv`, `parquet`, or `both` (default) |
 | `--no-alninfo`, `--no-readinfo` | skip writing those per-set tables |
 | `--keep-sorted-paf` | keep the intermediate sorted PAFs |
+| `--skip-find-aln-diff` | don't also emit `find-aln-diff`'s default-mode output (differing reads + region tables) |
 
 
 ---
@@ -126,167 +137,89 @@ A `compare` run writes, under `--outdir`, files prefixed with `--prefix`:
 | `{prefix}.compare.tsv.gz` | 96 | the **comparison** table (unless `--format parquet`) |
 | `{prefix}.compare.parquet` | 96 | the same table as Parquet (unless `--format tsv`) |
 | `{prefix}.compare.summary.tsv` | 2 | **aggregate summary statistics** (see below) |
-
-### Choosing a format
-
-`--format` selects how the comparison table is serialized. Both carry the same 96
-columns with the same names, in the same order.
-
-| | `tsv.gz` | `parquet` | |
-|---|---|---|---|
-| Read 16 of 96 columns¹ | 2.01 s | **0.55 s** | 3.6× |
-| Read all 96 columns¹ | 3.97 s | **2.31 s** | 1.7× |
-| Count rows where query junctions differ¹ | 0.85 s | **0.02 s** | 48× |
-| Write² | 10.8 s | **4.5 s** | 2.4× |
-| Size² | **64.4 MB** | 86.3 MB | |
-| Peak RSS while writing² | **35 MB** | 306 MB | |
-| Inspect with `zcat \| head` | yes | no — use `duckdb`, `polars`, `pandas` | |
-| Readable by `compare-pipeline summary` / `find-aln-diff` | yes | yes | |
-
-¹ DuckDB 1.5.5 on the 507,365-transcript GENCODE Splice-vs-SpliceHQ comparison, best
-of three, with DuckDB's **default** CSV sampling. Passing `sample_size=-1` forces a
-full-file type-inference scan before any row is read and makes the TSV side look
-2–4× worse than it is — a cost neither maligno nor a normal reader pays.
-² measured with maligno itself on the same data (`compare-pipeline merge-readinfo`, one format).
-
-Parquet is typed and column-pruned, so reading a few columns skips the rest of the
-file entirely — worth **1.7–48×** depending on how many of the 96 columns you touch:
-a two-column aggregate barely reads anything, a full scan gains little. It is *also*
-faster to write, because zstd beats gzip here and the Parquet path does not format
-numbers to text or escape 66 fields per row. The costs are ~31% more disk (six
-long-string columns dominate this table, and gzip compresses across the whole row
-stream where Parquet compresses each column alone) and more memory while writing.
-
-The default is `both` for backward compatibility — existing scripts expect the
-gzipped TSV. `find-aln-diff` and `compare-pipeline summary` can read either
-format (`--input-format`), so `--format parquet` alone works fine with both of
-them.
-
-In Python:
-
-```python
-import pandas as pd
-df = pd.read_parquet("results/AvsB.compare.parquet")           # all 96 columns, typed
-df = pd.read_parquet("results/AvsB.compare.parquet",
-                     columns=["Read_Name", "junctions_A", "junctions_B"])   # or a few
-```
-
-Nulls mean **undefined**, not zero: an unmapped side has a null `cs` and a null
-`seqid_Max`, and a ratio over a zero denominator is null. Values that mean something
-are kept — `TargetChr` stays `*` for unmapped, an empty junction set stays `()`, and
-a real zero stays `0`.
+| `{prefix}.query_diff_reads.tsv.gz` | 10 | differing reads (default `find-aln-diff` mode — see below; unless `--skip-find-aln-diff`) |
+| `{prefix}.query_diff_regions.{A,B}.bed.gz` | 8 | genomic regions where differing reads cluster, per set (unless `--skip-find-aln-diff`) |
 
 ### The comparison table
 
-One row per read, 96 columns, organized in column groups (left to right):
+One row per read, 96 columns: the representative alignment's stats for set A and
+for set B (suffixed `_A` / `_B`), plus a block of columns comparing how those two
+alignments differ (score, coverage, indels, soft-clipping, and junction agreement
+in both query and genomic space).
 
-| Group | Cols | What it holds |
-|-------|:----:|---------------|
-| **Join keys** | 1–2 | `Read_Name`, `Read_Len` |
-| **Set labels** | 3–4 | `Label_A`, `Label_B` — the `--label-a` / `--label-b` values, repeated on every row |
-| **Per-side data — A** | 5–35 | the best alignment's stats for set A, each column suffixed `_A` |
-| **Per-side data — B** | 36–66 | the same columns for set B, suffixed `_B` |
-| **Comparison metrics** | 67–92 | A-vs-B differences/ratios: `Strand_Match`, `seqid_Diff`, coverage/length diffs, score diffs (`AS_Diff`, `ms_Diff`, …), indel/soft-clip diffs, and junction-set counts in both query and genomic space |
-| **Non-overlap objects** | 93–96 | the actual junctions that failed to overlap: `Junctions_OnlyA/B` and `Genomic_Junctions_OnlyA/B` |
-
-Within each per-side block the columns are grouped by topic — locus and span,
-alignment selection and score, identity and coverage, junction counts, cs-derived
-event counts, then the three long strings (`junctions`, `genomic_junctions`, `cs`)
-last. Inspect the exact layout of any table with
-`gzip -dc … | head -1 | tr '\t' '\n' | nl`.
-
-Per-side columns always use the **fixed** `_A` / `_B` suffixes — never the
-dataset label — so column names are identical for every comparison and stay
-unambiguous even when a label itself contains an underscore. Which dataset each
-side *is* comes from the `Label_A` / `Label_B` columns, carried on every row so
-that any row subset of the table remains self-describing.
-
-**Junctions are compared as sets** of coordinates, deduplicated per side, in two
-coordinate systems:
-
-- **Query coordinates** — `N_Matched_Junctions`, `N_Unmatched_Junctions`,
-  `N_Junctions_OnlyA`, `N_Junctions_OnlyB`.
-- **Genomic coordinates** — the parallel `Genomic_N_*` columns (always emitted;
-  computed only when both sides map to the same reference). `chrom` is tracked via
-  the per-side `TargetChr_A` / `TargetChr_B` column, so junctions on different
-  contigs never falsely match.
-
-The `junctions` / `genomic_junctions` columns (and the trailing `*_OnlyA/B`
-object lists) use a Python tuple-of-tuples format — parse them in Python with
-`ast.literal_eval`.
-
-For the **exhaustive column-by-column dictionary**, the genomic-junction format
-details, and schema-migration notes, see the [reference](docs/REFERENCE.md#compare-pipeline-merge-readinfo-and-the-comparison-core).
+For the full column-by-column layout and dictionary, junction/format details, and
+schema-migration notes, see [`docs/COMPARE_TABLE.md`](docs/COMPARE_TABLE.md).
 
 ### Summary statistics
 
 Alongside the comparison table, `compare` writes a small `…summary.tsv` with
 predefined aggregate counts (tallied as rows stream, so memory stays constant).
-The headline is the **per-read alignment status**, followed by **identity** stats:
+This is the **same schema** written by `compare-pipeline summary` and by
+standalone `find-aln-diff`'s own summary output (see below) — one set of
+category names shared across all three. The headline is the **per-read
+alignment status**, followed by **identity** stats:
 
 | Category | Meaning |
 |----------|---------|
 | `label_A` / `label_B` | which dataset each side is (the `--label-a` / `--label-b` values), so the summary is self-describing |
 | `aligned_both` / `aligned_only_A` / `aligned_only_B` / `aligned_neither` | how the read's representative alignment maps in each set (an unmapped side is `TargetChr == "*"`) |
-| `query_identical` | both sides mapped over the same query span with the **same alignment relative to the read** (identical `cs`, motif-blind — intron donor/acceptor letters are ignored, so a differently-reported motif at the same intron position/length doesn't count as a difference). Split into `…_same_strand` and `…_revcomp` (an inverted, opposite-strand match — `cs_A == reverse_complement(cs_B)`) |
-| `ref_same_position_same_aln` | reference-identical: same `TargetChr` + `Strand` + `Target_Start` (same genomic position) **and** same `cs` (motif-blind) |
-| `ref_same_position_diff_aln` | same position, different alignment (e.g. a different indel placement at the same site) |
-| `ref_diff_position_same_aln` | same alignment, different position — the alignment was relocated |
-| `ref_diff_position_diff_aln` | both position and alignment differ |
-| `present_only_in_A_by_id` / `present_only_in_B_by_id` | reads found in only one set's PAF (0 unless `--allow-id-mismatch`) |
+| `query_identical` / `query_not_identical` | both sides mapped over the same query span with the **same alignment relative to the read** (identical `cs` tag operations), and its complement among `aligned_both` reads |
+| `query_junctions_identical` / `query_junctions_not_identical` | same, but comparing only the **query-space splice-junction set** — a looser criterion than `query_identical` (ignores mismatches/indels/soft-clips) |
+| `ref_same_position_same_aln` | reference-identical: same `TargetChr` + `Strand` + `Target_Start` (same genomic position) **and** same `cs` |
+| `ref_same_position_diff_aln` | same reference position, different alignment (e.g. a different indel placement at the same site) |
+| `ref_diff_position_same_aln` | same alignment, different reference position |
+| `ref_diff_position_diff_aln` | both reference position and alignment differ |
+| `ref_same_position_same_junctions` / `ref_same_position_diff_junctions` | among same-position reads, whether the **genomic-coordinate splice-junction set** also matches |
+| `present_only_in_A_by_id` / `present_only_in_B_by_id` | sequences found in only one set's PAF (will be 0 unless `--allow-id-mismatch` is used) |
 
-To get the same summary from an existing comparison table (e.g. from the manual
-`compare-pipeline paf2tables` → `compare-pipeline merge-readinfo` workflow), use
+To get the same summary from an existing comparison table, use
 **`compare-pipeline summary`**:
 
 ```bash
 maligno compare-pipeline summary -i AvsB.compare.tsv.gz -o AvsB.compare.summary.tsv
 ```
 
-Columns are resolved by name, so column order in the input does not matter.
 Full definitions are in the [reference](docs/REFERENCE.md#compare-pipeline-merge-readinfo-and-the-comparison-core).
 
-### Differing reads & regions
+### Finding reads with differing alignments (`maligno find-aln-diff`)
 
-**`find-aln-diff`** is a separate command that reads a comparison table and finds
-every read whose alignment differs between A and B — in query space (default) or
-reference space (`--space reference`) — then reports where those reads cluster
-on the genome:
+**`find-aln-diff`** reads a comparison table and finds every read whose
+alignment differs between A and B, then reports where those reads cluster on
+the genome.
+
+`compare` already runs this **by default**, at its default settings
+(`--space query --compare-by all`), in the same pass that builds the
+comparison table — see [Step 2](#step-2-use-maligno-find-aln-diff-for-reference-space-or-junctions-only-differences)
+above (`--skip-find-aln-diff` opts out). Run `find-aln-diff` standalone when
+you need a different `--space`/`--compare-by` combination, or want to
+regenerate these outputs from an existing comparison table without
+re-running `compare`.
+
+`--space` selects the coordinate space: `query` (default) compares each side's
+alignment relative to the read; `reference` compares each side's placement on
+the reference genome instead — only meaningful when both input alignment sets
+were aligned to the same reference genome.
 
 ```bash
 maligno find-aln-diff -i results/AvsB.compare.tsv.gz \
   --outdir results/ --prefix AvsB
 ```
 
-Outputs (gzipped by default; `--no-gzip` to opt out): `{prefix}.query_diff_reads.tsv.gz`
-— one row per differing read: `Read_Name`, `outcome` (category — `diff_aln_to_both` /
-`diff_aln_only_A` / `diff_aln_only_B`), plus 8 classification booleans (`1`/`0`) computed
-the same way regardless of `--space`/`--compare-by` — `query_identical_same_strand`,
-`query_identical_revcomp`, `query_junctions_identical`, `ref_same_position_same_aln`,
-`ref_same_position_diff_aln`, `ref_diff_position_same_aln`, `ref_diff_position_diff_aln`,
-`ref_same_position_same_junctions`. So a single run can show, e.g., a read that's
-query-different but reference-identical, without a second run in the other `--space`.
-Also written: a merged, `bedtools merge`-style region table per side
-(`{prefix}.query_diff_regions.{A,B}.bed.gz` — `chrom, start, end, n_reads, n_both,
-n_only_A`/`n_only_B`, `n_plus, n_minus`), and a category-tally `{prefix}.query_diff_summary.tsv`.
+#### Outputs of `maligno find-aln-diff`:
 
-Useful options: `--no-gzip`, `--space`, and `--compare-by` below.
+| File | Contents |
+|------|----------|
+| `{prefix}.query_diff_reads.tsv.gz` | one row per differing read: `Read_Name`, `outcome` (category — `diff_aln_to_both` / `diff_aln_only_A` / `diff_aln_only_B`), plus 8 classification booleans (`1`/`0`) |
+| `{prefix}.query_diff_regions.{A,B}.bed.gz` | Tables (BED format) of all regions with differing alignments. A table is generate for each alignment set (A and B). The columns are `chrom, start, end, n_reads, n_both, n_only_A/n_only_B, n_plus, n_minus` |
+| `{prefix}.query_diff_summary.tsv` | the **same summary schema** as `compare.summary.tsv` (see [Summary statistics](#summary-statistics) above), with `space`/`compare_by` provenance rows prepended — its counters are mode-independent; only which reads land in the other two files above is mode-dependent |
 
-**`--space`** selects the coordinate space a difference is judged in: `query`
-(default, shown above) compares each side's alignment relative to the read;
-`reference` compares each side's placement on the reference genome instead
-(same `TargetChr`/`Strand`/`Target_Start` and same `cs` — strict, with no
-reverse-complement accommodation). Output filenames swap `query_diff`/
-`query_identical` for `reference_diff`/`reference_identical` accordingly. Full
-definitions are in the [reference](docs/REFERENCE.md#differing-reads--regions-find-aln-diff).
+The 8 classification booleans in `query_diff_reads.tsv.gz` are: `query_identical_same_strand`, `query_identical_revcomp`, `query_junctions_identical`, `ref_same_position_same_aln`, `ref_same_position_diff_aln`, `ref_diff_position_same_aln`, `ref_diff_position_diff_aln`, `ref_same_position_same_junctions` — so a single run can show, e.g., a read that's query-different but reference-identical, without a second run in the other `--space`.
 
-**`--compare-by`** selects what counts as a difference between the two sets:
 
-- `all` (default) — compare the full `cs` tag, motif-blind (intron donor/acceptor
-  letters ignored, since some aligners such as STAR report `nn` placeholders
-  instead of the true motif for an otherwise-identical intron), so any other
-  mismatch, indel, soft-clip, or junction-position difference flags the read. This
-  is the definition used above and by `compare`'s built-in invocation.
+
+**`--compare-by`** selects what counts as a difference in alignment between the two sets:
+
+- `all` (default) — compare the full `cs` tag operations. 
 - `junctions` — compare only the **query-space splice-junction set**; reads with
   identical junctions but differing mismatches/indels/soft-clips count as the
   **same**. Reads aligned in only one set are still reported (they have no
@@ -296,11 +229,6 @@ definitions are in the [reference](docs/REFERENCE.md#differing-reads--regions-fi
   junctions-different read set is always a subset of the `all`-different set.
   `--compare-by` is a standalone-only option — `compare` always uses `all`.
 
-Add **`--emit-identical-reads`** to also write `{prefix}.query_identical_reads.tsv.gz`
-— same shape as the diff-reads file (`Read_Name`, `category`, and the same 8
-classification booleans) but for the complementary, identical read set. Off by
-default; not used by `compare`'s built-in invocation.
-
 ---
 
 ## Test data
@@ -308,7 +236,7 @@ default; not used by `compare`'s built-in invocation.
 `test_data/` holds two Chr22-scale PAFs (~0.5 MB each) — the same 11,578
 transcripts aligned with minimap2 `--x splice` vs `--x splice:hq`.
 
-Run from the repo root; outputs go to `test_data/test_results/` (gitignored):
+If run from the repo root, the outputs will go to `test_data/test_results/`:
 
 ```bash
 # Full comparison (sort → verify read-IDs → per-set tables + comparison table).
@@ -320,12 +248,13 @@ maligno compare \
 # Inspect a comparison header (column number → name).
 zcat < test_data/test_results/Splice_vs_SpliceHQ.compare.tsv.gz | head -1 | tr '\t' '\n' | nl
 
-# Sanity-check column counts (expect 35, 33, 96).
+# Sanity-check column counts (expect 35, 33, 96, plus 10 for the default
+# query_diff_reads.tsv.gz — unless --skip-find-aln-diff was passed).
 for f in test_data/test_results/Splice_vs_SpliceHQ.*.tsv.gz; do
   printf '%s\t' "$f"; zcat < "$f" | awk -F'\t' '{print NF}' | sort -u | paste -sd, -
 done
 
-# Count reads whose query-coordinate junctions don't all agree between the two sets.
+# Count reads whose query-coordinate junctions don't exactly agree between the two sets.
 zcat < test_data/test_results/Splice_vs_SpliceHQ.compare.tsv.gz \
   | awk -F'\t' 'NR==1{for(i=1;i<=NF;i++)c[$i]=i;next} $c["N_Unmatched_Junctions"]>0' | wc -l
 ```
@@ -333,6 +262,9 @@ zcat < test_data/test_results/Splice_vs_SpliceHQ.compare.tsv.gz \
 ---
 
 ## Extended documentation
+
+The comparison table's column-by-column format lives in
+**[`docs/COMPARE_TABLE.md`](docs/COMPARE_TABLE.md)**.
 
 The full manual lives in **[`docs/REFERENCE.md`](docs/REFERENCE.md)**:
 

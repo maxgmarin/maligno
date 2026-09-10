@@ -18,6 +18,14 @@
 //! and the side outputs are byte-identical to `compare-pipeline paf2tables` on
 //! the sorted PAFs.
 //!
+//! By default the same pass also drives `find-aln-diff`'s core (via
+//! `find_query_diff::AlnDiffAccumulator`) at its default settings (`--space
+//! query --compare-by all`), so `compare` additionally emits the differing
+//! reads + region tables without a second read of its own output table —
+//! byte-identical to running standalone `find-aln-diff` against the emitted
+//! comparison table. `--skip-find-aln-diff` opts out; other `--space`/
+//! `--compare-by` combinations still require the standalone command.
+//!
 //! Precondition (documented, not enforced): a `Query_Name` uniquely identifies a
 //! single read/sequence — so sorting by name alone (no `Read_Len` secondary key)
 //! is sufficient for the downstream `(Read_Name, Read_Len)` merge-join.
@@ -34,6 +42,7 @@ use crate::comparison_row::{write_compare_header, ComparisonRow};
 use crate::parquet_out::{ComparisonParquetWriter, OutputFormat};
 use crate::compare_summary::{classify, CompareSummary};
 use crate::external_sort::{parse_mem, read_id_set_check, sort_paf_to_file};
+use crate::find_query_diff::{AlnDiffAccumulator, AlnDiffStats, CompareBy, DiffSpace};
 use crate::io_utils::{open_input, open_output};
 use crate::paf_groups::PafGroups;
 use crate::readinfo::{collapse_group, ReadInfoRow, READINFO_HEADER};
@@ -116,6 +125,16 @@ pub struct CompareArgs {
     /// Keep the intermediate sorted PAFs instead of deleting them at the end.
     #[arg(long = "keep-sorted-paf")]
     keep_sorted_paf: bool,
+
+    /// Do not also emit `find-aln-diff`'s default-mode outputs (differing
+    /// reads + genomic region tables). By default `compare` computes these
+    /// inline, in the same pass, at `find-aln-diff`'s default settings
+    /// (`--space query --compare-by all`); pass this flag to restore
+    /// `compare`'s pre-fusion output set. For other `--space`/`--compare-by`
+    /// combinations, run `find-aln-diff` standalone against the emitted
+    /// comparison table.
+    #[arg(long = "skip-find-aln-diff")]
+    skip_find_aln_diff: bool,
 }
 
 pub fn run(args: &CompareArgs) -> Result<()> {
@@ -156,6 +175,13 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         .writes_parquet()
         .then(|| path(format!("{}.compare.parquet", args.prefix)));
     let summary_out = path(format!("{}.compare.summary.tsv", args.prefix));
+    // `find-aln-diff`'s default-mode (`--space query --compare-by all`) output
+    // paths, fused into this same pass unless `--skip-find-aln-diff`. Same
+    // naming convention as standalone `find-aln-diff`'s default run, so a
+    // later standalone re-run against this table never collides.
+    let diff_reads_out = path(format!("{}.query_diff_reads.tsv.gz", args.prefix));
+    let diff_regions_a_out = path(format!("{}.query_diff_regions.A.bed.gz", args.prefix));
+    let diff_regions_b_out = path(format!("{}.query_diff_regions.B.bed.gz", args.prefix));
 
     // Inputs fed to the compare pass: the freshly sorted temp files by default,
     // or the user's PAFs directly under --presorted (no sort, no set-check).
@@ -225,7 +251,12 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         );
     }
     let mut summary = CompareSummary::default();
-    let counts = compare_sorted_pafs(
+    let diff_acc = if args.skip_find_aln_diff {
+        None
+    } else {
+        Some(AlnDiffAccumulator::new(&diff_reads_out, DiffSpace::Query, CompareBy::All)?)
+    };
+    let result = compare_sorted_pafs(
         &a_in,
         &b_in,
         &args.label_a,
@@ -238,37 +269,50 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         compare_parquet.as_deref(),
         args.allow_id_mismatch,
         &mut summary,
+        diff_acc,
+        &diff_regions_a_out,
+        &diff_regions_b_out,
+        &describe_outputs(&compare_tsv, &compare_parquet),
     );
-    if let Err(e) = counts {
-        // The compare pass can fail partway (e.g. --presorted inputs that are
-        // not actually in the same order), having already written part of the
-        // output. Remove the partial artifacts so the failure leaves nothing
-        // half-written, then surface the error (with a hint under --presorted).
-        for p in [compare_tsv.as_deref(), compare_parquet.as_deref()].into_iter().flatten() {
-            let _ = fs::remove_file(p);
+    let (counts, diff_stats) = match result {
+        Ok(v) => v,
+        Err(e) => {
+            // The compare pass can fail partway (e.g. --presorted inputs that are
+            // not actually in the same order), having already written part of the
+            // output. Remove the partial artifacts so the failure leaves nothing
+            // half-written, then surface the error (with a hint under --presorted).
+            for p in [compare_tsv.as_deref(), compare_parquet.as_deref()].into_iter().flatten() {
+                let _ = fs::remove_file(p);
+            }
+            if !args.no_alninfo {
+                let _ = fs::remove_file(&a_alninfo);
+                let _ = fs::remove_file(&b_alninfo);
+            }
+            if !args.no_readinfo {
+                let _ = fs::remove_file(&a_readinfo);
+                let _ = fs::remove_file(&b_readinfo);
+            }
+            if !args.skip_find_aln_diff {
+                let _ = fs::remove_file(&diff_reads_out);
+                let _ = fs::remove_file(&diff_regions_a_out);
+                let _ = fs::remove_file(&diff_regions_b_out);
+            }
+            if !args.presorted && !args.keep_sorted_paf {
+                let _ = fs::remove_file(&a_sorted);
+                let _ = fs::remove_file(&b_sorted);
+            }
+            return if args.presorted {
+                Err(e).context(
+                    "--presorted requires both PAFs to contain the same reads in the \
+                     same order (grouped by Query_Name); omit --presorted to sort them \
+                     automatically",
+                )
+            } else {
+                Err(e)
+            };
         }
-        if !args.no_alninfo {
-            let _ = fs::remove_file(&a_alninfo);
-            let _ = fs::remove_file(&b_alninfo);
-        }
-        if !args.no_readinfo {
-            let _ = fs::remove_file(&a_readinfo);
-            let _ = fs::remove_file(&b_readinfo);
-        }
-        if !args.presorted && !args.keep_sorted_paf {
-            let _ = fs::remove_file(&a_sorted);
-            let _ = fs::remove_file(&b_sorted);
-        }
-        return if args.presorted {
-            Err(e).context(
-                "--presorted requires both PAFs to contain the same reads in the \
-                 same order (grouped by Query_Name); omit --presorted to sort them \
-                 automatically",
-            )
-        } else {
-            Err(e)
-        };
-    }
+    };
+    let _ = counts;
 
     // ── cleanup + summary ─────────────────────────────────────────────────────
     if !args.presorted && !args.keep_sorted_paf {
@@ -276,8 +320,8 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         let _ = fs::remove_file(&b_sorted);
     }
     // Aggregate summary statistics → sidecar TSV + stderr block.
-    summary.write_tsv(&summary_out, &args.label_a, &args.label_b)?;
-    summary.render_stderr(&args.label_a, &args.label_b);
+    summary.write_tsv(&summary_out, &args.label_a, &args.label_b, &[])?;
+    summary.render_stderr(&args.label_a, &args.label_b, &[]);
     eprintln!("Outputs in {}:", args.outdir);
     if !args.no_alninfo {
         eprintln!("  {a_alninfo}");
@@ -291,21 +335,45 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         eprintln!("  {p}");
     }
     eprintln!("  {summary_out}");
+    if let Some(stats) = &diff_stats {
+        eprintln!("  {diff_reads_out}");
+        eprintln!("  {diff_regions_a_out}");
+        eprintln!("  {diff_regions_b_out}");
+        eprintln!(
+            "  ({} differing reads found (space=query, compare-by=all); \
+             see compare.summary.tsv for the full tally)",
+            stats.n_diff_rows
+        );
+        if stats.n_bad_interval > 0 {
+            eprintln!(
+                "  ({} intervals skipped: unparseable or degenerate coordinates)",
+                stats.n_bad_interval
+            );
+        }
+    }
     if args.keep_sorted_paf {
         eprintln!("  {a_sorted}");
         eprintln!("  {b_sorted}");
     }
 
-    // Point at the companion command rather than running it. Until v0.17.0 `compare`
-    // invoked find-aln-diff itself, which meant re-reading the table it had just
-    // written — a second full pass for outputs the caller may not want.
+    // The fused default (space=query, compare-by=all) output above covers the
+    // most common case; point at the standalone command for the modes it
+    // doesn't cover (or, under --skip-find-aln-diff, for that default mode too).
     if let Some(tsv) = &compare_tsv {
         eprintln!();
-        eprintln!("For the differing reads and the genomic regions where they cluster:");
-        eprintln!(
-            "  maligno find-aln-diff -i {tsv} --outdir {} --prefix {}",
-            args.outdir, args.prefix
-        );
+        if args.skip_find_aln_diff {
+            eprintln!("For the differing reads and the genomic regions where they cluster:");
+            eprintln!(
+                "  maligno find-aln-diff -i {tsv} --outdir {} --prefix {}",
+                args.outdir, args.prefix
+            );
+        } else {
+            eprintln!("For reference-space or junctions-based differences, run standalone:");
+            eprintln!(
+                "  maligno find-aln-diff -i {tsv} --space reference --outdir {} --prefix {}",
+                args.outdir, args.prefix
+            );
+        }
     }
 
     Ok(())
@@ -354,7 +422,10 @@ fn pull<R: BufRead>(
 
 /// The fused pass: lock-step over the two sorted PAFs. Writes the comparison
 /// table to `compare_out`, and (when the corresponding path is `Some`) the
-/// per-set alninfo / readinfo tables. Returns (matched, a_only, b_only).
+/// per-set alninfo / readinfo tables. When `diff_acc` is `Some`, also drives
+/// `find-aln-diff`'s default-mode core inline (differing reads + region
+/// tables at `regions_a_out`/`regions_b_out`) — no re-read of the just-written
+/// comparison table. Returns ((matched, a_only, b_only), diff stats if run).
 #[allow(clippy::too_many_arguments)]
 fn compare_sorted_pafs(
     a_sorted: &str,
@@ -369,7 +440,11 @@ fn compare_sorted_pafs(
     parquet_out: Option<&str>,
     allow_id_mismatch: bool,
     summary: &mut CompareSummary,
-) -> Result<(u64, u64, u64)> {
+    mut diff_acc: Option<AlnDiffAccumulator>,
+    regions_a_out: &str,
+    regions_b_out: &str,
+    diff_source_desc: &str,
+) -> Result<((u64, u64, u64), Option<AlnDiffStats>)> {
     // Comparison TSV + header. When the TSV is not requested the rows go to
     // `io::sink()`, the same way suppressed alninfo/readinfo outputs do, so no
     // empty file is created and `run_merge` needs no extra plumbing.
@@ -430,7 +505,13 @@ fn compare_sorted_pafs(
         label_a,
         label_b,
         summary,
+        &mut diff_acc,
     )?;
+
+    let diff_stats = match diff_acc {
+        Some(acc) => Some(acc.finish(regions_a_out, regions_b_out, label_a, label_b, diff_source_desc)?),
+        None => None,
+    };
 
     if let Some(pq) = parquet {
         pq.finish()?;
@@ -441,7 +522,7 @@ fn compare_sorted_pafs(
     ri_b.flush()?;
     al_a.flush()?;
     al_b.flush()?;
-    Ok(counts)
+    Ok((counts, diff_stats))
 }
 
 /// The lock-step merge of two sorted PAFs. Each `Box<dyn Write>` is borrowed only
@@ -462,6 +543,7 @@ fn run_merge<R: BufRead>(
     label_a: &str,
     label_b: &str,
     summary: &mut CompareSummary,
+    diff_acc: &mut Option<AlnDiffAccumulator>,
 ) -> Result<(u64, u64, u64)> {
     let mut pending_a = pull(groups_a, al_a, ri_a)?;
     let mut pending_b = pull(groups_b, al_b, ri_b)?;
@@ -515,11 +597,16 @@ fn run_merge<R: BufRead>(
                     let map_b: HashMap<&str, &str> =
                         header_cols.iter().copied().zip(line_b.split('\t')).collect();
 
-                    // One pair of accessor closures, shared by the summary classifier
-                    // and the row emitter (closures are Copy — they capture &map_*).
+                    // One pair of accessor closures, shared by the summary classifier,
+                    // the row emitter, and (when active) the fused find-aln-diff core
+                    // (closures are Copy — they capture &map_*).
                     let get_a = |c: &str| *map_a.get(c).unwrap_or(&"");
                     let get_b = |c: &str| *map_b.get(c).unwrap_or(&"");
-                    summary.observe(&classify(&get_a, &get_b));
+                    let base = classify(&get_a, &get_b);
+                    summary.observe(&base);
+                    if let Some(acc) = diff_acc.as_mut() {
+                        acc.observe_row(&ra.read_name, get_a, get_b, &base)?;
+                    }
 
                     // One construction, both writers — so the TSV and the Parquet
                     // can never disagree about a row.

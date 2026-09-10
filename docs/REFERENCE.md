@@ -48,7 +48,7 @@ maligno compare-pipeline merge-readinfo -a A.readinfo.tsv.gz -b B.readinfo.tsv.g
 
 | Subcommand    | Input                              | Output                                  |
 |---------------|------------------------------------|-----------------------------------------|
-| **`compare`** | two PAFs (`-a`, `-b`; file paths only, no stdin) | **a results directory** (`--outdir`/`--prefix`): per-set alninfo + readinfo for A and B, plus the comparison TSV — **the primary entry point**. Sorts inputs and verifies read-ID sets match. Emits the single 96-column comparison table as TSV, Parquet or both (`--format`) |
+| **`compare`** | two PAFs (`-a`, `-b`; file paths only, no stdin) | **a results directory** (`--outdir`/`--prefix`): per-set alninfo + readinfo for A and B, the comparison TSV, and (by default) `find-aln-diff`'s default-mode differing-reads + region tables — **the primary entry point**. Sorts inputs and verifies read-ID sets match. Emits the single 96-column comparison table as TSV, Parquet or both (`--format`); `--skip-find-aln-diff` opts out of the fused diff output |
 | `compare-pipeline paf2tables`  | PAF (`-i`, `.gz`/`-` ok)           | **alninfo TSV** (`--alninfo`, 35 cols) and/or **readinfo TSV** (`--readinfo`, 33 cols), in one pass |
 | `compare-pipeline merge-readinfo` | two readinfo TSVs (`-a`, `-b`) | per-read comparison table (`-o`, 96 cols); the same table `compare` writes. Writes Parquet when `-o` ends in `.parquet`, TSV otherwise |
 | `sam2paf`     | SAM file or stdin (`-`)            | PAF written to stdout                   |
@@ -145,11 +145,18 @@ What it does, in order:
    shared intersection instead.
 3. In a **single in-memory pass**, collapses both sorted PAFs in lock-step and
    feeds the merge-join directly (no readinfo written-then-reread), teeing out the
-   per-set `alninfo` + `readinfo` tables and writing the comparison table:
+   per-set `alninfo` + `readinfo` tables, writing the comparison table, and — by
+   default — driving `find-aln-diff`'s default-mode core (`--space query
+   --compare-by all`) inline, in the same pass, over the same matched-read
+   classification already computed for the summary:
    ```
    {prefix}.{label_a}.alninfo.tsv.gz    {prefix}.{label_b}.alninfo.tsv.gz
    {prefix}.{label_a}.readinfo.tsv.gz   {prefix}.{label_b}.readinfo.tsv.gz
    {prefix}.compare.tsv.gz
+   {prefix}.compare.summary.tsv
+   {prefix}.query_diff_reads.tsv.gz
+   {prefix}.query_diff_regions.A.bed.gz
+   {prefix}.query_diff_regions.B.bed.gz
    ```
    The sorted PAFs are scratch (removed unless `--keep-sorted-paf`).
 
@@ -157,6 +164,14 @@ Pass **`--no-alninfo`** and/or **`--no-readinfo`** to skip writing those per-set
 tables entirely (no file is created — the bytes are never serialized/compressed;
 `--no-alninfo` is the biggest time/disk saver since alninfo is the largest output).
 The comparison itself is unaffected.
+
+Pass **`--skip-find-aln-diff`** to skip the fused differing-reads + region-table
+output (the last three files above) and restore `compare`'s pre-fusion output
+set. This is a fixed-mode shortcut only — for reference-space differences or
+`--compare-by junctions`, run standalone `find-aln-diff` against the emitted
+comparison table (see [Differing reads & regions](#differing-reads--regions-find-aln-diff)
+below); it produces byte-identical output to the fused default when run with
+matching settings, since both share the same underlying accumulator.
 
 **`--presorted`** skips the internal sort (Step 1) when your inputs are already
 prepared. It only requires that both PAFs contain the **same reads in the same
@@ -529,6 +544,50 @@ cannot accidentally match.
 > summary table is unaffected — it is accumulated *during* the merge pass, not by
 > re-reading the table.
 
+> **`compare` re-fuses `find-aln-diff`'s default-mode core — without reintroducing
+> the re-read.** The v0.17.0 split above was needed because the old fused step
+> worked by *re-reading* the just-written comparison table. It no longer does:
+> the differing-reads + region-table logic (`find_query_diff::AlnDiffAccumulator`)
+> now runs inline, in `compare`'s existing single merge pass, off the same
+> `get_a`/`get_b` accessors and `classify()` call already used for the summary —
+> no second pass, no re-parsing. `compare` therefore again writes
+> `{prefix}.query_diff_reads.tsv.gz` and `{prefix}.query_diff_regions.{A,B}.bed.gz`
+> by default, fixed at `--space query --compare-by all` (`find-aln-diff`'s own
+> defaults). `--skip-find-aln-diff` opts out, restoring the v0.17.0–era output
+> set. Standalone `find-aln-diff` is unchanged and still required for
+> `--space reference` or `--compare-by junctions`, or to regenerate these outputs
+> from an existing table without re-running `compare`; run against `compare`'s
+> own output table with matching settings, it reproduces the fused files
+> byte-for-byte (verified: `query_diff_reads.tsv.gz` and both region BEDs).
+>
+> **Summary schema unified across all three commands.** `find-aln-diff` used to
+> derive its own `{prefix}.{stem}_summary.tsv` via a separate, mode-relabeled
+> function (`query_different_total`, `diff_aln_to_both`, `query_identical_total`,
+> …) — which, for `--compare-by all` (either `--space`), was arithmetically
+> identical to `compare.summary.tsv`'s existing rows, just under different names.
+> `find-aln-diff` now writes the **exact same schema** `compare` and
+> `compare-pipeline summary` do (`CompareSummary::rows()`), with `space` /
+> `compare_by` provenance rows prepended — see
+> [Summary statistics](#summary-statistics-compare-pipeline-summary) and
+> [Categories](#categories) below. Its own `CompareSummary` instance now
+> observes the *raw*, mode-independent `classify()` output (matching `compare`'s
+> and `compare-pipeline summary`'s meaning) rather than a per-mode-overridden
+> classification — only which reads land in the reads/region-BED files stays
+> mode-dependent, not the summary counters.
+>
+> **New summary/classification axis: junction-set identity.** `classify()` (and
+> therefore `CompareSummary`) gained two fields that were previously computed
+> ad hoc, per-row, only inside `find-aln-diff`'s row loop:
+> `query_junctions_identical` (query-space splice-junction *set* identity) and
+> `ref_same_position_same_junctions` (genomic-coordinate junction-set identity,
+> gated on the same reference position) — both `None`/not-counted unless both
+> sides are mapped. `CompareSummary::rows()` gained four new rows accordingly:
+> `query_junctions_identical`, `query_junctions_not_identical`,
+> `ref_same_position_same_junctions`, `ref_same_position_diff_junctions`. These
+> give the `--compare-by junctions` "identical" counts directly from
+> `compare.summary.tsv` / `compare-pipeline summary`, without needing a
+> `--compare-by junctions` `find-aln-diff` run just to see them.
+
 **Strand tracking and renames (v0.2.1+).** Each side now carries a `Strand_A` / `Strand_B` data
 column (the best alignment's strand), and the comparison block starts with a `Strand_Match`
 (true/false) metric that flags strand-flips between A and B. The legacy column name
@@ -763,7 +822,8 @@ counts are always 0 there; the built-in `compare` tally fills those from the rea
 
 Computed from each side's **representative (best) alignment** — the row already
 selected for the readinfo/compare output — using these columns: `TargetChr`,
-`Strand`, `cs`, `Query_Start`, `Query_End`, `Target_Start`, `Target_End`.
+`Strand`, `cs`, `Query_Start`, `Query_End`, `Target_Start`, `Target_End`,
+`junctions`, `genomic_junctions`.
 
 - **Mapping status** (`TargetChr == "*"` or empty ⇒ unmapped): `aligned_both`,
   `aligned_only_A`, `aligned_only_B`, `aligned_neither`.
@@ -802,6 +862,17 @@ selected for the readinfo/compare output — using these columns: `TargetChr`,
   The four combinations are reported as `ref_same_position_same_aln` (reference-
   identical), `ref_same_position_diff_aln`, `ref_diff_position_same_aln`
   (relocated), and `ref_diff_position_diff_aln`.
+- **Junction-set identity** — a looser, complementary pair of axes (both `None`/
+  not-counted unless both sides are mapped), using `junction_set_stats` /
+  `genomic_junction_set_stats` (`src/junction.rs`) on the deduplicated junction
+  *sets*, ignoring everything else (mismatches, indels, soft-clips):
+  - **query-space**: the `junctions` sets match exactly → `query_junctions_identical`
+    (complement: `query_junctions_not_identical`).
+  - **genomic-coordinate**, gated on the reference-space **position** axis above
+    (each side's `genomic_junctions` pairs reattached to its own `TargetChr` before
+    comparing, so cross-chromosome matches are impossible): among same-position
+    reads, whether the sets also match → `ref_same_position_same_junctions`
+    (complement: `ref_same_position_diff_junctions`).
 
 ### Summary TSV schema
 
@@ -816,10 +887,14 @@ selected for the readinfo/compare output — using these columns: `TargetChr`,
 | `query_identical_same_strand` | …via the same-strand branch |
 | `query_identical_revcomp` | …via the reverse-complement branch |
 | `query_not_identical` | both mapped but not query-identical |
+| `query_junctions_identical` | both mapped, **query-space** splice-junction sets match (`junction_set_stats`) — a looser criterion than `query_identical` (ignores mismatches/indels/soft-clips) |
+| `query_junctions_not_identical` | both mapped but query-space junction sets differ |
 | `ref_same_position_same_aln` | same `TargetChr`/`Strand`/`Target_Start` **and** same `cs` (motif-blind) — reference-identical |
 | `ref_same_position_diff_aln` | same position, different `cs` |
 | `ref_diff_position_same_aln` | same `cs`, different position — relocated |
 | `ref_diff_position_diff_aln` | both position and `cs` differ |
+| `ref_same_position_same_junctions` | among same-position reads, **genomic-coordinate** junction sets also match (`genomic_junction_set_stats`) |
+| `ref_same_position_diff_junctions` | among same-position reads, genomic-coordinate junction sets differ |
 | `present_only_in_A_by_id` / `present_only_in_B_by_id` | read present in only one set's PAF (built-in `compare` only; 0 unless `--allow-id-mismatch`) |
 
 ---
@@ -832,12 +907,15 @@ alignment differs between A and B, in query space or reference space
 (`--space`), plus merged genomic regions showing where those differing reads
 cluster.
 
-**A separate command since v0.17.0.** `compare` used to run this itself as a final
-step, which meant re-reading the comparison table it had just written — a second
-full pass for outputs the caller may not want. `compare` now prints the exact
-command to run instead. Running it by hand with `--space query` (the default)
-reproduces the previous fused-step outputs byte-for-byte, given the defaults the
-fused step used (`--compare-by all`; gzip is on by default).
+**`compare` runs this by default, at its default settings.** `compare` drives
+this command's core (`find_query_diff::AlnDiffAccumulator`) inline, in its own
+single merge pass, fixed at `--space query --compare-by all` — so
+`{prefix}.query_diff_reads.tsv.gz` and `{prefix}.query_diff_regions.{A,B}.bed.gz`
+already exist after a `compare` run, with no extra command and no re-read of the
+comparison table (`--skip-find-aln-diff` opts out). Run `find-aln-diff` standalone
+for the other `--space`/`--compare-by` combinations, or to regenerate these
+outputs from an existing comparison table without re-running `compare` — with
+matching settings it reproduces the fused files byte-for-byte.
 
 **Usage:**
 
@@ -888,18 +966,28 @@ self-describing.
 
 ### Categories
 
-Derived from the shared `CompareSummary` counters — no re-derivation of the
-classification logic. Row/category names follow `--space`:
+The `outcome`/`category` values written to `{prefix}.query_diff_reads.tsv[.gz]`
+(and, under `--emit-identical-reads`, the identical-reads file) — row/category
+names follow `--space`:
 
-| Category (`--space query`) | Category (`--space reference`) | Definition |
+| Category (`--space query`) | Category (`--space reference`) | Meaning |
 |----------|----------|------------|
-| `diff_aln_to_both` | `reference_diff` | mapped in both sets, not identical under the active space/compare-by (`= aligned_both - <space>_identical`) |
-| `diff_aln_only_A` / `diff_aln_only_B` | *(same names)* | mapped in one set only (`= aligned_only_a` / `aligned_only_b`) — identical in both spaces |
-| `query_different_total` | `reference_diff_total` | sum of the three categories above |
-| `query_identical_total` | `reference_identical_total` | excluded from all outputs |
-| `aligned_neither` | *(same name)* | excluded (unmapped in both — no difference to report) |
+| `diff_aln_to_both` | `reference_diff` | mapped in both sets, not identical under the active space/compare-by |
+| `diff_aln_only_A` / `diff_aln_only_B` | *(same names)* | mapped in one set only |
+| `query_identical_same_strand` / `query_identical_revcomp` / `query_identical_junctions` (`--emit-identical-reads` only) | `reference_identical` (`--emit-identical-reads` only) | identical under the active space/compare-by (excluded from `{stem}_reads`; only written to the opt-in identical-reads file) |
 
-Reconciliation: `reads_compared == <total> + <identical_total> + aligned_neither`.
+Unlike prior versions, **the on-disk summary TSV (`{stem}_summary.tsv`) no
+longer carries mode-relabeled totals** (`query_different_total`,
+`diff_aln_to_both`, `query_identical_total`, …) — it writes the same
+mode-independent `CompareSummary` schema `compare`/`compare-pipeline summary`
+do (see [Summary TSV schema](#summary-tsv-schema)), with `space`/`compare_by`
+provenance rows prepended. The number of rows actually written to
+`{stem}_reads.tsv[.gz]` (this run's differing-read count, under the active
+mode) is reported only in the stderr headline, not as a summary-file row —
+compute it from the mode-appropriate pair of summary rows when needed, e.g.
+`query_not_identical + aligned_only_A + aligned_only_B` for the default
+`--space query --compare-by all`, or `query_junctions_not_identical + …` for
+`--compare-by junctions`.
 
 ### Outputs
 
@@ -913,8 +1001,14 @@ the table below uses the query-space names. `[.gz]` is present by default —
 | `{prefix}.query_diff_reads.tsv[.gz]` | one row per differing read: `Read_Name`, `outcome` (the canonical category name above), plus 8 classification booleans (see below) |
 | `{prefix}.query_diff_regions.A.bed[.gz]` | merged loci over reads with an A placement (both-mapped-and-differing + `diff_aln_only_A`) |
 | `{prefix}.query_diff_regions.B.bed[.gz]` | merged loci over reads with a B placement (both-mapped-and-differing + `diff_aln_only_B`) |
-| `{prefix}.query_diff_summary.tsv` | the category tally above (+ stderr); never gzipped |
-| `{prefix}.query_identical_reads.tsv[.gz]` | *(opt-in, `--emit-identical-reads`)* one row per identical read: `Read_Name`, `category` (`query_identical_same_strand` / `query_identical_revcomp` / `query_identical_junctions` under `--space query`; `reference_identical` under `--space reference`), plus the same 8 classification booleans — the complement of the diff-reads file. Off by default; **not** produced by `compare`'s built-in invocation. |
+| `{prefix}.query_diff_summary.tsv` | the same mode-independent `CompareSummary` schema as `compare.summary.tsv` / `compare-pipeline summary` (+ stderr), with `space`/`compare_by` provenance rows prepended; never gzipped |
+| `{prefix}.query_identical_reads.tsv[.gz]` | *(opt-in, `--emit-identical-reads`)* one row per identical read: `Read_Name`, `category` (`query_identical_same_strand` / `query_identical_revcomp` / `query_identical_junctions` under `--space query`; `reference_identical` under `--space reference`), plus the same 8 classification booleans — the complement of the diff-reads file. Off by default; **not** produced by `compare`'s built-in fused output. |
+
+The first three rows above (the reads table and both region tables) are exactly
+what `compare` writes by default at `--space query --compare-by all` (see
+[Primary: on-rails `compare`](#primary-on-rails-compare) above); `compare` does
+not additionally write a `{prefix}.query_diff_summary.tsv` of its own — its
+`{prefix}.compare.summary.tsv` already carries the same schema.
 
 Under `--compare-by junctions` every filename above gains a `.junctions` segment
 (e.g. `{prefix}.query_diff_reads.junctions.tsv.gz`).
@@ -1040,12 +1134,16 @@ in the comparison regardless of sort order.
 ```
 src/
 ├── main.rs                 — CLI dispatcher (clap subcommands)
-├── compare.rs              — PRIMARY `compare` command (on-rails: sort → verify read-IDs → tables → compare)
+├── compare.rs              — PRIMARY `compare` command (on-rails: sort → verify read-IDs → tables → compare → fused find-aln-diff core)
 ├── external_sort.rs        — in-process PAF external sort (ext-sort) + O(1) read-ID set check
 ├── paf2tables.rs           — PAF → alninfo and/or readinfo (one pass)
 ├── comparison_row.rs       — comparison-table schema: column lists, ComparisonRow/AlignmentRow/AlignmentDiff, TSV writers
 ├── parquet_out.rs          — Parquet writer + OutputFormat; Arrow schema derived from comparison_row's column lists
 ├── compare_streaming.rs    — `compare-pipeline merge-readinfo` command + the merge-join machinery (ReadKey/ReadInfoReader)
+├── compare_summary.rs      — shared classify()/ReadClass/CompareSummary (used by compare, compare-pipeline summary, find-aln-diff) + `compare-pipeline summary` command
+├── find_query_diff.rs      — `find-aln-diff` command + AlnDiffAccumulator (the per-row diff/region core, shared with compare's fused output)
+├── interval_merge.rs       — generic sort+sweep interval merge (bedtools merge -c -o count equivalent)
+├── table_input.rs          — TSV/Parquet dispatch for reading an existing comparison table (find-aln-diff, compare-pipeline summary)
 ├── readinfo.rs             — collapse library (collapse_group/ReadInfoRow/AlnRow); utils-readinfo CLI unregistered but code kept
 ├── paf_groups.rs           — shared PAF → per-read group reader, with optional alninfo tee
 ├── record.rs               — AlnInfo struct + TSV serialisation
@@ -1053,7 +1151,7 @@ src/
 ├── cs_parser.rs            — cs-tag parser (PAF → stats + genomic junctions)
 ├── cigar_junctions.rs      — CIGAR-based intron extractor (utility, not yet wired in)
 ├── io_utils.rs             — open_input / open_output (gzip transparent)
-├── junction.rs             — junction parsers + set-overlap stats
+├── junction.rs             — junction parsers + set-overlap stats (junction_set_stats/genomic_junction_set_stats, used by classify() and comparison_row.rs)
 └── sam2paf/
     ├── mod.rs              — sam2paf CLI args + run()
     ├── convert.rs          — SAM → PAF conversion logic

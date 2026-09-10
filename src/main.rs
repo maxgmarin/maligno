@@ -7,7 +7,8 @@
 //!        `maligno compare -a A.paf -b B.paf --outdir results/ --prefix AvsB`
 //!      Sorts both PAFs (consistent order), verifies they share the same read-ID
 //!      set. Then it writes the per-set alninfo + readinfo tables AND the comparison
-//!      table. 
+//!      table, and by default also `find-aln-diff`'s differing-reads + region
+//!      tables at its default settings (`--skip-find-aln-diff` to opt out).
 //!
 //!   2. Manual building blocks (full control), grouped under `compare-pipeline`:
 //!        `maligno compare-pipeline paf2tables -i A.sorted.paf --alninfo A.alninfo.tsv.gz --readinfo A.readinfo.tsv.gz`
@@ -19,12 +20,15 @@
 //!   1. `compare`                        end-to-end comparison of all input
 //!                                       alignments (PRIMARY analysis entry
 //!                                       point). Emits the single 96-column
-//!                                       comparison table.
+//!                                       comparison table plus, by default,
+//!                                       `find-aln-diff`'s default-mode outputs.
 //!   2. `sam2paf`                        SAM → PAF converter (utility; use
 //!                                       before compare-pipeline/compare)
 //!   3. `find-aln-diff`                  comparison table → differing reads +
 //!                                       the merged genomic regions where they
 //!                                       cluster, in query or reference space
+//!                                       (also driven inline by `compare`'s
+//!                                       default output — see above)
 //!   4. `compare-pipeline paf2tables`    PAF → alninfo TSV and/or readinfo TSV
 //!                                       tables — a decomposed piece of what
 //!                                       `compare` does internally
