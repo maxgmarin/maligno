@@ -24,7 +24,7 @@
 //! **The per-side columns are transported as `&str`, not re-rendered from parsed
 //! values.** That is load-bearing for two reasons. First, the writer loops over
 //! `READINFO_DATA_COLS` exactly as the header does, so the two cannot drift apart.
-//! Second, `compare-pipeline merge-readinfo` accepts arbitrary user TSVs: re-rendering would turn
+//! Second, `compare-toolkit merge-readinfo` accepts arbitrary user TSVs: re-rendering would turn
 //! `1e-05` into `0.00001`, `+5` into `5`, and — because a missing column yields
 //! `""` from the accessors — would fabricate `0` where today an empty cell passes
 //! through. 14 of these columns feed no computation at all; parsing them would be a

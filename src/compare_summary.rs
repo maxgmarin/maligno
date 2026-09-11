@@ -6,10 +6,10 @@
 //!   1. Built into `compare`: each matched read is `observe`d as its row streams
 //!      out (O(1) memory — only counters are kept), and the summary is written as
 //!      `{prefix}.compare.summary.tsv` plus an stderr block.
-//!   2. The `compare-pipeline summary` command: streams an existing comparison
-//!      table (`compare` / `compare-pipeline merge-readinfo` output) row-by-row
-//!      and emits the same summary. Serves the manual `compare-pipeline
-//!      paf2tables` → `compare-pipeline merge-readinfo` workflow.
+//!   2. The `compare-toolkit summary` command: streams an existing comparison
+//!      table (`compare` / `compare-toolkit merge-readinfo` output) row-by-row
+//!      and emits the same summary. Serves the manual `compare-toolkit
+//!      paf2tables` → `compare-toolkit merge-readinfo` workflow.
 //!
 //! `classify` reads per-side values by **unsuffixed** readinfo column name through
 //! two accessor closures, resolving them via a name→index map, so it is insensitive
@@ -331,7 +331,7 @@ impl CompareSummary {
     /// the two label provenance rows and any caller-supplied `extra`
     /// provenance rows (e.g. `find-aln-diff`'s `space`/`compare_by`), so the
     /// file is self-describing. This is the single column layout shared by
-    /// `compare`, `compare-pipeline summary`, and `find-aln-diff` — pass `&[]`
+    /// `compare`, `compare-toolkit summary`, and `find-aln-diff` — pass `&[]`
     /// for no extra rows.
     pub fn write_tsv(
         &self,
@@ -369,11 +369,11 @@ impl CompareSummary {
     }
 }
 
-// ── `compare-pipeline summary` command ──────────────────────────────────────────
+// ── `compare-toolkit summary` command ──────────────────────────────────────────
 
 #[derive(clap::Args, Debug)]
 pub struct CompareSummaryArgs {
-    /// Comparison table from `compare` / `compare-pipeline merge-readinfo`: TSV (`.gz` ok;
+    /// Comparison table from `compare` / `compare-toolkit merge-readinfo`: TSV (`.gz` ok;
     /// `-` = stdin) or Parquet (`--format parquet` / `-o x.parquet`). See
     /// `--input-format`.
     #[arg(short = 'i', long = "input", value_name = "compare.tsv|compare.parquet")]
@@ -391,7 +391,7 @@ pub struct CompareSummaryArgs {
 }
 
 /// Confirm a compare-table header uses the fixed `_A` / `_B` side suffixes
-/// introduced in v0.13.0. Shared by `compare-pipeline summary` and `find-aln-diff`.
+/// introduced in v0.13.0. Shared by `compare-toolkit summary` and `find-aln-diff`.
 ///
 /// Pre-v0.13.0 tables suffixed per-side columns with the dataset *label*
 /// (`TargetChr_Splice`), which made column names dataset-specific and ambiguous
@@ -413,7 +413,7 @@ pub(crate) fn require_ab_schema(cols: &[&str]) -> Result<()> {
     if !legacy.is_empty() {
         bail!(
             "this comparison table uses the pre-v0.13.0 label-suffixed schema ({}) \
-             — regenerate it with maligno v0.13+ (`compare` / `compare-pipeline merge-readinfo`), \
+             — regenerate it with maligno v0.13+ (`compare` / `compare-toolkit merge-readinfo`), \
              which writes fixed `TargetChr_A` / `TargetChr_B` columns plus \
              `Label_A` / `Label_B`",
             legacy.join(", ")

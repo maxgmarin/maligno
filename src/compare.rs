@@ -12,19 +12,20 @@
 //!      alninfo + readinfo tables are tee'd out as side outputs as it goes, when
 //!      requested (`--emit-alninfo` / `--emit-readinfo`; off by default).
 //!
-//! This is the porcelain over the `compare-pipeline` plumbing subcommands
+//! This is the porcelain over the `compare-toolkit` plumbing subcommands
 //! (`paf2tables`, `merge-readinfo`, …): the comparison table is byte-identical
-//! to running `compare-pipeline merge-readinfo` on the sorted readinfo files,
-//! and the side outputs are byte-identical to `compare-pipeline paf2tables` on
+//! to running `compare-toolkit merge-readinfo` on the sorted readinfo files,
+//! and the side outputs are byte-identical to `compare-toolkit paf2tables` on
 //! the sorted PAFs.
 //!
 //! By default the same pass also drives `find-aln-diff`'s core (via
 //! `find_query_diff::AlnDiffAccumulator`) at its default settings (`--space
 //! query --compare-by all`), so `compare` additionally emits the differing
 //! reads + region tables without a second read of its own output table —
-//! byte-identical to running standalone `find-aln-diff` against the emitted
-//! comparison table. `--skip-find-aln-diff` opts out; other `--space`/
-//! `--compare-by` combinations still require the standalone command.
+//! byte-identical to running standalone `compare-toolkit find-aln-diff`
+//! against the emitted comparison table. `--skip-find-aln-diff` opts out;
+//! other `--space`/`--compare-by` combinations still require the standalone
+//! command.
 //!
 //! Precondition (documented, not enforced): a `Query_Name` uniquely identifies a
 //! single read/sequence — so sorting by name alone (no `Read_Len` secondary key)
@@ -126,13 +127,8 @@ pub struct CompareArgs {
     #[arg(long = "keep-sorted-paf")]
     keep_sorted_paf: bool,
 
-    /// Do not also emit `find-aln-diff`'s default-mode outputs (differing
-    /// reads + genomic region tables). By default `compare` computes these
-    /// inline, in the same pass, at `find-aln-diff`'s default settings
-    /// (`--space query --compare-by all`); pass this flag to restore
-    /// `compare`'s pre-fusion output set. For other `--space`/`--compare-by`
-    /// combinations, run `find-aln-diff` standalone against the emitted
-    /// comparison table.
+    /// Skip the differing-reads + genomic region tables that `compare` writes
+    /// by default.
     #[arg(long = "skip-find-aln-diff")]
     skip_find_aln_diff: bool,
 }
@@ -364,13 +360,13 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         if args.skip_find_aln_diff {
             eprintln!("For the differing reads and the genomic regions where they cluster:");
             eprintln!(
-                "  maligno find-aln-diff -i {tsv} --outdir {} --prefix {}",
+                "  maligno compare-toolkit find-aln-diff -i {tsv} --outdir {} --prefix {}",
                 args.outdir, args.prefix
             );
         } else {
             eprintln!("For reference-space or junctions-based differences, run standalone:");
             eprintln!(
-                "  maligno find-aln-diff -i {tsv} --space reference --outdir {} --prefix {}",
+                "  maligno compare-toolkit find-aln-diff -i {tsv} --space reference --outdir {} --prefix {}",
                 args.outdir, args.prefix
             );
         }

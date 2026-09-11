@@ -1,4 +1,4 @@
-//! Provides the `compare-pipeline merge-readinfo` command (two readinfo TSVs →
+//! Provides the `compare-toolkit merge-readinfo` command (two readinfo TSVs →
 //! comparison) plus
 //! the merge-join machinery it shares with the primary `compare` command
 //! (`compare.rs`): `ReadKey` and `ReadInfoReader`.

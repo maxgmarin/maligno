@@ -1,7 +1,7 @@
 //! TSV-vs-Parquet dispatch for reading a two-sided comparison table.
 //!
-//! Shared by `find-aln-diff` and `compare-pipeline summary`: both stream an
-//! existing `compare` / `compare-pipeline merge-readinfo` table row-by-row,
+//! Shared by `find-aln-diff` and `compare-toolkit summary`: both stream an
+//! existing `compare` / `compare-toolkit merge-readinfo` table row-by-row,
 //! needing only a subset of its columns by name, insensitive to which format
 //! produced the file.
 
@@ -14,7 +14,7 @@ use crate::parquet_out::{is_parquet_path, ParquetRowReader};
 
 /// Serialization of a comparison-table `--input`. `auto` (default) picks
 /// Parquet for a `.parquet`-named path and TSV otherwise — the same
-/// extension convention `compare`/`compare-pipeline merge-readinfo` already
+/// extension convention `compare`/`compare-toolkit merge-readinfo` already
 /// use on the output side.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum InputFormat {

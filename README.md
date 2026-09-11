@@ -74,17 +74,18 @@ The per-set `alninfo`/`readinfo` tables are opt-in (`--emit-alninfo`,
 detail tables alongside the comparison output; they roughly double the run's
 disk footprint and add meaningfully to its runtime, so they're off by default.
 
-### Step 2: Use `maligno find-aln-diff` for reference-space or junctions-only differences
+### Step 2: Use `maligno compare-toolkit find-aln-diff` for reference-space or junctions-only differences
 
 Step 1 already found the reads that align differently in query space (the
 default, and most common, comparison mode) — no separate command needed for
-that. Run **`find-aln-diff`** standalone only when you need a different
-`--space`/`--compare-by` combination (e.g. reference-space differences, or
-differences restricted to the splice-junction set), or want to regenerate the
-diff outputs from an existing comparison table without re-running `compare`:
+that. Run **`compare-toolkit find-aln-diff`** standalone only when you need a
+different `--space`/`--compare-by` combination (e.g. reference-space
+differences, or differences restricted to the splice-junction set), or want to
+regenerate the diff outputs from an existing comparison table without
+re-running `compare`:
 
 ```bash
-maligno find-aln-diff \
+maligno compare-toolkit find-aln-diff \
   -i results/Splice_vs_SpliceHQ.compare.tsv.gz \
   --space reference \
   --outdir results/ --prefix Splice_vs_SpliceHQ
@@ -155,8 +156,8 @@ schema-migration notes, see [`docs/COMPARE_TABLE.md`](docs/COMPARE_TABLE.md).
 
 Alongside the comparison table, `compare` writes a small `…summary.tsv` with
 predefined aggregate counts (tallied as rows stream, so memory stays constant).
-This is the **same schema** written by `compare-pipeline summary` and by
-standalone `find-aln-diff`'s own summary output (see below) — one set of
+This is the **same schema** written by `compare-toolkit summary` and by
+standalone `compare-toolkit find-aln-diff`'s own summary output (see below) — one set of
 category names shared across all three. The headline is the **per-read
 alignment status**, followed by **identity** stats:
 
@@ -174,26 +175,26 @@ alignment status**, followed by **identity** stats:
 | `present_only_in_A_by_id` / `present_only_in_B_by_id` | sequences found in only one set's PAF (will be 0 unless `--allow-id-mismatch` is used) |
 
 To get the same summary from an existing comparison table, use
-**`compare-pipeline summary`**:
+**`compare-toolkit summary`**:
 
 ```bash
-maligno compare-pipeline summary -i AvsB.compare.tsv.gz -o AvsB.compare.summary.tsv
+maligno compare-toolkit summary -i AvsB.compare.tsv.gz -o AvsB.compare.summary.tsv
 ```
 
-Full definitions are in the [reference](docs/REFERENCE.md#compare-pipeline-merge-readinfo-and-the-comparison-core).
+Full definitions are in the [reference](docs/REFERENCE.md#compare-toolkit-merge-readinfo-and-the-comparison-core).
 
-### Finding reads with differing alignments (`maligno find-aln-diff`)
+### Finding reads with differing alignments (`maligno compare-toolkit find-aln-diff`)
 
-**`find-aln-diff`** reads a comparison table and finds every read whose
-alignment differs between A and B, then reports where those reads cluster on
-the genome.
+**`compare-toolkit find-aln-diff`** reads a comparison table and finds every
+read whose alignment differs between A and B, then reports where those reads
+cluster on the genome.
 
 `compare` already runs this **by default**, at its default settings
 (`--space query --compare-by all`), in the same pass that builds the
-comparison table — see [Step 2](#step-2-use-maligno-find-aln-diff-for-reference-space-or-junctions-only-differences)
-above (`--skip-find-aln-diff` opts out). Run `find-aln-diff` standalone when
-you need a different `--space`/`--compare-by` combination, or want to
-regenerate these outputs from an existing comparison table without
+comparison table — see [Step 2](#step-2-use-maligno-compare-toolkit-find-aln-diff-for-reference-space-or-junctions-only-differences)
+above (`--skip-find-aln-diff` opts out). Run `compare-toolkit find-aln-diff`
+standalone when you need a different `--space`/`--compare-by` combination, or
+want to regenerate these outputs from an existing comparison table without
 re-running `compare`.
 
 `--space` selects the coordinate space: `query` (default) compares each side's
@@ -202,11 +203,11 @@ the reference genome instead — only meaningful when both input alignment sets
 were aligned to the same reference genome.
 
 ```bash
-maligno find-aln-diff -i results/AvsB.compare.tsv.gz \
+maligno compare-toolkit find-aln-diff -i results/AvsB.compare.tsv.gz \
   --outdir results/ --prefix AvsB
 ```
 
-#### Outputs of `maligno find-aln-diff`:
+#### Outputs of `maligno compare-toolkit find-aln-diff`:
 
 | File | Contents |
 |------|----------|
@@ -272,8 +273,8 @@ The comparison table's column-by-column format lives in
 
 The full manual lives in **[`docs/REFERENCE.md`](docs/REFERENCE.md)**:
 
-- `compare-pipeline`'s manual building blocks — `paf2tables` (PAF → alninfo/readinfo),
-  `merge-readinfo` (the comparison engine), and `summary`.
+- `compare-toolkit`'s manual building blocks — `paf2tables` (PAF → alninfo/readinfo),
+  `merge-readinfo` (the comparison engine), `summary`, and `find-aln-diff`.
 - Utilities — `sam2paf` (SAM → PAF).
 - The complete column dictionary for every table, genomic-junction format,
   and schema-migration notes.

@@ -1,6 +1,6 @@
 # The comparison table
 
-`compare` (and `compare-pipeline merge-readinfo`) write one row per read, 96
+`compare` (and `compare-toolkit merge-readinfo`) write one row per read, 96
 columns, organized in column groups (left to right):
 
 | Group | Cols | What it holds |
@@ -49,4 +49,4 @@ a real zero stays `0`.
 
 For the exhaustive column-by-column dictionary, the genomic-junction format
 details, and schema-migration notes, see the
-[reference](REFERENCE.md#compare-pipeline-merge-readinfo-and-the-comparison-core).
+[reference](REFERENCE.md#compare-toolkit-merge-readinfo-and-the-comparison-core).

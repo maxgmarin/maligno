@@ -1,4 +1,4 @@
-//! `find-aln-diff` — from a `compare` / `compare-pipeline merge-readinfo`
+//! `find-aln-diff` — from a `compare` / `compare-toolkit merge-readinfo`
 //! table, find every read whose alignment differs between sets A and B, in
 //! query space or reference space, and the genomic regions where those reads
 //! cluster.
@@ -47,7 +47,7 @@
 //!   2. `{prefix}.{stem}_regions.A.bed[.gz]`  — merged A-coordinate loci
 //!   3. `{prefix}.{stem}_regions.B.bed[.gz]`  — merged B-coordinate loci
 //!   4. `{prefix}.{stem}_summary.tsv`         — the same category-tally schema
-//!      `compare`/`compare-pipeline summary` write (`CompareSummary::rows()`),
+//!      `compare`/`compare-toolkit summary` write (`CompareSummary::rows()`),
 //!      with `space`/`compare_by` provenance rows prepended, so all three
 //!      commands share one column layout. Its counters are mode-independent
 //!      (always the raw `classify()` output) — mode-specific behavior only
@@ -99,7 +99,7 @@ pub enum DiffSpace {
 /// space, and the genomic regions where they cluster.
 #[derive(clap::Args, Debug)]
 pub struct FindAlnDiffArgs {
-    /// Comparison table from `compare` / `compare-pipeline merge-readinfo`:
+    /// Comparison table from `compare` / `compare-toolkit merge-readinfo`:
     /// TSV (`.gz` ok; `-` = stdin) or Parquet (`--format parquet` / `-o
     /// x.parquet`). See `--input-format`.
     #[arg(short = 'i', long = "input", value_name = "compare.tsv|compare.parquet")]
@@ -455,7 +455,7 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
     };
 
     // The one, mode-independent summary — same schema `compare`/
-    // `compare-pipeline summary` write (see the module doc comment).
+    // `compare-toolkit summary` write (see the module doc comment).
     let mut summary = CompareSummary::default();
 
     // ── Pass 1: stream rows → read TSV + differing-interval vectors ────────────
@@ -474,7 +474,7 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
 
         // `base` is the raw, mode-independent classification — observed as-is
         // into `summary` so its meaning matches `compare`'s and
-        // `compare-pipeline summary`'s (always "query+all" semantics).
+        // `compare-toolkit summary`'s (always "query+all" semantics).
         let base = classify(&get_a, &get_b);
         summary.observe(&base);
 

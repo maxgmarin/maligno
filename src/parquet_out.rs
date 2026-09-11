@@ -1,7 +1,7 @@
 //! Parquet output for the comparison table.
 //!
 //! Selected by `compare --format tsv|parquet|both` (default `both`), and by
-//! `compare-pipeline merge-readinfo -o x.parquet`, which picks Parquet from
+//! `compare-toolkit merge-readinfo -o x.parquet`, which picks Parquet from
 //! the extension.
 //!
 //! Why it exists: the comparison table is written once and re-read many times —
@@ -384,7 +384,7 @@ impl<W: Write + Send> ComparisonParquetWriter<W> {
 /// parquet, both]`.
 ///
 /// The default is `both` for backward compatibility: existing scripts expect
-/// the gzipped TSV. `find-aln-diff` and `compare-pipeline summary` can read
+/// the gzipped TSV. `find-aln-diff` and `compare-toolkit summary` can read
 /// either format (`--input-format`), so a Parquet-only run works standalone
 /// with both of them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]

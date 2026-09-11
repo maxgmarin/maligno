@@ -86,16 +86,16 @@ run edge_idmismatch "$BIN" compare --allow-id-mismatch \
   -a "$EC/edge_cases_idmismatch.Splice.paf.gz"   --label-a Splice \
   -b "$EC/edge_cases_idmismatch.SpliceHQ.paf.gz" --label-b SpliceHQ
 
-# 5. find-aln-diff --compare-by junctions over the edge-case table.
-"$BIN" find-aln-diff -i "$WORK/edge/run.compare.tsv.gz" \
+# 5. compare-toolkit find-aln-diff --compare-by junctions over the edge-case table.
+"$BIN" compare-toolkit find-aln-diff -i "$WORK/edge/run.compare.tsv.gz" \
   --outdir "$WORK/fqd_junctions" --prefix run --compare-by junctions >/dev/null 2>&1
 fingerprint "$WORK/fqd_junctions" fqd_junctions
 
-# 6. compare-pipeline summary (the non-fused classifier path).
+# 6. compare-toolkit summary (the non-fused classifier path).
 mkdir -p "$WORK/summary"
-"$BIN" compare-pipeline summary -i "$WORK/edge/run.compare.tsv.gz" \
+"$BIN" compare-toolkit summary -i "$WORK/edge/run.compare.tsv.gz" \
   -o "$WORK/summary/run.summary.tsv" >/dev/null 2>&1 \
-  || { echo "error: compare-pipeline summary failed" >&2; exit 3; }
+  || { echo "error: compare-toolkit summary failed" >&2; exit 3; }
 fingerprint "$WORK/summary" summary
 
 # 7. The default read-ID-mismatch error must stay an error (text not hashed,
