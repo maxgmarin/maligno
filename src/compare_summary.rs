@@ -367,6 +367,23 @@ impl CompareSummary {
             eprintln!("  {k:<34} {v}");
         }
     }
+
+    /// Print the abbreviated stderr block `compare` uses: just the alignment-
+    /// status breakdown and the two headline query-identity stats. The TSV
+    /// (`write_tsv`) and every other caller of `render_stderr` keep the full
+    /// category set — this is only for `compare`'s own terminal output.
+    pub fn render_stderr_brief(&self, label_a: &str, label_b: &str) {
+        eprintln!("Comparison summary:");
+        eprintln!("  {:<34} {label_a}", "label_A");
+        eprintln!("  {:<34} {label_b}", "label_B");
+        eprintln!("  {:<34} {}", "reads_compared", self.reads_compared);
+        eprintln!("  {:<34} {}", "aligned_both", self.aligned_both);
+        eprintln!("  {:<34} {}", "aligned_only_A", self.aligned_only_a);
+        eprintln!("  {:<34} {}", "aligned_only_B", self.aligned_only_b);
+        eprintln!("  {:<34} {}", "aligned_neither", self.aligned_neither);
+        eprintln!("  {:<34} {}", "query_identical", self.query_identical);
+        eprintln!("  {:<34} {}", "query_not_identical", self.query_not_identical());
+    }
 }
 
 // ── `compare-toolkit summary` command ──────────────────────────────────────────

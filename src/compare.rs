@@ -218,15 +218,13 @@ pub fn run(args: &CompareArgs) -> Result<()> {
                 }
                 bail!(
                     "read-ID sets differ between the two PAFs: {shared} shared, \
-                     {oa} only in {la} (e.g. {exa}), {ob} only in {lb} (e.g. {exb}). \
+                     {oa} only in {la}, {ob} only in {lb}. \
                      Re-run with --allow-id-mismatch to compare the shared intersection.",
                     shared = chk.shared,
                     oa = chk.only_a,
                     la = args.label_a,
-                    exa = chk.examples_a.join(", "),
                     ob = chk.only_b,
                     lb = args.label_b,
-                    exb = chk.examples_b.join(", "),
                 );
             }
             eprintln!(
@@ -239,12 +237,9 @@ pub fn run(args: &CompareArgs) -> Result<()> {
 
     // ── Step 3: single in-memory lock-step pass (collapse + compare + tee) ────
     if args.presorted {
-        eprintln!("[INFO] comparing in one pass ({})...", describe_outputs(&compare_tsv, &compare_parquet));
+        eprintln!("[INFO] comparing in one pass...");
     } else {
-        eprintln!(
-            "[INFO] Step 3/3 — comparing in one pass ({})...",
-            describe_outputs(&compare_tsv, &compare_parquet)
-        );
+        eprintln!("[INFO] Step 3/3 — comparing in one pass...");
     }
     let mut summary = CompareSummary::default();
     let diff_acc = if args.skip_find_aln_diff {
@@ -268,9 +263,8 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         diff_acc,
         &diff_regions_a_out,
         &diff_regions_b_out,
-        &describe_outputs(&compare_tsv, &compare_parquet),
     );
-    let (counts, diff_stats) = match result {
+    let (counts, _diff_stats) = match result {
         Ok(v) => v,
         Err(e) => {
             // The compare pass can fail partway (e.g. --presorted inputs that are
@@ -317,74 +311,10 @@ pub fn run(args: &CompareArgs) -> Result<()> {
     }
     // Aggregate summary statistics → sidecar TSV + stderr block.
     summary.write_tsv(&summary_out, &args.label_a, &args.label_b, &[])?;
-    summary.render_stderr(&args.label_a, &args.label_b, &[]);
-    eprintln!("Outputs in {}:", args.outdir);
-    if args.emit_alninfo {
-        eprintln!("  {a_alninfo}");
-        eprintln!("  {b_alninfo}");
-    }
-    if args.emit_readinfo {
-        eprintln!("  {a_readinfo}");
-        eprintln!("  {b_readinfo}");
-    }
-    for p in [compare_tsv.as_deref(), compare_parquet.as_deref()].into_iter().flatten() {
-        eprintln!("  {p}");
-    }
-    eprintln!("  {summary_out}");
-    if let Some(stats) = &diff_stats {
-        eprintln!("  {diff_reads_out}");
-        eprintln!("  {diff_regions_a_out}");
-        eprintln!("  {diff_regions_b_out}");
-        eprintln!(
-            "  ({} differing reads found (space=query, compare-by=all); \
-             see compare.summary.tsv for the full tally)",
-            stats.n_diff_rows
-        );
-        if stats.n_bad_interval > 0 {
-            eprintln!(
-                "  ({} intervals skipped: unparseable or degenerate coordinates)",
-                stats.n_bad_interval
-            );
-        }
-    }
-    if args.keep_sorted_paf {
-        eprintln!("  {a_sorted}");
-        eprintln!("  {b_sorted}");
-    }
-
-    // The fused default (space=query, compare-by=all) output above covers the
-    // most common case; point at the standalone command for the modes it
-    // doesn't cover (or, under --skip-find-aln-diff, for that default mode too).
-    if let Some(tsv) = &compare_tsv {
-        eprintln!();
-        if args.skip_find_aln_diff {
-            eprintln!("For the differing reads and the genomic regions where they cluster:");
-            eprintln!(
-                "  maligno compare-toolkit find-aln-diff -i {tsv} --outdir {} --prefix {}",
-                args.outdir, args.prefix
-            );
-        } else {
-            eprintln!("For reference-space or junctions-based differences, run standalone:");
-            eprintln!(
-                "  maligno compare-toolkit find-aln-diff -i {tsv} --space reference --outdir {} --prefix {}",
-                args.outdir, args.prefix
-            );
-        }
-    }
+    summary.render_stderr_brief(&args.label_a, &args.label_b);
+    eprintln!("Outputs in {}/", args.outdir);
 
     Ok(())
-}
-
-/// Render the comparison output path(s) for the progress line.
-fn describe_outputs(tsv: &Option<String>, parquet: &Option<String>) -> String {
-    let mut v: Vec<&str> = Vec::new();
-    if let Some(p) = tsv {
-        v.push(p);
-    }
-    if let Some(p) = parquet {
-        v.push(p);
-    }
-    v.join(" + ")
 }
 
 /// Serialize a `ReadInfoRow` to its readinfo-TSV line (no trailing newline) so it
@@ -439,7 +369,6 @@ fn compare_sorted_pafs(
     mut diff_acc: Option<AlnDiffAccumulator>,
     regions_a_out: &str,
     regions_b_out: &str,
-    diff_source_desc: &str,
 ) -> Result<((u64, u64, u64), Option<AlnDiffStats>)> {
     // Comparison TSV + header. When the TSV is not requested the rows go to
     // `io::sink()`, the same way suppressed alninfo/readinfo outputs do, so no
@@ -504,8 +433,10 @@ fn compare_sorted_pafs(
         &mut diff_acc,
     )?;
 
+    eprintln!("[INFO] alignment comparison complete for all reads.");
+
     let diff_stats = match diff_acc {
-        Some(acc) => Some(acc.finish(regions_a_out, regions_b_out, label_a, label_b, diff_source_desc)?),
+        Some(acc) => Some(acc.finish(regions_a_out, regions_b_out)?),
         None => None,
     };
 

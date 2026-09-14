@@ -337,22 +337,22 @@ impl AlnDiffAccumulator {
     }
 
     /// Flush the reads table, merge the buffered intervals into region-BED
-    /// tables, and return the run's stats. `source_desc` is a human-readable
-    /// description of where the rows came from, used only in the region
-    /// tables' `[INFO]` log lines.
+    /// tables, and return the run's stats.
     pub(crate) fn finish(
         mut self,
         regions_a_out: &str,
         regions_b_out: &str,
-        label_a: &str,
-        label_b: &str,
-        source_desc: &str,
     ) -> Result<AlnDiffStats> {
         self.reads_w.flush()?;
+        eprintln!(
+            "[INFO] find-aln-diff: identifying reads with differing alignments \
+             and associated genomic regions..."
+        );
         let loci_a = merge_and_count(self.vec_a, DiffAcc::default, fold_diff);
-        write_region_table(regions_a_out, &loci_a, "A", label_a, "n_only_A", source_desc)?;
+        write_region_table(regions_a_out, &loci_a, "n_only_A")?;
         let loci_b = merge_and_count(self.vec_b, DiffAcc::default, fold_diff);
-        write_region_table(regions_b_out, &loci_b, "B", label_b, "n_only_B", source_desc)?;
+        write_region_table(regions_b_out, &loci_b, "n_only_B")?;
+        eprintln!("[INFO] find-aln-diff: done.");
         Ok(AlnDiffStats {
             n_diff_rows: self.n_diff_rows,
             n_bad_interval: self.n_bad_interval,
@@ -511,7 +511,7 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
     }
 
     // ── Pass 2: merge each coordinate space → region tables ────────────────────
-    let stats = acc.finish(&regions_a_out, &regions_b_out, &label_a, &label_b, &args.input)?;
+    let stats = acc.finish(&regions_a_out, &regions_b_out)?;
 
     // ── Summary (TSV + stderr), shared schema with `compare` ───────────────────
     let space_str = match args.space {
@@ -548,14 +548,8 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
 fn write_region_table(
     path: &str,
     loci: &[Locus<DiffAcc>],
-    coord: &str,
-    label: &str,
     only_col: &str,
-    input: &str,
 ) -> Result<()> {
-    eprintln!(
-        "[INFO] find-aln-diff: coord_space={coord}(label={label})  input={input}  -> {path}"
-    );
     let mut w = open_output(Some(path))?;
     writeln!(w, "#chrom\tstart\tend\tn_reads\tn_both\t{only_col}\tn_plus\tn_minus")?;
     for l in loci {
