@@ -193,18 +193,14 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         (args.paf_a.clone(), args.paf_b.clone())
     } else {
         // ── Step 1: sort both PAFs by Query_Name (consistent rule) ────────────
-        eprintln!(
-            "[INFO] Step 1/3 — sorting both PAFs by Query_Name (mem={} bytes, tmp={})",
-            mem,
-            tmp_dir.display()
-        );
+        eprintln!("[INFO] sorting both PAFs by Query_Name...");
         sort_paf_to_file(&args.paf_a, &a_sorted, mem, &tmp_dir, Some(args.sort_threads))
             .with_context(|| format!("sorting PAF A ({})", args.paf_a))?;
         sort_paf_to_file(&args.paf_b, &b_sorted, mem, &tmp_dir, Some(args.sort_threads))
             .with_context(|| format!("sorting PAF B ({})", args.paf_b))?;
 
         // ── Step 2: read-ID set-equality check (O(1) memory), before any output ─
-        eprintln!("[INFO] Step 2/3 — verifying the two PAFs share the same read-ID set...");
+        eprintln!("[INFO] verifying the two PAFs share the same read-ID set...");
         let chk = read_id_set_check(&a_sorted, &b_sorted, 5)?;
         eprintln!(
             "  shared: {}   only in {}: {}   only in {}: {}",
@@ -236,11 +232,7 @@ pub fn run(args: &CompareArgs) -> Result<()> {
     };
 
     // ── Step 3: single in-memory lock-step pass (collapse + compare + tee) ────
-    if args.presorted {
-        eprintln!("[INFO] comparing in one pass...");
-    } else {
-        eprintln!("[INFO] Step 3/3 — comparing in one pass...");
-    }
+    eprintln!("[INFO] comparing in one pass...");
     let mut summary = CompareSummary::default();
     let diff_acc = if args.skip_find_aln_diff {
         None
@@ -312,7 +304,7 @@ pub fn run(args: &CompareArgs) -> Result<()> {
     // Aggregate summary statistics → sidecar TSV + stderr block.
     summary.write_tsv(&summary_out, &args.label_a, &args.label_b, &[])?;
     summary.render_stderr_brief(&args.label_a, &args.label_b);
-    eprintln!("Outputs in {}/", args.outdir);
+    eprintln!("Outputs in {}/", args.outdir.trim_end_matches('/'));
 
     Ok(())
 }
