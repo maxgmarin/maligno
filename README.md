@@ -90,7 +90,7 @@ results/Splice_vs_SpliceHQ.query_diff_regions.B.bed.gz
 
 | Flag | Purpose |
 |------|---------|
-| `-a`, `-b` | input PAF for set A / B (`.gz` and `-` ok) |
+| `-a`, `-b` | input PAF for set A / B (supports `.gz` compressed files) |
 | `--label-a`, `--label-b` | names for each set, used in filenames and recorded in the comparison table's `Label_A` / `Label_B` columns |
 | `-o`, `--outdir` | output directory |
 | `-p`, `--prefix` | filename prefix for all outputs |
@@ -120,44 +120,6 @@ A `compare` run can write the following files in the user defined output directo
 | `{prefix}.query_diff_reads.tsv.gz` | 10 | table of all reads with difference in alignment between set A and B  |
 | `{prefix}.query_diff_regions.{A,B}.bed.gz` | 8 | genomic regions where differing reads cluster, per set |
 
-#### The alignment comparison table (`{prefix}.compare.tsv.gz` or `{prefix}.compare.parquet`)
-
-One row per read, 96 columns: the representative alignment's stats for set A and
-for set B (suffixed `_A` / `_B`), plus a block of columns comparing how those two
-alignments differ (score, coverage, indels, soft-clipping, and junction agreement
-in both query and genomic space).
-
-For the full column-by-column layout and dictionary, junction/format details, and
-schema-migration notes, see [`docs/COMPARE_TABLE.md`](docs/COMPARE_TABLE.md).
-
-#### Summary statistics in `{prefix}.compare.summary.tsv`
-
-Alongside the comparison table, `compare` writes a small `…summary.tsv` with
-predefined aggregate counts. 
-
-The headline is the **per-read alignment status**, followed by **identity** stats:
-
-| Category | Meaning |
-|----------|---------|
-| `label_A` / `label_B` | which dataset each side is (the `--label-a` / `--label-b` values), so the summary is self-describing |
-| `aligned_both` / `aligned_only_A` / `aligned_only_B` / `aligned_neither` | how the read's representative alignment maps in each set (an unmapped side is `TargetChr == "*"`) |
-| `query_identical` / `query_not_identical` | both sides mapped over the same query span with the **same alignment relative to the read** (identical `cs` tag operations), and its complement among `aligned_both` reads |
-| `query_junctions_identical` / `query_junctions_not_identical` | same, but comparing only the **query-space splice-junction set** (ignores mismatches/indels/soft-clips) |
-| `ref_same_position_same_aln` | reference-identical: same `TargetChr` + `Strand` + `Target_Start` (same genomic position) **and** same `cs` |
-| `ref_same_position_diff_aln` | same reference position, different alignment (e.g. a different indel placement at the same site) |
-| `ref_diff_position_same_aln` | same alignment, different reference position |
-| `ref_diff_position_diff_aln` | both reference position and alignment differ |
-| `ref_same_position_same_junctions` / `ref_same_position_diff_junctions` | among same-position reads, whether the **genomic-coordinate splice-junction set** also matches |
-| `present_only_in_A_by_id` / `present_only_in_B_by_id` | sequences found in only one set's PAF (will be 0 unless `--allow-id-mismatch` is used) |
-
-To get the same summary from an existing comparison table, use
-**`compare-toolkit summary`**:
-
-```bash
-maligno compare-toolkit summary -i AvsB.compare.tsv.gz -o AvsB.compare.summary.tsv
-```
-
-Full definitions are in the [reference](docs/REFERENCE.md#compare-toolkit-merge-readinfo-and-the-comparison-core).
 
 ## Included test dataset (Annotated Gencode v49 Human Transcripts from Chr22)
 
@@ -202,6 +164,52 @@ The full manual lives in **[`docs/REFERENCE.md`](docs/REFERENCE.md)**:
 - `sam2paf` utility program (SAM → PAF).
 - The complete column dictionary for every output table.
 - Static HPC build and the source layout.
+
+---
+
+## Extra details for the output tables
+
+
+#### The alignment comparison table (`{prefix}.compare.tsv.gz` or `{prefix}.compare.parquet`)
+
+One row per read, 96 columns: the representative alignment's stats for set A and
+for set B (suffixed `_A` / `_B`), plus a block of columns comparing how those two
+alignments differ (score, coverage, indels, soft-clipping, and junction agreement
+in both query and genomic space).
+
+For the full column-by-column layout and dictionary, junction/format details, and
+schema-migration notes, see [`docs/COMPARE_TABLE.md`](docs/COMPARE_TABLE.md).
+
+---
+
+#### Summary statistics in `{prefix}.compare.summary.tsv`
+
+Alongside the comparison table, `compare` writes a small `…summary.tsv` with
+predefined aggregate counts. 
+
+The headline is the **per-read alignment status**, followed by **identity** stats:
+
+| Category | Meaning |
+|----------|---------|
+| `label_A` / `label_B` | which dataset each side is (the `--label-a` / `--label-b` values), so the summary is self-describing |
+| `aligned_both` / `aligned_only_A` / `aligned_only_B` / `aligned_neither` | how the read's representative alignment maps in each set (an unmapped side is `TargetChr == "*"`) |
+| `query_identical` / `query_not_identical` | both sides mapped over the same query span with the **same alignment relative to the read** (identical `cs` tag operations), and its complement among `aligned_both` reads |
+| `query_junctions_identical` / `query_junctions_not_identical` | same, but comparing only the **query-space splice-junction set** (ignores mismatches/indels/soft-clips) |
+| `ref_same_position_same_aln` | reference-identical: same `TargetChr` + `Strand` + `Target_Start` (same genomic position) **and** same `cs` |
+| `ref_same_position_diff_aln` | same reference position, different alignment (e.g. a different indel placement at the same site) |
+| `ref_diff_position_same_aln` | same alignment, different reference position |
+| `ref_diff_position_diff_aln` | both reference position and alignment differ |
+| `ref_same_position_same_junctions` / `ref_same_position_diff_junctions` | among same-position reads, whether the **genomic-coordinate splice-junction set** also matches |
+| `present_only_in_A_by_id` / `present_only_in_B_by_id` | sequences found in only one set's PAF (will be 0 unless `--allow-id-mismatch` is used) |
+
+To get the same summary from an existing comparison table, use
+**`compare-toolkit summary`**:
+
+```bash
+maligno compare-toolkit summary -i AvsB.compare.tsv.gz -o AvsB.compare.summary.tsv
+```
+
+Full definitions are in the [reference](docs/REFERENCE.md#compare-toolkit-merge-readinfo-and-the-comparison-core).
 
 ---
 
