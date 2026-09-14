@@ -46,7 +46,7 @@ A static Linux (musl) build for HPC is described in the
 Compare the two bundled test PAFs (the same `GRCh38-Gencode-Chr22` transcripts aligned with
 differing minimap2 paramters. (`--x splice` vs `--x splice:hq`). This test dataset includes all GENCODE reference transcripts from human chromosome 22 aligned with different `minimap2` alignment parameters. The set of sequenced aligned (ReadIDs) are identical between the two PAF files.
 
-### Step 1: Use `maligno compare` to generate detailed comparisons of each sequence's alignment across the two input alignment files
+####  Use `maligno compare` to generate detailed comparisons of each sequence's alignment across the two input alignment files
 
 ```bash
 maligno compare \
