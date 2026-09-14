@@ -37,6 +37,7 @@ const COL_SEQID: usize = 31;
 const COL_QUERY_ALN_LEN: usize = 32;
 const COL_QUERY_ALN_COV: usize = 33;
 const COL_GENOMIC_JUNCTIONS: usize = 34;
+const COL_TP_TAG: usize = 35;
 
 pub const READINFO_HEADER: &str = "Read_Name\tRead_Len\t\
     TargetChr\tStrand\tMQ_Best\t\
@@ -55,7 +56,8 @@ pub const READINFO_HEADER: &str = "Read_Name\tRead_Len\t\
     cs\t\
     genomic_junctions\t\
     Query_Start\tQuery_End\t\
-    Target_Start\tTarget_End";
+    Target_Start\tTarget_End\t\
+    tp_tag";
 
 // ── ReadInfo row ─────────────────────────────────────────────────────────────
 
@@ -101,6 +103,9 @@ pub struct ReadInfoRow {
     /// Best alignment's target_start / target_end (0-based half-open, BED-style, on the reference).
     pub target_start: u64,
     pub target_end: u64,
+    /// Best alignment's PAF `tp:A` tag (alignment type: 'P' primary, 'S'
+    /// secondary, 'I' inversion of the primary). '*' when absent or unmapped.
+    pub tp_tag: char,
     /// All fields except Read_Name and Read_Len, pre-formatted for pass-through.
     pub raw_fields: Vec<String>,
 }
@@ -226,6 +231,7 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
     let junctions = bf[COL_JUNCTIONS].clone();
     let cs = bf[COL_CS].clone();
     let genomic_junctions = bf[COL_GENOMIC_JUNCTIONS].clone();
+    let tp_tag: char = bf.get(COL_TP_TAG).and_then(|s| s.chars().next()).unwrap_or('*');
     let junc_count = junction_count_str(&junctions);
 
     // Aggregate stats over all rows in the group.
@@ -315,6 +321,7 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
         query_end.to_string(),
         target_start.to_string(),
         target_end.to_string(),
+        tp_tag.to_string(),
     ];
 
     ReadInfoRow {
@@ -351,6 +358,7 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
         query_end,
         target_start,
         target_end,
+        tp_tag,
         raw_fields,
     }
 }

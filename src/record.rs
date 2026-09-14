@@ -60,6 +60,9 @@ pub struct AlnInfo {
     /// `chrom` is embedded per tuple so cross-chromosome set comparisons are automatically
     /// disjoint (junctions on different contigs never collide).
     pub genomic_junctions:    Vec<(String, u64, u64)>,
+    /// PAF `tp:A` tag (alignment type: 'P' primary, 'S' secondary, 'I' inversion
+    /// of the primary). '*' when absent or unmapped.
+    pub tp_tag:               char,
 }
 
 impl AlnInfo {
@@ -180,6 +183,7 @@ impl AlnInfo {
             query_aln_len,
             query_aln_cov,
             genomic_junctions,
+            tp_tag:              rec.tp_tag,
         }
     }
 
@@ -199,7 +203,7 @@ impl AlnInfo {
              N_SoftClipped_Events\t\
              junctions\tsplice_junction_count\t\
              Target_Start_1based\tseqid\tQuery_Aln_Len\tQuery_Aln_Cov\t\
-             genomic_junctions"
+             genomic_junctions\ttp_tag"
         )
     }
 
@@ -237,6 +241,7 @@ impl AlnInfo {
 
         // genomic_junctions: nested Python tuple format with chrom embedded
         write_genomic_junction_tuple(w, &self.genomic_junctions)?;
+        write!(w, "\t{}", self.tp_tag)?;
         writeln!(w)
     }
 }

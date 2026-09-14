@@ -21,6 +21,10 @@ pub struct PafRecord<'a> {
     pub aln_score:            i64,
     /// cs tag string (borrowed from the input line).
     pub cs:                   &'a str,
+    /// SAM/PAF `tp:A` tag (alignment type: 'P' primary, 'S' secondary,
+    /// 'I' inversion of the primary). '*' when absent or unmapped — the
+    /// same sentinel this codebase already uses for an unknown `strand`.
+    pub tp_tag:               char,
     /// True when Target_Name == "*" (unmapped record).
     pub is_unmapped:          bool,
 }
@@ -69,30 +73,32 @@ pub fn parse_line(line: &str, lineno: u64) -> Result<PafRecord<'_>> {
 
     let is_unmapped = target_name == "*" || strand == '*';
 
-    // Parse optional tags: scan tab-separated fields for ms:i, AS:i, cs:Z.
-    let (ms, aln_score, cs) = parse_tags(tags_raw, is_unmapped);
+    // Parse optional tags: scan tab-separated fields for ms:i, AS:i, cs:Z, tp:A.
+    let (ms, aln_score, cs, tp_tag) = parse_tags(tags_raw, is_unmapped);
 
     Ok(PafRecord {
         query_name, query_len, query_start, query_end, strand,
         target_name, target_len, target_start, target_end,
         num_residue_matches: num_res, aln_block_len: aln_blk, mapq,
-        ms, aln_score, cs,
+        ms, aln_score, cs, tp_tag,
         is_unmapped,
     })
 }
 
-/// Scan the optional-tag substring for `ms:i:`, `AS:i:`, and `cs:Z:`.
-/// Returns `(ms, AS, cs_slice)`.
+/// Scan the optional-tag substring for `ms:i:`, `AS:i:`, `cs:Z:`, and `tp:A:`.
+/// Returns `(ms, AS, cs_slice, tp_tag)`.
 ///
-/// For unmapped records it will return (0, 0, "").
-fn parse_tags(raw: &str, is_unmapped: bool) -> (i64, i64, &str) {
+/// For unmapped records it will return (0, 0, "", '*'). `tp_tag` defaults to
+/// '*' when the tag is simply absent from a mapped record too.
+fn parse_tags(raw: &str, is_unmapped: bool) -> (i64, i64, &str, char) {
     if is_unmapped {
-        return (0, 0, "");
+        return (0, 0, "", '*');
     }
 
     let mut ms: i64  = 0;
     let mut aln: i64 = 0;
     let mut cs: &str = "";
+    let mut tp_tag: char = '*';
 
     for field in raw.split('\t') {
         let b = field.as_bytes();
@@ -101,11 +107,12 @@ fn parse_tags(raw: &str, is_unmapped: bool) -> (i64, i64, &str) {
             b"ms:i:" => { ms  = parse_signed_int(&b[5..]); }
             b"AS:i:" => { aln = parse_signed_int(&b[5..]); }
             b"cs:Z:" => { cs  = &field[5..]; }
+            b"tp:A:" => { tp_tag = field.as_bytes()[5] as char; }
             _ => {}
         }
     }
 
-    (ms, aln, cs)
+    (ms, aln, cs, tp_tag)
 }
 
 #[inline]

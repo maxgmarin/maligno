@@ -112,8 +112,8 @@ A `compare` run can write the following files in the user defined output directo
 
 | File | Cols | Contents |
 |------|------|----------|
-| `{prefix}.{label}.alninfo.tsv.gz` | 35 | **per-alignment** table: one row per PAF alignment (every alignment, per set); opt-in via `--emit-alninfo` |
-| `{prefix}.{label}.readinfo.tsv.gz` | 33 | **per-read** table: the chosen best alignment for each read (per set); opt-in via `--emit-readinfo` |
+| `{prefix}.{label}.alninfo.tsv.gz` | 36 | **per-alignment** table: one row per PAF alignment (every alignment, per set); opt-in via `--emit-alninfo` |
+| `{prefix}.{label}.readinfo.tsv.gz` | 34 | **per-read** table: the chosen best alignment for each read (per set); opt-in via `--emit-readinfo` |
 | `{prefix}.compare.tsv.gz` | 96 | the **comparison** table (unless `--format parquet`) |
 | `{prefix}.compare.parquet` | 96 | the same table as Parquet (unless `--format tsv`) |
 | `{prefix}.compare.summary.tsv` | 2 | **aggregate summary statistics** (see below) |
@@ -141,7 +141,7 @@ maligno compare \
 # Inspect a comparison header (column number → name).
 zcat < test_data/test_results/Splice_vs_SpliceHQ.compare.tsv.gz | head -1 | tr '\t' '\n' | nl
 
-# Sanity-check column counts (expect 35, 33, 96, plus 10 for the query_diff_reads.tsv.gz output table.
+# Sanity-check column counts (expect 36, 34, 96, plus 10 for the query_diff_reads.tsv.gz output table.
 for f in test_data/test_results/Splice_vs_SpliceHQ.*.tsv.gz; do
   printf '%s\t' "$f"; zcat < "$f" | awk -F'\t' '{print NF}' | sort -u | paste -sd, -
 done

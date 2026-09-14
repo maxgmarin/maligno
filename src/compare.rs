@@ -103,11 +103,11 @@ pub struct CompareArgs {
     #[arg(long = "presorted", conflicts_with_all = ["allow_id_mismatch", "keep_sorted_paf"])]
     presorted: bool,
 
-    /// Write the per-set alninfo (35-col) tables (off by default).
+    /// Write the per-set alninfo (36-col) tables (off by default).
     #[arg(long = "emit-alninfo")]
     emit_alninfo: bool,
 
-    /// Write the per-set readinfo (33-col) tables (off by default).
+    /// Write the per-set readinfo (34-col) tables (off by default).
     #[arg(long = "emit-readinfo")]
     emit_readinfo: bool,
 
