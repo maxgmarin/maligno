@@ -1107,6 +1107,91 @@ rather than aborting the run.
 
 ---
 
+## Per-read junction reconstruction (`compare-toolkit query-junction-diff`)
+
+`compare-toolkit query-junction-diff` (added in v0.26.0; source under
+`src/query_junction_diff/`) reads an existing `compare` / `compare-toolkit
+merge-readinfo` comparison table and reconstructs, per read and per side
+(A/B), each splice junction's query-space coordinate paired with its
+genomic-space coordinate — then reports which junctions are unsupported by
+the other side. Standalone only; `compare` does not run this by default. The
+"query" in the name reflects that read selection is anchored at the
+**query** coordinate space (`N_Junctions_OnlyA`/`N_Junctions_OnlyB`) — the
+paired genomic coordinates are the reconstruction, not an independent
+selection criterion.
+
+**Why it re-derives junctions from `cs` instead of trusting the comparison
+table's own `junctions`/`genomic_junctions` columns**: in
+`AlnInfo::from_paf` (`src/record.rs`), a `-`-strand alignment's `junctions`
+column is flipped and sorted into ascending query order, but its paired
+`genomic_junctions` column (built from the same cs-walk data) is never
+reordered to match. Every individual value in both stored columns is
+correct — only the positional correspondence between the two lists breaks
+for `-`-strand alignments. This has never affected any existing output, since
+nothing else in the crate reads the two columns index-paired — every other
+consumer treats each as an independent, order-insensitive set.
+`query-junction-diff` is the first consumer that needs the pairing, so it
+re-parses each side's `cs` tag itself (`reconstruct.rs`) and sorts the query
+and genomic vectors together with one shared, stable permutation,
+guaranteeing correct pairing without changing `record.rs` or any existing
+table's schema.
+
+**Usage:**
+
+```bash
+maligno compare-toolkit query-junction-diff -i AvsB.compare.tsv.gz --outdir results/ --prefix AvsB [--no-gzip]
+# -i: a compare / compare-toolkit merge-readinfo table (.gz, .parquet, or - ok)
+```
+
+### Read selection
+
+A read gets full junction reconstruction ("differing") iff:
+
+```
+mapped_a = TargetChr_A not empty/"*"      (mapped_b symmetric)
+differing =
+    (mapped_a && mapped_b)   => NOT (N_Junctions_OnlyA == 0 && N_Junctions_OnlyB == 0)
+    (mapped_a && !mapped_b)  => JuncCount_A > 0
+    (!mapped_a && mapped_b)  => JuncCount_B > 0
+    (!mapped_a && !mapped_b) => false
+```
+
+i.e. both-mapped reads whose query-space junction sets differ, plus
+only-one-side-mapped reads whose mapped side has at least one splice junction
+(a junction with nothing to compare against is, by definition, unsupported).
+Excluded: unmapped-on-both-sides reads, both-mapped reads with identical
+query junctions, and only-one-side reads with zero junctions on that side —
+every excluded row is still tallied in the summary.
+
+### Outputs
+
+| File | Contents |
+|------|----------|
+| `{prefix}.query_junction_diff.summary.tsv` | parse-time funnel counts (never gzipped) — see [spec](output-tables/query-junction-diff-summary.md) |
+| `{prefix}.per_read_query_junction_diff.summary.tsv[.gz]` | one row per reconstructed junction, per side, per differing read — see [spec](output-tables/per-read-query-junction-diff.md) |
+| `{prefix}.query_junction_diff_unmatched.A.tsv[.gz]` | distinct genomic junctions called in A, unsupported in B, with a per-locus read count — see [spec](output-tables/query-junction-diff-unmatched.md) |
+| `{prefix}.query_junction_diff_unmatched.B.tsv[.gz]` | same, for junctions called in B unsupported in A |
+
+`junction_index` (in the per-read table) is 1-based and computed
+independently per side — it is a display/sort key along the read's own
+5'→3' order, not a matching key across sides.
+
+### Source layout
+
+Unlike most `compare-toolkit` commands (one file each under `src/`), this
+command's implementation is split across a small directory,
+`src/query_junction_diff/`, mirroring the existing `src/sam2paf/` precedent
+(a directory module with `mod.rs` plus concern-split submodules):
+
+| File | Contents |
+|------|----------|
+| `mod.rs` | CLI args, column resolution, the streaming row loop, output-file orchestration |
+| `reconstruct.rs` | `JunctionRecord`, the `cs`-tag reconstruction + stable-permutation pairing, cross-matching |
+| `summary.rs` | The parse-time funnel-count accumulator |
+| `rollup.rs` | The per-side unmatched-junction rollup accumulator and writer |
+
+---
+
 ## Troubleshooting
 
 ### "`merge-readinfo` matched far fewer reads than I expected" — sort-order diagnostic

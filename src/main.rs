@@ -39,6 +39,10 @@
 //!                                         statistics (alignment status +
 //!                                         query/reference identity) — the same
 //!                                         thing `compare` tallies inline
+//!   7. `compare-toolkit query-junction-diff` comparison table → per-read,
+//!                                         per-side splice-junction reconstruction
+//!                                         (query-space selected, genomic-space
+//!                                         paired) and diff
 //!
 //! The comparison itself is a streaming merge-join (constant memory): only reads
 //! present in BOTH inputs (matched on Read_Name + Read_Len) produce an output row.
@@ -52,6 +56,7 @@ mod parquet_out;        // Parquet writer for the comparison table (schema deriv
 mod compare_streaming;  // `compare-toolkit merge-readinfo` command + merge-join machinery
 mod compare_summary;    // `compare-toolkit summary` command + shared classifier/accumulator
 mod find_query_diff;   // `find-aln-diff` command (differing reads + regions, query or reference space)
+mod query_junction_diff; // `query-junction-diff` command (per-read, per-side splice-junction reconstruction + diff)
 mod interval_merge;     // generic sort+sweep interval merge (bedtools merge -c -o count)
 mod cs_parser;          // cs-tag parser  (PAF → alninfo path; also extracts genomic junctions)
 mod io_utils;
@@ -76,6 +81,7 @@ use compare_streaming::MergeReadinfoArgs;
 use compare_summary::CompareSummaryArgs;
 use find_query_diff::FindAlnDiffArgs;
 use paf2tables::Paf2TablesArgs;
+use query_junction_diff::QueryJunctionDiffArgs;
 use sam2paf::Sam2pafArgs;
 
 /// Unified alignment-comparison toolkit.
@@ -112,6 +118,9 @@ enum ToolkitCommands {
     /// Comparison table → find differing reads and the regions where they cluster.
     #[command(name = "find-aln-diff")]
     FindAlnDiff(FindAlnDiffArgs),
+    /// Comparison table → per-read, per-side splice-junction reconstruction and diff.
+    #[command(name = "query-junction-diff")]
+    QueryJunctionDiff(QueryJunctionDiffArgs),
 }
 
 fn main() -> Result<()> {
@@ -124,6 +133,7 @@ fn main() -> Result<()> {
             ToolkitCommands::MergeReadinfo(args) => compare_streaming::run(args),
             ToolkitCommands::Summary(args)       => compare_summary::run(args),
             ToolkitCommands::FindAlnDiff(args)   => find_query_diff::run(args),
+            ToolkitCommands::QueryJunctionDiff(args) => query_junction_diff::run(args),
         },
     }
 }

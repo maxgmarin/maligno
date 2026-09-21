@@ -120,6 +120,25 @@ A `compare` run can write the following files in the user defined output directo
 | `{prefix}.query_diff_reads.tsv.gz` | 10 | table of all reads with difference in alignment between set A and B  |
 | `{prefix}.query_diff_regions.{A,B}.bed.gz` | 10 | genomic regions where differing reads cluster, per set |
 
+Separately, **`compare-toolkit query-junction-diff`** takes an existing
+`compare.tsv`/`.parquet`, selects reads whose **query-space** splice
+junctions differ, and reconstructs those junctions per side, paired in both
+query and genomic coordinate space, plus a rollup of which specific junctions
+are unsupported by the other side:
+
+```bash
+maligno compare-toolkit query-junction-diff \
+  -i results/Splice_vs_SpliceHQ.compare.tsv.gz \
+  --outdir results/ --prefix Splice_vs_SpliceHQ
+```
+
+```
+results/Splice_vs_SpliceHQ.query_junction_diff.summary.tsv
+results/Splice_vs_SpliceHQ.per_read_query_junction_diff.summary.tsv.gz
+results/Splice_vs_SpliceHQ.query_junction_diff_unmatched.A.tsv.gz
+results/Splice_vs_SpliceHQ.query_junction_diff_unmatched.B.tsv.gz
+```
+
 
 ## Included test dataset (Annotated Gencode v49 Human Transcripts from Chr22)
 
@@ -158,9 +177,10 @@ zcat < test_data/test_results/Splice_vs_SpliceHQ.compare.tsv.gz \
 The comparison table's column-by-column format lives in
 **[`docs/COMPARE_TABLE.md`](docs/COMPARE_TABLE.md)**.
 
-A per-column spec for every output file `compare` can write (alninfo,
-readinfo, the comparison table, the summary TSV, and the diff-reads/regions
-tables) lives in **[`docs/output-tables/`](docs/output-tables/)**.
+A per-column spec for every output file `compare` (and `compare-toolkit
+query-junction-diff`) can write — alninfo, readinfo, the comparison table, the
+summary TSV, the diff-reads/regions tables, and the query-junction-diff
+tables — lives in **[`docs/output-tables/`](docs/output-tables/)**.
 
 The full manual lives in **[`docs/REFERENCE.md`](docs/REFERENCE.md)**:
 
