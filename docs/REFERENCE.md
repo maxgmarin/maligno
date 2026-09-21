@@ -1085,12 +1085,19 @@ query-different but reference-identical, without a second run in the other
 For a both-mapped read, exactly one of the four `ref_*` columns is `1` (they
 partition `RefClass`); all four are `0` for a read mapped on only one side.
 
-Region-table columns: `#chrom  start  end  n_reads  n_both  n_only_<A\|B>  n_plus  n_minus`
-— `n_reads = n_both + n_only_*`; `n_plus + n_minus <= n_reads`. Loci are formed by
-a generic sort + single-sweep merge (`src/interval_merge.rs`), equivalent to
-`bedtools merge -c -o count`, verified against a real `bedtools` oracle at both
-small (~11.6K reads) and genome scale (~986K reads, 31.5K differing) — exact match
-on `(chrom, start, end, n_reads)` in both cases.
+Region-table columns: `#chrom  start  end  n_diff_aln_total  n_diff_aln_to_both  n_diff_aln_only_<A\|B>  n_diff_aln_both_junctions_differ  n_diff_aln_both_junctions_same  n_diff_aln_plus_strand  n_diff_aln_minus_strand`
+— `n_diff_aln_total = n_diff_aln_to_both + n_diff_aln_only_*`;
+`n_diff_aln_plus_strand + n_diff_aln_minus_strand <= n_diff_aln_total`.
+`n_diff_aln_both_junctions_differ`/`n_diff_aln_both_junctions_same` split
+`n_diff_aln_to_both` by whether the pair's **query-space** splice junctions
+match (`query_junctions_identical` above), independent of
+`--space`/`--compare-by`, so `n_diff_aln_to_both =
+n_diff_aln_both_junctions_differ + n_diff_aln_both_junctions_same`. Loci are
+formed by a generic sort + single-sweep merge (`src/interval_merge.rs`),
+equivalent to `bedtools merge -c -o count`, verified against a real
+`bedtools` oracle at both small (~11.6K reads) and genome scale (~986K reads,
+31.5K differing) — exact match on `(chrom, start, end, n_diff_aln_total)` in
+both cases.
 
 **A read may appear on only one side.** A `diff_aln_only_B` read has no A
 coordinate and is absent from the A region table (but still counted and listed in

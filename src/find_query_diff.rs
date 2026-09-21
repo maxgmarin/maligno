@@ -147,7 +147,8 @@ pub struct FindAlnDiffArgs {
 }
 
 /// Whether a differing read is mapped on both sides or only this coordinate
-/// space's side (rendered as `n_only_A` / `n_only_B` depending on the table).
+/// space's side (rendered as `n_diff_aln_only_A` / `n_diff_aln_only_B`
+/// depending on the table).
 #[derive(Clone, Copy)]
 enum Outcome {
     Both,
@@ -158,34 +159,54 @@ enum Outcome {
 struct DiffMeta {
     strand: char,
     outcome: Outcome,
+    /// Whether this read's **query-space** splice junctions match between A
+    /// and B (`classify()`'s `query_junctions_identical`, computed the same
+    /// way regardless of `--space`/`--compare-by`). Only meaningful for
+    /// `Outcome::Both`; splits `n_diff_aln_to_both` into
+    /// `n_diff_aln_both_junctions_differ` / `n_diff_aln_both_junctions_same`
+    /// in the region table.
+    query_junctions_identical: bool,
 }
 
 /// Per-locus accumulator.
 #[derive(Default)]
 struct DiffAcc {
-    n_reads: u64,
-    n_both: u64,
-    n_only: u64,
-    n_plus: u64,
-    n_minus: u64,
+    n_diff_aln_total: u64,
+    n_diff_aln_to_both: u64,
+    n_diff_aln_both_junctions_differ: u64,
+    n_diff_aln_both_junctions_same: u64,
+    n_diff_aln_only: u64,
+    n_diff_aln_plus_strand: u64,
+    n_diff_aln_minus_strand: u64,
 }
 
 fn fold_diff(a: &mut DiffAcc, m: &DiffMeta) {
-    a.n_reads += 1;
+    a.n_diff_aln_total += 1;
     match m.outcome {
-        Outcome::Both => a.n_both += 1,
-        Outcome::OnlySide => a.n_only += 1,
+        Outcome::Both => {
+            a.n_diff_aln_to_both += 1;
+            if m.query_junctions_identical {
+                a.n_diff_aln_both_junctions_same += 1;
+            } else {
+                a.n_diff_aln_both_junctions_differ += 1;
+            }
+        }
+        Outcome::OnlySide => a.n_diff_aln_only += 1,
     }
     match m.strand {
-        '+' => a.n_plus += 1,
-        '-' => a.n_minus += 1,
+        '+' => a.n_diff_aln_plus_strand += 1,
+        '-' => a.n_diff_aln_minus_strand += 1,
         _ => {}
     }
 }
 
 /// Build a genomic interval from one side's accessor. Returns `None` (caller
 /// counts it as a bad interval) if the coord is unmapped, unparseable, or `end <= start`.
-fn build_ivl<'a>(get: impl Fn(&str) -> &'a str, outcome: Outcome) -> Option<Ivl<DiffMeta>> {
+fn build_ivl<'a>(
+    get: impl Fn(&str) -> &'a str,
+    outcome: Outcome,
+    query_junctions_identical: bool,
+) -> Option<Ivl<DiffMeta>> {
     let chrom = get("TargetChr");
     if chrom.is_empty() || chrom == "*" {
         return None;
@@ -200,7 +221,7 @@ fn build_ivl<'a>(get: impl Fn(&str) -> &'a str, outcome: Outcome) -> Option<Ivl<
         chrom: chrom.to_string(),
         start,
         end,
-        meta: DiffMeta { strand, outcome },
+        meta: DiffMeta { strand, outcome, query_junctions_identical },
     })
 }
 
@@ -321,14 +342,15 @@ impl AlnDiffAccumulator {
         self.n_diff_rows += 1;
 
         let outcome = if in_a && in_b { Outcome::Both } else { Outcome::OnlySide };
+        let same_junctions = base.query_junctions_identical.unwrap_or(false);
         if in_a {
-            match build_ivl(&get_a, outcome) {
+            match build_ivl(&get_a, outcome, same_junctions) {
                 Some(iv) => self.vec_a.push(iv),
                 None => self.n_bad_interval += 1,
             }
         }
         if in_b {
-            match build_ivl(&get_b, outcome) {
+            match build_ivl(&get_b, outcome, same_junctions) {
                 Some(iv) => self.vec_b.push(iv),
                 None => self.n_bad_interval += 1,
             }
@@ -349,9 +371,9 @@ impl AlnDiffAccumulator {
              and associated genomic regions..."
         );
         let loci_a = merge_and_count(self.vec_a, DiffAcc::default, fold_diff);
-        write_region_table(regions_a_out, &loci_a, "n_only_A")?;
+        write_region_table(regions_a_out, &loci_a, "n_diff_aln_only_A")?;
         let loci_b = merge_and_count(self.vec_b, DiffAcc::default, fold_diff);
-        write_region_table(regions_b_out, &loci_b, "n_only_B")?;
+        write_region_table(regions_b_out, &loci_b, "n_diff_aln_only_B")?;
         eprintln!("[INFO] find-aln-diff: done.");
         Ok(AlnDiffStats {
             n_diff_rows: self.n_diff_rows,
@@ -551,12 +573,26 @@ fn write_region_table(
     only_col: &str,
 ) -> Result<()> {
     let mut w = open_output(Some(path))?;
-    writeln!(w, "#chrom\tstart\tend\tn_reads\tn_both\t{only_col}\tn_plus\tn_minus")?;
+    writeln!(
+        w,
+        "#chrom\tstart\tend\tn_diff_aln_total\tn_diff_aln_to_both\t{only_col}\t\
+         n_diff_aln_both_junctions_differ\tn_diff_aln_both_junctions_same\t\
+         n_diff_aln_plus_strand\tn_diff_aln_minus_strand"
+    )?;
     for l in loci {
         writeln!(
             w,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            l.chrom, l.start, l.end, l.acc.n_reads, l.acc.n_both, l.acc.n_only, l.acc.n_plus, l.acc.n_minus
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            l.chrom,
+            l.start,
+            l.end,
+            l.acc.n_diff_aln_total,
+            l.acc.n_diff_aln_to_both,
+            l.acc.n_diff_aln_only,
+            l.acc.n_diff_aln_both_junctions_differ,
+            l.acc.n_diff_aln_both_junctions_same,
+            l.acc.n_diff_aln_plus_strand,
+            l.acc.n_diff_aln_minus_strand
         )?;
     }
     w.flush()?;

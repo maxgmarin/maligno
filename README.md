@@ -118,7 +118,7 @@ A `compare` run can write the following files in the user defined output directo
 | `{prefix}.compare.parquet` | 96 | the same table as Parquet (unless `--format tsv`) |
 | `{prefix}.compare.summary.tsv` | 2 | **aggregate summary statistics** (see below) |
 | `{prefix}.query_diff_reads.tsv.gz` | 10 | table of all reads with difference in alignment between set A and B  |
-| `{prefix}.query_diff_regions.{A,B}.bed.gz` | 8 | genomic regions where differing reads cluster, per set |
+| `{prefix}.query_diff_regions.{A,B}.bed.gz` | 10 | genomic regions where differing reads cluster, per set |
 
 
 ## Included test dataset (Annotated Gencode v49 Human Transcripts from Chr22)
@@ -157,6 +157,10 @@ zcat < test_data/test_results/Splice_vs_SpliceHQ.compare.tsv.gz \
 
 The comparison table's column-by-column format lives in
 **[`docs/COMPARE_TABLE.md`](docs/COMPARE_TABLE.md)**.
+
+A per-column spec for every output file `compare` can write (alninfo,
+readinfo, the comparison table, the summary TSV, and the diff-reads/regions
+tables) lives in **[`docs/output-tables/`](docs/output-tables/)**.
 
 The full manual lives in **[`docs/REFERENCE.md`](docs/REFERENCE.md)**:
 
