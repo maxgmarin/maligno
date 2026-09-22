@@ -38,13 +38,25 @@
 //! Outputs (to `--outdir`, `--prefix`-named):
 //!   1. `{prefix}.query_junction_diff.summary.tsv`                    — parse-time
 //!      funnel counts (always uncompressed).
-//!   2. `{prefix}.per_read_query_junction_diff.summary.tsv[.gz]`      — one row per
-//!      reconstructed junction per side per differing read.
-//!   3. `{prefix}.query_junction_diff_unmatched.A.tsv[.gz]`           — distinct
+//!   2. `{prefix}.per_read_query_junction_diff.summary.tsv.gz`        — one row per
+//!      reconstructed junction per side per differing read (always gzipped).
+//!   3. `{prefix}.query_junction_diff_unmatched.A.tsv.gz`             — distinct
 //!      genomic junctions called in A that were never matched in B, with how
-//!      many reads support each.
-//!   4. `{prefix}.query_junction_diff_unmatched.B.tsv[.gz]`           — same,
+//!      many reads support each, plus how many reads *total* (across the
+//!      whole table) carry that junction on side A (always gzipped).
+//!   4. `{prefix}.query_junction_diff_unmatched.B.tsv.gz`             — same,
 //!      for B.
+//!
+//! **Two-pass design.** Pass 1 (above) reconstructs junctions only for the
+//! small "differing" subset, identifying which junctions are unsupported.
+//! Pass 2 re-scans the *entire* comparison table a second time, narrowly
+//! column-projected, tallying total occurrences of exactly those
+//! already-flagged junctions — a cheap pass needing only genomic-space set
+//! membership (`genomic_junctions_A/B`), no `cs`-tag reconstruction, since it
+//! never needs to know a junction's query position. This is why `--input`
+//! must be Parquet: pass 2 re-reads the same file, which needs a real,
+//! seekable, column-project-able source (not `stdin`, and much cheaper than
+//! a second full TSV parse).
 
 mod reconstruct;
 mod rollup;
@@ -55,14 +67,14 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::compare_summary::{labels_from_row, require_ab_schema};
 use crate::io_utils::open_output;
 use crate::table_input::{open_table, InputFormat};
 
 use reconstruct::{build_junction_records, build_side_junctions, side_position_sets, write_per_read_row};
-use rollup::{accumulate_unmatched, write_unmatched_table, UnmatchedAcc};
+use rollup::{accumulate_side_total, accumulate_unmatched, write_unmatched_table, TotalsAcc, UnmatchedAcc};
 use summary::Summary;
 
 /// A `TargetChr` value indicates an unmapped read when it is empty or `"*"`
@@ -77,17 +89,12 @@ fn is_mapped(target_chr: &str) -> bool {
 /// table → `compare.tsv`/`.parquet` schema — not the original PAFs.
 #[derive(clap::Args, Debug)]
 pub struct QueryJunctionDiffArgs {
-    /// Comparison table from `compare` / `compare-toolkit merge-readinfo`:
-    /// TSV (`.gz` ok; `-` = stdin) or Parquet (`--format parquet` / `-o
-    /// x.parquet`). See `--input-format`.
-    #[arg(short = 'i', long = "input", value_name = "compare.tsv|compare.parquet")]
+    /// Comparison table from `compare` / `compare-toolkit merge-readinfo` —
+    /// Parquet only (`.parquet`). This command runs a second pass over the
+    /// same file (see the module doc comment), so there is no `--input-format`
+    /// choice and no TSV/stdin support.
+    #[arg(short = 'i', long = "input", value_name = "compare.parquet")]
     input: String,
-
-    /// Input serialization. `auto` (default) selects Parquet for a
-    /// `.parquet`-named `--input` and TSV otherwise. Parquet requires a real
-    /// file path — it cannot be read from stdin (`-`).
-    #[arg(long = "input-format", value_enum, default_value = "auto")]
-    input_format: InputFormat,
 
     /// Output directory (created if it does not exist).
     #[arg(long = "outdir", value_name = "DIR")]
@@ -96,25 +103,27 @@ pub struct QueryJunctionDiffArgs {
     /// Filename prefix for all outputs.
     #[arg(long = "prefix", value_name = "STR")]
     prefix: String,
-
-    /// Do not gzip the per-read and unmatched-junction output tables (gzipped
-    /// by default). The summary TSV is always uncompressed.
-    #[arg(long = "no-gzip")]
-    no_gzip: bool,
 }
 
 const NEEDED: [&str; 7] = ["cs", "Strand", "Query_Start", "Query_End", "Target_Start", "TargetChr", "JuncCount"];
 
 pub fn run(args: &QueryJunctionDiffArgs) -> Result<()> {
+    if !args.input.ends_with(".parquet") {
+        bail!(
+            "--input must be a Parquet file ('.parquet') — got '{}'. \
+             query-junction-diff doesn't support TSV input.",
+            args.input
+        );
+    }
+
     let outdir = Path::new(&args.outdir);
     fs::create_dir_all(outdir).with_context(|| format!("cannot create --outdir '{}'", args.outdir))?;
 
-    let ext = if args.no_gzip { "" } else { ".gz" };
     let path = |name: String| outdir.join(name).to_string_lossy().into_owned();
     let summary_out = path(format!("{}.query_junction_diff.summary.tsv", args.prefix));
-    let per_read_out = path(format!("{}.per_read_query_junction_diff.summary.tsv{ext}", args.prefix));
-    let unmatched_a_out = path(format!("{}.query_junction_diff_unmatched.A.tsv{ext}", args.prefix));
-    let unmatched_b_out = path(format!("{}.query_junction_diff_unmatched.B.tsv{ext}", args.prefix));
+    let per_read_out = path(format!("{}.per_read_query_junction_diff.summary.tsv.gz", args.prefix));
+    let unmatched_a_out = path(format!("{}.query_junction_diff_unmatched.A.tsv.gz", args.prefix));
+    let unmatched_b_out = path(format!("{}.query_junction_diff_unmatched.B.tsv.gz", args.prefix));
 
     let wanted: Vec<String> = ["Read_Name", "Read_Len", "Label_A", "Label_B", "N_Junctions_OnlyA", "N_Junctions_OnlyB"]
         .into_iter()
@@ -122,7 +131,7 @@ pub fn run(args: &QueryJunctionDiffArgs) -> Result<()> {
         .chain(["A", "B"].iter().flat_map(|side| NEEDED.iter().map(move |b| format!("{b}_{side}"))))
         .collect();
     let wanted_refs: Vec<&str> = wanted.iter().map(String::as_str).collect();
-    let mut source = open_table(&args.input, args.input_format, Some(&wanted_refs))?;
+    let mut source = open_table(&args.input, InputFormat::Parquet, Some(&wanted_refs))?;
 
     let cols_owned = source.header().with_context(|| format!("reading comparison table '{}'", args.input))?;
     let cols: Vec<&str> = cols_owned.iter().map(String::as_str).collect();
@@ -234,8 +243,46 @@ pub fn run(args: &QueryJunctionDiffArgs) -> Result<()> {
     }
     per_read_w.flush()?;
 
-    write_unmatched_table(&unmatched_a_out, &unmatched_acc_a)?;
-    write_unmatched_table(&unmatched_b_out, &unmatched_acc_b)?;
+    // ── Pass 2: total occurrence counts ─────────────────────────────────────
+    // Seed the "junctions of interest" from pass 1's own unmatched rollups —
+    // no need to write/re-read anything, they're already in memory. Then
+    // re-scan the whole table once more, narrowly column-projected, tallying
+    // how many reads *total* carry each already-flagged junction.
+    let mut totals_a: TotalsAcc = unmatched_acc_a.keys().map(|k| (k.clone(), 0u64)).collect();
+    let mut totals_b: TotalsAcc = unmatched_acc_b.keys().map(|k| (k.clone(), 0u64)).collect();
+
+    const TOTALS_WANTED: [&str; 6] =
+        ["TargetChr_A", "TargetChr_B", "genomic_junctions_A", "genomic_junctions_B", "Strand_A", "Strand_B"];
+    let mut totals_source = open_table(&args.input, InputFormat::Parquet, Some(&TOTALS_WANTED))
+        .with_context(|| format!("re-reading comparison table '{}' for pass 2", args.input))?;
+    let totals_cols_owned = totals_source.header()?;
+    let totals_col_index: HashMap<&str, usize> =
+        totals_cols_owned.iter().map(String::as_str).enumerate().map(|(i, c)| (c, i)).collect();
+    let totals_idx = |name: &str| -> Result<usize> {
+        totals_col_index
+            .get(name)
+            .copied()
+            .with_context(|| format!("comparison table is missing column '{name}'"))
+    };
+    let chrom_a_idx = totals_idx("TargetChr_A")?;
+    let chrom_b_idx = totals_idx("TargetChr_B")?;
+    let gj_a_idx = totals_idx("genomic_junctions_A")?;
+    let gj_b_idx = totals_idx("genomic_junctions_B")?;
+    let strand_a_idx = totals_idx("Strand_A")?;
+    let strand_b_idx = totals_idx("Strand_B")?;
+
+    while let Some(fields) = totals_source.next_row()? {
+        let get = |i: usize| -> &str { fields.get(i).map(String::as_str).unwrap_or("") };
+
+        let strand_a = get(strand_a_idx).chars().next().unwrap_or('.');
+        accumulate_side_total(get(chrom_a_idx), strand_a, get(gj_a_idx), &mut totals_a);
+
+        let strand_b = get(strand_b_idx).chars().next().unwrap_or('.');
+        accumulate_side_total(get(chrom_b_idx), strand_b, get(gj_b_idx), &mut totals_b);
+    }
+
+    write_unmatched_table(&unmatched_a_out, &unmatched_acc_a, &totals_a)?;
+    write_unmatched_table(&unmatched_b_out, &unmatched_acc_b, &totals_b)?;
     summary.write_tsv(&summary_out, &label_a, &label_b)?;
 
     eprintln!(

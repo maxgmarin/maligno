@@ -1130,9 +1130,10 @@ rather than aborting the run.
 
 ## Per-read junction reconstruction (`compare-toolkit query-junction-diff`)
 
-`compare-toolkit query-junction-diff` (added in v0.26.0; source under
+`compare-toolkit query-junction-diff` (added in v0.26.0, extended to its
+current two-pass design and Parquet-only input in v0.28.0; source under
 `src/query_junction_diff/`) reads an existing `compare` / `compare-toolkit
-merge-readinfo` comparison table and reconstructs, per read and per side
+merge-readinfo` comparison table (Parquet) and reconstructs, per read and per side
 (A/B), each splice junction's query-space coordinate paired with its
 genomic-space coordinate — then reports which junctions are unsupported by
 the other side. Standalone only; `compare` does not run this by default. The
@@ -1160,9 +1161,24 @@ table's schema.
 **Usage:**
 
 ```bash
-maligno compare-toolkit query-junction-diff -i AvsB.compare.tsv.gz --outdir results/ --prefix AvsB [--no-gzip]
-# -i: a compare / compare-toolkit merge-readinfo table (.gz, .parquet, or - ok)
+maligno compare-toolkit query-junction-diff -i AvsB.compare.parquet --outdir results/ --prefix AvsB
+# -i: Parquet only (.parquet) — no TSV/stdin support and no --input-format choice,
+#     because this command re-reads the same file for its second pass (see below)
+# per-read and unmatched-junction outputs are always gzipped (no --no-gzip option here)
 ```
+
+**Two-pass design.** Pass 1 (above) reconstructs junctions only for the
+"differing" subset and identifies which junctions are unsupported by the
+other side. Pass 2 re-scans the *entire* comparison table a second time,
+narrowly column-projected to just `TargetChr_A/B`, `genomic_junctions_A/B`,
+`Strand_A/B`, and tallies how many reads *total* carry each already-flagged
+junction on that side — into the new `n_reads_with_junction_total` column
+(see Outputs below). This needs no `cs`-tag reconstruction at
+all: it's a pure genomic-space set-membership test (does this exact `(chrom,
+start, end, strand)` appear in this read's `genomic_junctions` set), so it's
+unaffected by the `-`-strand query↔genomic pairing issue pass 1 exists to
+solve — that issue only matters when you need a junction's *query* position,
+which pass 2 never asks for.
 
 ### Read selection
 
@@ -1189,9 +1205,9 @@ every excluded row is still tallied in the summary.
 | File | Contents |
 |------|----------|
 | `{prefix}.query_junction_diff.summary.tsv` | parse-time funnel counts (never gzipped) — see [spec](output-tables/query-junction-diff-summary.md) |
-| `{prefix}.per_read_query_junction_diff.summary.tsv[.gz]` | one row per reconstructed junction, per side, per differing read — see [spec](output-tables/per-read-query-junction-diff.md) |
-| `{prefix}.query_junction_diff_unmatched.A.tsv[.gz]` | distinct genomic junctions called in A, unsupported in B, with a per-locus read count — see [spec](output-tables/query-junction-diff-unmatched.md) |
-| `{prefix}.query_junction_diff_unmatched.B.tsv[.gz]` | same, for junctions called in B unsupported in A |
+| `{prefix}.per_read_query_junction_diff.summary.tsv.gz` | one row per reconstructed junction, per side, per differing read (always gzipped, no `--no-gzip` option) — see [spec](output-tables/per-read-query-junction-diff.md) |
+| `{prefix}.query_junction_diff_unmatched.A.tsv.gz` | distinct genomic junctions called in A, unsupported in B, with a per-locus read count *and* a whole-table total-occurrence count (always gzipped) — see [spec](output-tables/query-junction-diff-unmatched.md) |
+| `{prefix}.query_junction_diff_unmatched.B.tsv.gz` | same, for junctions called in B unsupported in A |
 
 `junction_index` (in the per-read table) is 1-based and computed
 independently per side — it is a display/sort key along the read's own
@@ -1210,6 +1226,14 @@ command's implementation is split across a small directory,
 | `reconstruct.rs` | `JunctionRecord`, the `cs`-tag reconstruction + stable-permutation pairing, cross-matching |
 | `summary.rs` | The parse-time funnel-count accumulator |
 | `rollup.rs` | The per-side unmatched-junction rollup accumulator and writer |
+
+---
+
+Same row set and order as the corresponding input unmatched file (already
+deterministically sorted); `n_reads_query_junctions_different` is carried
+through unchanged, `n_reads_with_junction_total` is the new tally.
+`n_reads_with_junction_total >= n_reads_query_junctions_different` always
+holds when the inputs correspond to the same `query-junction-diff` run.
 
 ---
 
@@ -1314,6 +1338,11 @@ src/
 ├── cigar_junctions.rs      — CIGAR-based intron extractor (utility, not yet wired in)
 ├── io_utils.rs             — open_input / open_output (gzip transparent)
 ├── junction.rs             — junction parsers + set-overlap stats (junction_set_stats/genomic_junction_set_stats, used by classify() and comparison_row.rs)
+├── query_junction_diff/
+│   ├── mod.rs              — query-junction-diff CLI args, column resolution, streaming row loop, output orchestration
+│   ├── reconstruct.rs      — JunctionRecord, cs-tag reconstruction + stable-permutation pairing, cross-matching
+│   ├── summary.rs          — parse-time funnel-count accumulator
+│   └── rollup.rs           — per-side unmatched-junction rollup accumulator and writer
 └── sam2paf/
     ├── mod.rs              — sam2paf CLI args + run()
     ├── convert.rs          — SAM → PAF conversion logic

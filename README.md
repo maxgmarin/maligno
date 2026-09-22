@@ -121,14 +121,15 @@ A `compare` run can write the following files in the user defined output directo
 | `{prefix}.query_diff_regions.{A,B}.bed.gz` | 10 | genomic regions where differing reads cluster, per set |
 
 Separately, **`compare-toolkit query-junction-diff`** takes an existing
-`compare.tsv`/`.parquet`, selects reads whose **query-space** splice
-junctions differ, and reconstructs those junctions per side, paired in both
-query and genomic coordinate space, plus a rollup of which specific junctions
-are unsupported by the other side:
+`compare.parquet` (Parquet only — see below), selects reads whose
+**query-space** splice junctions differ, and reconstructs those junctions
+per side, paired in both query and genomic coordinate space, plus a rollup
+of which specific junctions are unsupported by the other side and how many
+reads *total* (across the whole table) carry each one:
 
 ```bash
 maligno compare-toolkit query-junction-diff \
-  -i results/Splice_vs_SpliceHQ.compare.tsv.gz \
+  -i results/Splice_vs_SpliceHQ.compare.parquet \
   --outdir results/ --prefix Splice_vs_SpliceHQ
 ```
 

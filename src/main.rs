@@ -39,10 +39,12 @@
 //!                                         statistics (alignment status +
 //!                                         query/reference identity) — the same
 //!                                         thing `compare` tallies inline
-//!   7. `compare-toolkit query-junction-diff` comparison table → per-read,
-//!                                         per-side splice-junction reconstruction
-//!                                         (query-space selected, genomic-space
-//!                                         paired) and diff
+//!   7. `compare-toolkit query-junction-diff` comparison table (Parquet) →
+//!                                         per-read, per-side splice-junction
+//!                                         reconstruction (query-space selected,
+//!                                         genomic-space paired) and diff, plus
+//!                                         a total-occurrence count for each
+//!                                         flagged junction across all reads
 //!
 //! The comparison itself is a streaming merge-join (constant memory): only reads
 //! present in BOTH inputs (matched on Read_Name + Read_Len) produce an output row.
