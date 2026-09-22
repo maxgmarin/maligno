@@ -133,7 +133,14 @@ fn process_record<W: Write>(
     if rname == "*" || (flag & 4 != 0) || cigar_str == "*" {
         if opts.convert_unaligned {
             let qlen = seq.len();
-            writeln!(out, "{}\t{}\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0", qname_raw, qlen)?;
+            let qname_buf: String;
+            let qname: &str = if flag & 1 != 0 {
+                qname_buf = build_qname(qname_raw, flag);
+                &qname_buf
+            } else {
+                qname_raw
+            };
+            writeln!(out, "{}\t{}\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0", qname, qlen)?;
         }
         return Ok(());
     }
