@@ -334,7 +334,9 @@ impl AlnDiffAccumulator {
             }
             MapStatus::OnlyAMapped => ("diff_aln_only_A", true, false),
             MapStatus::OnlyBMapped => ("diff_aln_only_B", false, true),
-            // query-identical (incl. reverse-complement) or unmapped-both → not a difference
+            // query-identical (incl. reverse-complement), or neither side
+            // mapped (query_identical by definition — see compare_summary.rs)
+            // → not a difference.
             _ => return Ok(class),
         };
 
@@ -505,10 +507,15 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
 
         if class.query_identical {
             if let Some(w) = identical_w.as_mut() {
+                // `same_strand`/`revcomp` are strictly a "both mapped" concept
+                // — a `NeitherMapped` read is `query_identical` too (see
+                // compare_summary.rs), but must not be mislabeled as
+                // same-strand-identical here.
+                let both_mapped = base.map_status == MapStatus::BothMapped;
                 let bool_cols = format!(
                     "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                    (base.query_identical && !base.query_identical_rc) as u8,
-                    (base.query_identical && base.query_identical_rc) as u8,
+                    (both_mapped && base.query_identical && !base.query_identical_rc) as u8,
+                    (both_mapped && base.query_identical && base.query_identical_rc) as u8,
                     base.query_junctions_identical.unwrap_or(false) as u8,
                     matches!(base.ref_class, Some(RefClass::SamePositionSameAln)) as u8,
                     matches!(base.ref_class, Some(RefClass::SamePositionDiffAln)) as u8,
@@ -516,13 +523,17 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
                     matches!(base.ref_class, Some(RefClass::DiffPositionDiffAln)) as u8,
                     base.ref_same_position_same_junctions.unwrap_or(false) as u8,
                 );
-                let cat = match args.space {
-                    DiffSpace::Reference => "reference_identical",
-                    DiffSpace::Query => match args.compare_by {
-                        CompareBy::Junctions => "query_identical_junctions",
-                        CompareBy::All if class.query_identical_rc => "query_identical_revcomp",
-                        CompareBy::All => "query_identical_same_strand",
-                    },
+                let cat = if class.map_status == MapStatus::NeitherMapped {
+                    "neither_mapped"
+                } else {
+                    match args.space {
+                        DiffSpace::Reference => "reference_identical",
+                        DiffSpace::Query => match args.compare_by {
+                            CompareBy::Junctions => "query_identical_junctions",
+                            CompareBy::All if class.query_identical_rc => "query_identical_revcomp",
+                            CompareBy::All => "query_identical_same_strand",
+                        },
+                    }
                 };
                 writeln!(w, "{read_name}\t{cat}\t{bool_cols}")?;
             }

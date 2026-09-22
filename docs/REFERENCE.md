@@ -896,7 +896,18 @@ selected for the readinfo/compare output — using these columns: `TargetChr`,
   identical alignments count as different.
 
   Reported as `query_identical`, split into `query_identical_same_strand` and
-  `query_identical_revcomp`; `query_not_identical = aligned_both - query_identical`.
+  `query_identical_revcomp`; `query_not_identical = aligned_both -
+  query_identical_same_strand - query_identical_revcomp`.
+
+  **`aligned_neither` also counts as `query_identical`**: neither aligner
+  mapping a read at all is itself agreement between the two sets, not a
+  disagreement to lump in with genuine `aligned_both` mismatches. It's not
+  part of either the same-strand or reverse-complement sub-bucket (both stay
+  a strictly "both mapped" concept), so `query_identical =
+  query_identical_same_strand + query_identical_revcomp + aligned_neither`.
+  `query_not_identical` is unaffected by this — it's computed from the two
+  both-mapped sub-counters directly, not from `query_identical`'s grown
+  total, so it still means exactly "both mapped, but not identical."
 - **Reference-space classification** — independent of query span, and a strict,
   literal comparison: no reverse-complement accommodation, so a real strand
   difference always counts as a different position. Two axes, both motif-blind
@@ -931,9 +942,9 @@ selected for the readinfo/compare output — using these columns: `TargetChr`,
 | `aligned_both` | representative alignment mapped in both sets |
 | `aligned_only_A` / `aligned_only_B` | mapped in one set, `"*"` in the other |
 | `aligned_neither` | unmapped (`"*"`) in both |
-| `query_identical` | query-coordinate identical (see above) |
-| `query_identical_same_strand` | …via the same-strand branch |
-| `query_identical_revcomp` | …via the reverse-complement branch |
+| `query_identical` | query-coordinate identical (see above) — includes `aligned_neither` |
+| `query_identical_same_strand` | …via the same-strand branch (both mapped only) |
+| `query_identical_revcomp` | …via the reverse-complement branch (both mapped only) |
 | `query_not_identical` | both mapped but not query-identical |
 | `query_junctions_identical` | both mapped, **query-space** splice-junction sets match (`junction_set_stats`) — a looser criterion than `query_identical` (ignores mismatches/indels/soft-clips) |
 | `query_junctions_not_identical` | both mapped but query-space junction sets differ |
@@ -1024,6 +1035,16 @@ names follow `--space`:
 | `diff_aln_to_both` | `reference_diff` | mapped in both sets, not identical under the active space/compare-by |
 | `diff_aln_only_A` / `diff_aln_only_B` | *(same names)* | mapped in one set only |
 | `query_identical_same_strand` / `query_identical_revcomp` / `query_identical_junctions` (`--emit-identical-reads` only) | `reference_identical` (`--emit-identical-reads` only) | identical under the active space/compare-by (excluded from `{stem}_reads`; only written to the opt-in identical-reads file) |
+| `neither_mapped` (`--emit-identical-reads` only, `--space query --compare-by all` only) | *(none — never `query_identical` in reference space; see below)* | neither set mapped the read at all — `query_identical` by definition (both aligners agreeing it's unmapped), excluded from `{stem}_reads` just like the other identical categories; all 8 classification booleans are `0` |
+
+`neither_mapped` reads only ever reach the identical-reads file under
+`--space query --compare-by all` (the mode where `query_identical` is read
+directly off `classify()`'s output). Under `--space reference` or
+`--compare-by junctions`, the effective identity flag is instead re-derived
+from `ref_class`/`query_junctions_identical`, which stay `None` for a read
+neither side mapped — so in those modes a `neither_mapped` read is simply
+absent from both the diff-reads and identical-reads files, same as before
+this category existed.
 
 Unlike prior versions, **the on-disk summary TSV (`{stem}_summary.tsv`) no
 longer carries mode-relabeled totals** (`query_different_total`,

@@ -49,7 +49,7 @@ does exactly that as its `edge_swapped` scenario.
 | `aligned_both` | ✅ | ✅ 13 |
 | `aligned_only_B` | ❌ | ✅ 1 (`ENST00000578854.1`) |
 | `aligned_only_A` | ❌ | ✅ 1 (swap the sides) |
-| `aligned_neither` | ❌ | ✅ 2 |
+| `aligned_neither` (counts as `query_identical` — see below) | ❌ | ✅ 2 |
 | `query_identical_same_strand` | ✅ | ✅ 6 |
 | `query_identical_revcomp` | ❌ | ✅ 1 (`ENST00000619436.1`) |
 | `query_not_identical` | ✅ | ✅ 6 |
@@ -69,11 +69,16 @@ does exactly that as its `edge_swapped` scenario.
 `ENST00000619436.1` is the one revcomp case in all 507,365 transcripts: the same
 transcript aligned to chrY on `+` by `splice` and on `−` by `splice:hq`, at
 different loci, with cs tags that are exact reverse complements. It's the one
-read separating `query_identical` (7, via the revcomp branch) from the
-reference-space classification, which has no reverse-complement accommodation:
-this read's opposite strands make it `ref_diff_position_diff_aln`, alongside
-the fixture's 6 `ref_same_position_same_aln` and 6 `ref_same_position_diff_aln`
-reads (`6 + 6 + 0 + 1 = 13 = aligned_both`).
+read separating `query_identical` (9: 6 same-strand + 1 revcomp + 2
+`aligned_neither`, both of which count as `query_identical` too — neither
+aligner mapping a read at all is agreement, not disagreement) from the
+reference-space classification, which has no reverse-complement accommodation
+and no `aligned_neither` inclusion (`ref_class` stays `None` for unmapped
+reads): this read's opposite strands make it `ref_diff_position_diff_aln`,
+alongside the fixture's 6 `ref_same_position_same_aln` and 6
+`ref_same_position_diff_aln` reads (`6 + 6 + 0 + 1 = 13 = aligned_both`, the
+`aligned_neither` reads outside this sum entirely since `RefClass` is a
+strictly "both mapped" axis).
 
 ### Still not covered
 
@@ -97,10 +102,10 @@ reads (`6 + 6 + 0 + 1 = 13 = aligned_both`).
 
 ```bash
 ./scripts/schema-stability-manifest.sh ./target/release/maligno /tmp/w > after.txt
-diff test_data/schema_manifest.v0.17.0.txt after.txt && echo "OUTPUT UNCHANGED"
+diff test_data/schema_manifest.v0.27.0.txt after.txt && echo "OUTPUT UNCHANGED"
 ```
 
-`test_data/schema_manifest.v0.17.0.txt` is the committed baseline: 34 SHA-256
+`test_data/schema_manifest.v0.27.0.txt` is the committed baseline: 30 SHA-256
 fingerprints over the decompressed outputs of six scenarios. The filename carries
 a version on purpose — an output change must rename it, which makes regenerating
 the baseline a deliberate act rather than an invisible overwrite.
@@ -134,6 +139,30 @@ Its history is a good illustration of what the gate is for:
 > data does not. The dependency is pinned exactly in `Cargo.toml` so this only
 > happens deliberately — but when it does, expect exactly the 4 `.parquet`
 > fingerprints to differ and nothing else.
+
+- **v0.27.0** (`aligned_neither` reads now count as `query_identical`) moved
+  exactly the `compare.summary.tsv` fingerprint of every scenario containing
+  this fixture's 2 `aligned_neither` reads (`edge`, `edge_swapped`,
+  `edge_idmismatch`), plus the two `find-aln-diff`-derived summary outputs
+  that share the same schema (`fqd_junctions/run.query_diff_summary.junctions.tsv`,
+  `summary/run.summary.tsv`) — 5 fingerprints total, isolated by diffing
+  against a manifest generated from the pre-change binary (not the committed
+  v0.17.0 file directly; see below). The chr22 scenario (0 `aligned_neither`
+  reads) and every `alninfo`/`readinfo`/`query_diff_reads`/region-BED
+  fingerprint were unaffected, confirming the change is scoped to
+  `query_identical`'s definition as intended.
+  >
+  > **Note on this jump specifically:** the committed `v0.17.0` baseline had
+  > drifted from `main`'s actual output well before this change (it still
+  > listed removed `alninfo`/`readinfo` files and was missing
+  > `query_diff_reads.tsv`/region-BED fingerprints that `main` has produced
+  > for some time) — several versions' worth of legitimate, unrelated output
+  > changes between `v0.17.0` and `v0.26.1` were apparently never
+  > checkpointed here. `v0.27.0` is a full fresh regeneration from current
+  > `main` plus this change, not an incremental diff from `v0.17.0`, so it
+  > also silently absorbs that backlog. The 5-fingerprint scoping claim above
+  > was verified by diffing two manifests generated from this session's own
+  > pre-change and post-change binaries, not from the stale `v0.17.0` file.
 
 ## Regenerating
 

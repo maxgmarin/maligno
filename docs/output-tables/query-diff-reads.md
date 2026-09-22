@@ -32,10 +32,15 @@ for the full mode matrix).
 - For a both-mapped read, exactly one of columns 6–9 is `1` (they partition
   the four reference-space outcomes).
 - A read is only written here if it's a *difference* under the accumulator's
-  active mode — a read considered "identical" is excluded (see the
-  complementary, opt-in `{prefix}.query_identical_reads.tsv.gz`, produced
-  only by standalone `find-aln-diff --emit-identical-reads`, never by
-  `compare`; it carries the same 10-column schema for the complementary read
-  set).
+  active mode — a read considered "identical" is excluded. That now includes
+  `aligned_neither` reads: neither aligner mapping a read at all counts as
+  `query_identical` (both aligners agreeing, not disagreeing — see
+  [compare-summary.md](compare-summary.md)), so it never appears in this
+  table either. See the complementary, opt-in
+  `{prefix}.query_identical_reads.tsv.gz`, produced only by standalone
+  `find-aln-diff --emit-identical-reads`, never by `compare`; it carries the
+  same 10-column schema for the complementary read set, plus a third
+  `category` value, `neither_mapped`, for these reads (columns 3–10 all `0`,
+  since none of them are a "both mapped" concept).
 - Every genomic locus this table's reads cluster into is summarized in
   [query-diff-regions.md](query-diff-regions.md).

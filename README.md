@@ -217,7 +217,7 @@ The headline is the **per-read alignment status**, followed by **identity** stat
 |----------|---------|
 | `label_A` / `label_B` | which dataset each side is (the `--label-a` / `--label-b` values), so the summary is self-describing |
 | `aligned_both` / `aligned_only_A` / `aligned_only_B` / `aligned_neither` | how the read's representative alignment maps in each set (an unmapped side is `TargetChr == "*"`) |
-| `query_identical` / `query_not_identical` | both sides mapped over the same query span with the **same alignment relative to the read** (identical `cs` tag operations), and its complement among `aligned_both` reads |
+| `query_identical` / `query_not_identical` | `query_identical`: either both sides mapped over the same query span with the **same alignment relative to the read** (identical `cs` tag operations), or neither side mapped at all (`aligned_neither` — both aligners agreeing a read doesn't map is agreement, not disagreement); `query_not_identical` is its complement among `aligned_both` reads only |
 | `query_junctions_identical` / `query_junctions_not_identical` | same, but comparing only the **query-space splice-junction set** (ignores mismatches/indels/soft-clips) |
 | `ref_same_position_same_aln` | reference-identical: same `TargetChr` + `Strand` + `Target_Start` (same genomic position) **and** same `cs` |
 | `ref_same_position_diff_aln` | same reference position, different alignment (e.g. a different indel placement at the same site) |

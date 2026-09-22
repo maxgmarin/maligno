@@ -31,6 +31,12 @@
 //! This is a strict, literal comparison: unlike `query_identical`, there is no
 //! reverse-complement accommodation — a real strand difference always means a
 //! different position.
+//!
+//! `query_identical` also counts `aligned_neither` reads (neither side mapped
+//! at all): both aligners agreeing a read doesn't map is itself a form of
+//! agreement, not a disagreement to lump in with genuine `aligned_both`
+//! mismatches. `RefClass`/junction-set identity stay a strictly "both mapped"
+//! concept (`None` for `aligned_neither`, as for `aligned_only_A`/`_B`).
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -200,6 +206,12 @@ where
             .collect();
         let (_, only_ga, only_gb) = genomic_junction_set_stats(&ga, &gb);
         ref_same_position_same_junctions = Some(same_position && only_ga == 0 && only_gb == 0);
+    } else if map_status == MapStatus::NeitherMapped {
+        // Both aligners agreeing a read doesn't map at all is itself a form
+        // of agreement — count it as query_identical (same-strand branch, not
+        // reverse-complement). `ref_class`/junction-identity stay `None`:
+        // those remain a "both mapped" concept, untouched by this branch.
+        query_identical = true;
     }
 
     ReadClass {
@@ -245,10 +257,17 @@ impl CompareSummary {
         }
         if c.query_identical {
             self.query_identical += 1;
-            if c.query_identical_rc {
-                self.query_identical_rc += 1;
-            } else {
-                self.query_identical_same_strand += 1;
+            // same_strand/rc are a strictly "both mapped" sub-split — a
+            // NeitherMapped read is query_identical too (see `classify()`),
+            // but must not inflate either sub-bucket, since
+            // `query_not_identical()` depends on them staying an exact
+            // partition of `aligned_both`.
+            if c.map_status == MapStatus::BothMapped {
+                if c.query_identical_rc {
+                    self.query_identical_rc += 1;
+                } else {
+                    self.query_identical_same_strand += 1;
+                }
             }
         }
         match c.ref_class {
@@ -276,9 +295,15 @@ impl CompareSummary {
         self.b_only_by_id += 1;
     }
 
-    /// query-different among both-mapped reads.
+    /// query-different among both-mapped reads. Computed from the two
+    /// "both mapped" identity sub-counters (not `self.query_identical`
+    /// directly), since `query_identical` also now includes `aligned_neither`
+    /// reads — subtracting the grown total from `aligned_both` would
+    /// underflow. This yields the exact same value as before for any dataset:
+    /// `query_identical_same_strand` and `query_identical_rc` are still only
+    /// ever incremented for `BothMapped` reads.
     fn query_not_identical(&self) -> u64 {
-        self.aligned_both - self.query_identical
+        self.aligned_both - self.query_identical_same_strand - self.query_identical_rc
     }
 
     /// query-junctions-different among both-mapped reads.
@@ -752,7 +777,84 @@ mod tests {
         assert_eq!(class.ref_same_position_same_junctions, None);
     }
 
+    #[test]
+    fn neither_mapped_is_query_identical_but_not_via_revcomp() {
+        // Both aligners agreeing a read is unmapped is itself agreement.
+        let unmapped_a: Vec<(&str, &str)> = vec![("TargetChr", "*")];
+        let unmapped_b: Vec<(&str, &str)> = vec![("TargetChr", "")];
+        let class = classify(
+            &getter(Box::leak(unmapped_a.into_boxed_slice())),
+            &getter(Box::leak(unmapped_b.into_boxed_slice())),
+        );
+        assert_eq!(class.map_status, MapStatus::NeitherMapped);
+        assert!(class.query_identical);
+        assert!(!class.query_identical_rc);
+        // Reference-space and junction-identity axes stay a strictly
+        // "both mapped" concept — unaffected by this branch.
+        assert_eq!(class.ref_class, None);
+        assert_eq!(class.query_junctions_identical, None);
+        assert_eq!(class.ref_same_position_same_junctions, None);
+    }
+
+    #[test]
+    fn one_sided_mapped_reads_are_not_query_identical() {
+        // Sanity check the NeitherMapped branch didn't leak into
+        // OnlyAMapped/OnlyBMapped — those must stay `false`, unchanged.
+        let mapped = mapped_with(&[]);
+        let unmapped: Vec<(&str, &str)> = vec![("TargetChr", "*")];
+        let class = classify(
+            &getter(Box::leak(mapped.into_boxed_slice())),
+            &getter(Box::leak(unmapped.into_boxed_slice())),
+        );
+        assert_eq!(class.map_status, MapStatus::OnlyAMapped);
+        assert!(!class.query_identical);
+    }
+
     // ─── CompareSummary: new counters + rows() ─────────────────────────────
+
+    #[test]
+    fn aligned_neither_counts_as_query_identical_without_underflow() {
+        let mut s = CompareSummary::default();
+        // One both-mapped, same-strand-identical read.
+        s.observe(&ReadClass {
+            map_status: MapStatus::BothMapped,
+            query_identical: true,
+            query_identical_rc: false,
+            ref_class: Some(RefClass::SamePositionSameAln),
+            query_junctions_identical: Some(true),
+            ref_same_position_same_junctions: Some(true),
+        });
+        // One both-mapped read whose alignment genuinely differs.
+        s.observe(&ReadClass {
+            map_status: MapStatus::BothMapped,
+            query_identical: false,
+            query_identical_rc: false,
+            ref_class: Some(RefClass::SamePositionDiffAln),
+            query_junctions_identical: Some(false),
+            ref_same_position_same_junctions: Some(false),
+        });
+        // Two neither-mapped reads — query_identical per classify()'s new
+        // branch, but not via the reverse-complement sub-bucket.
+        for _ in 0..2 {
+            s.observe(&ReadClass {
+                map_status: MapStatus::NeitherMapped,
+                query_identical: true,
+                query_identical_rc: false,
+                ref_class: None,
+                query_junctions_identical: None,
+                ref_same_position_same_junctions: None,
+            });
+        }
+
+        let rows: HashMap<String, u64> = s.rows().into_iter().collect();
+        assert_eq!(rows["aligned_both"], 2);
+        assert_eq!(rows["aligned_neither"], 2);
+        // query_identical now includes the 2 neither-mapped reads.
+        assert_eq!(rows["query_identical"], 3);
+        // ...but query_not_identical must still reflect only the genuine
+        // both-mapped mismatch (1), not underflow/panic from the subtraction.
+        assert_eq!(rows["query_not_identical"], 1);
+    }
 
     #[test]
     fn compare_summary_rows_include_junction_counters() {
