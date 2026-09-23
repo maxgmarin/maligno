@@ -238,14 +238,16 @@ Full definitions are in the [reference](docs/REFERENCE.md#compare-toolkit-merge-
 
 ---
 
-## Preprocessing STAR BAMs for `sam2paf`
+## Preprocessing STAR BAMs for `sam2paf` conversion (adding the `MD` tag)
 
 `maligno sam2paf` uses an aligner-supplied `cs:Z:` SAM tag as-is when one is
-present (e.g. minimap2 emits it natively — no preprocessing needed there).
+present (e.g. minimap2 emits it natively).
 When there's no `cs` tag, it falls back to deriving one from **`CIGAR` +
-`MD` + `SEQ`**, and has no further fallback for a missing `MD`. STAR emits
-neither `cs` nor `MD`/`NM` on its own, so its BAMs need one preprocessing
-pass with `samtools calmd` before conversion:
+`MD` + `SEQ`**.
+
+If the aligner does NOT emit an `MD` tag it will need to be generated with `samtools calmd`.
+
+STAR does not emit a `cs` tag or `MD` on its own, so its BAMs need one preprocessing pass with `samtools calmd` before conversion from SAM to PAF:
 
 ```bash
 samtools faidx reference.fasta   # only if reference.fasta.fai doesn't already exist
@@ -264,8 +266,8 @@ samtools calmd -b star_output.bam reference.fasta > star_output.calmd.bam
   on large BAMs.
 - Any aligner that doesn't emit a `cs` tag hits this same requirement for
   `MD` — e.g. `bwa mem` always emits `MD` by default, but `minibwa map` needs
-  an explicit `-b MD` flag to emit it at all. Check that your aligner's BAM
-  actually carries `cs` or `MD` before running `sam2paf`.
+  an explicit `-b MD` flag to emit it at all. (or set `minibwa map` to emit the cs tag with `-b cs`)
+- Check that your aligner's BAM actually carries `cs` or `MD` before running `sam2paf`.
 
 ---
 
