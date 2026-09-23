@@ -38,13 +38,13 @@
 //! Outputs (to `--outdir`, `--prefix`-named):
 //!   1. `{prefix}.query_junction_diff.summary.tsv`                    — parse-time
 //!      funnel counts (always uncompressed).
-//!   2. `{prefix}.per_read_query_junction_diff.summary.tsv.gz`        — one row per
+//!   2. `{prefix}.query_junction_diff.per_read_per_junc_info.tsv.gz` — one row per
 //!      reconstructed junction per side per differing read (always gzipped).
-//!   3. `{prefix}.query_junction_diff_unmatched.A.tsv.gz`             — distinct
+//!   3. `{prefix}.query_junction_diff.unmatched_junctions.A.tsv.gz`  — distinct
 //!      genomic junctions called in A that were never matched in B, with how
 //!      many reads support each, plus how many reads *total* (across the
 //!      whole table) carry that junction on side A (always gzipped).
-//!   4. `{prefix}.query_junction_diff_unmatched.B.tsv.gz`             — same,
+//!   4. `{prefix}.query_junction_diff.unmatched_junctions.B.tsv.gz`  — same,
 //!      for B.
 //!
 //! **Two-pass design.** Pass 1 (above) reconstructs junctions only for the
@@ -121,9 +121,9 @@ pub fn run(args: &QueryJunctionDiffArgs) -> Result<()> {
 
     let path = |name: String| outdir.join(name).to_string_lossy().into_owned();
     let summary_out = path(format!("{}.query_junction_diff.summary.tsv", args.prefix));
-    let per_read_out = path(format!("{}.per_read_query_junction_diff.summary.tsv.gz", args.prefix));
-    let unmatched_a_out = path(format!("{}.query_junction_diff_unmatched.A.tsv.gz", args.prefix));
-    let unmatched_b_out = path(format!("{}.query_junction_diff_unmatched.B.tsv.gz", args.prefix));
+    let per_read_out = path(format!("{}.query_junction_diff.per_read_per_junc_info.tsv.gz", args.prefix));
+    let unmatched_a_out = path(format!("{}.query_junction_diff.unmatched_junctions.A.tsv.gz", args.prefix));
+    let unmatched_b_out = path(format!("{}.query_junction_diff.unmatched_junctions.B.tsv.gz", args.prefix));
 
     let wanted: Vec<String> = ["Read_Name", "Read_Len", "Label_A", "Label_B", "N_Junctions_OnlyA", "N_Junctions_OnlyB"]
         .into_iter()

@@ -1205,9 +1205,9 @@ every excluded row is still tallied in the summary.
 | File | Contents |
 |------|----------|
 | `{prefix}.query_junction_diff.summary.tsv` | parse-time funnel counts (never gzipped) — see [spec](output-tables/query-junction-diff-summary.md) |
-| `{prefix}.per_read_query_junction_diff.summary.tsv.gz` | one row per reconstructed junction, per side, per differing read (always gzipped, no `--no-gzip` option) — see [spec](output-tables/per-read-query-junction-diff.md) |
-| `{prefix}.query_junction_diff_unmatched.A.tsv.gz` | distinct genomic junctions called in A, unsupported in B, with a per-locus read count *and* a whole-table total-occurrence count (always gzipped) — see [spec](output-tables/query-junction-diff-unmatched.md) |
-| `{prefix}.query_junction_diff_unmatched.B.tsv.gz` | same, for junctions called in B unsupported in A |
+| `{prefix}.query_junction_diff.per_read_per_junc_info.tsv.gz` | one row per reconstructed junction, per side, per differing read (always gzipped, no `--no-gzip` option) — see [spec](output-tables/per-read-query-junction-diff.md) |
+| `{prefix}.query_junction_diff.unmatched_junctions.A.tsv.gz` | distinct genomic junctions called in A, unsupported in B, with a per-locus read count *and* a whole-table total-occurrence count (always gzipped) — see [spec](output-tables/query-junction-diff-unmatched.md) |
+| `{prefix}.query_junction_diff.unmatched_junctions.B.tsv.gz` | same, for junctions called in B unsupported in A |
 
 `junction_index` (in the per-read table) is 1-based and computed
 independently per side — it is a display/sort key along the read's own

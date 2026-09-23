@@ -1,7 +1,7 @@
-# `query_junction_diff_unmatched.{A,B}.tsv`
+# `query_junction_diff.unmatched_junctions.{A,B}.tsv`
 
-`{prefix}.query_junction_diff_unmatched.A.tsv.gz` /
-`{prefix}.query_junction_diff_unmatched.B.tsv.gz` — distinct genomic splice
+`{prefix}.query_junction_diff.unmatched_junctions.A.tsv.gz` /
+`{prefix}.query_junction_diff.unmatched_junctions.B.tsv.gz` — distinct genomic splice
 junctions, per side, that were never matched on the other side, with how many
 reads support each — plus how many reads *total*, across the whole
 comparison table, carry that same junction on this side. Written by
@@ -10,7 +10,7 @@ comparison table, carry that same junction on this side. Written by
 
 This command runs in two passes. Pass 1 builds this table's first 5 columns
 exactly as before: a rollup over
-[`per_read_query_junction_diff.summary.tsv.gz`](per-read-query-junction-diff.md)'s
+[`query_junction_diff.per_read_per_junc_info.tsv.gz`](per-read-query-junction-diff.md)'s
 `matched_in_genomic == false` rows for that side, grouped by `(chrom,
 genomic_start, genomic_end, strand)` (the A file covers junctions called in A
 unsupported by B; the B file, junctions called in B unsupported by A). Pass 2

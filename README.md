@@ -135,9 +135,9 @@ maligno compare-toolkit query-junction-diff \
 
 ```
 results/Splice_vs_SpliceHQ.query_junction_diff.summary.tsv
-results/Splice_vs_SpliceHQ.per_read_query_junction_diff.summary.tsv.gz
-results/Splice_vs_SpliceHQ.query_junction_diff_unmatched.A.tsv.gz
-results/Splice_vs_SpliceHQ.query_junction_diff_unmatched.B.tsv.gz
+results/Splice_vs_SpliceHQ.query_junction_diff.per_read_per_junc_info.tsv.gz
+results/Splice_vs_SpliceHQ.query_junction_diff.unmatched_junctions.A.tsv.gz
+results/Splice_vs_SpliceHQ.query_junction_diff.unmatched_junctions.B.tsv.gz
 ```
 
 

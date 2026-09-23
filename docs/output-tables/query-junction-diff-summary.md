@@ -14,7 +14,7 @@ Every `Category` below is one **row** in the file, in this order:
 | `n_neither_aligned` | Excluded: unmapped on both sides |
 | `n_both_aligned_query_junctions_identical` | Excluded: mapped both sides, query-space junction sets match (`N_Junctions_OnlyA == 0 && N_Junctions_OnlyB == 0`) |
 | `n_aligned_only_no_junctions` | Excluded: mapped on exactly one side, but that side has zero splice junctions — nothing to report |
-| `n_query_junctions_different` | Selected — these reads got full junction reconstruction, written to [`per_read_query_junction_diff.summary.tsv.gz`](per-read-query-junction-diff.md) |
+| `n_query_junctions_different` | Selected — these reads got full junction reconstruction, written to [`query_junction_diff.per_read_per_junc_info.tsv.gz`](per-read-query-junction-diff.md) |
 | `n_query_junctions_different_aligned_both` | ...of those, mapped on both sides with differing query-space junction sets |
 | `n_query_junctions_different_aligned_only_A` | ...of those, mapped only in A, with `JuncCount_A > 0` |
 | `n_query_junctions_different_aligned_only_B` | ...of those, mapped only in B, with `JuncCount_B > 0` |

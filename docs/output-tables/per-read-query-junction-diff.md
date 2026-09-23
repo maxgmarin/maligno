@@ -1,6 +1,6 @@
-# `per_read_query_junction_diff.summary.tsv`
+# `query_junction_diff.per_read_per_junc_info.tsv`
 
-`{prefix}.per_read_query_junction_diff.summary.tsv.gz` — one row per
+`{prefix}.query_junction_diff.per_read_per_junc_info.tsv.gz` — one row per
 reconstructed splice junction, per side (A/B), per read selected as
 "differing" (see [query-junction-diff-summary.md](query-junction-diff-summary.md)
 for the selection formula). Written by `compare-toolkit query-junction-diff`.
@@ -44,4 +44,4 @@ for the selection formula). Written by `compare-toolkit query-junction-diff`.
   the minus strand).
 - Every distinct `matched_in_genomic == false` junction, aggregated across
   reads, is rolled up in
-  [`query_junction_diff_unmatched.A/B.tsv.gz`](query-junction-diff-unmatched.md).
+  [`query_junction_diff.unmatched_junctions.A/B.tsv.gz`](query-junction-diff-unmatched.md).
