@@ -238,3 +238,34 @@ Full definitions are in the [reference](docs/REFERENCE.md#compare-toolkit-merge-
 
 ---
 
+## Preprocessing STAR BAMs for `sam2paf`
+
+`maligno sam2paf` uses an aligner-supplied `cs:Z:` SAM tag as-is when one is
+present (e.g. minimap2 emits it natively — no preprocessing needed there).
+When there's no `cs` tag, it falls back to deriving one from **`CIGAR` +
+`MD` + `SEQ`**, and has no further fallback for a missing `MD`. STAR emits
+neither `cs` nor `MD`/`NM` on its own, so its BAMs need one preprocessing
+pass with `samtools calmd` before conversion:
+
+```bash
+samtools faidx reference.fasta   # only if reference.fasta.fai doesn't already exist
+samtools calmd -b star_output.bam reference.fasta > star_output.calmd.bam
+```
+
+- `reference.fasta` must be the **exact same reference** STAR aligned
+  against (same contig names and sequence) — `calmd` looks up the reference
+  base at each alignment position to recompute `MD`, and a mismatched
+  reference silently produces wrong tags rather than an error.
+- Avoid `-e` — it rewrites reference-matching bases in `SEQ` as `=`, which
+  would corrupt the base calls `sam2paf`'s `cs` derivation needs to read back
+  out.
+- `calmd` doesn't require any particular sort order (it recomputes each
+  record independently), but isn't multithreaded either — budget time for it
+  on large BAMs.
+- Any aligner that doesn't emit a `cs` tag hits this same requirement for
+  `MD` — e.g. `bwa mem` always emits `MD` by default, but `minibwa map` needs
+  an explicit `-b MD` flag to emit it at all. Check that your aligner's BAM
+  actually carries `cs` or `MD` before running `sam2paf`.
+
+---
+
