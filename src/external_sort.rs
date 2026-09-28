@@ -37,18 +37,17 @@ pub(crate) fn parse_mem(s: &str) -> Result<u64> {
     Ok(n * mult)
 }
 
-/// Sort the PAF at `input` by `Query_Name` (byte-lex, whole-line) into `output`
-/// (`.gz` is gzip-compressed). Buffers up to `mem_bytes` in RAM, spilling sorted
-/// runs to `tmp_dir`.
-pub(crate) fn sort_paf_to_file(
-    input: &str,
+/// Sort a stream of PAF lines (a PAF file, or PAF converted on the fly from
+/// SAM/BAM) by `Query_Name` (byte-lex, whole-line) into `output` (`.gz` is
+/// gzip-compressed). Buffers up to `mem_bytes` in RAM, spilling sorted runs to
+/// `tmp_dir`.
+pub(crate) fn sort_lines_to_file(
+    reader: Box<dyn BufRead>,
     output: &str,
     mem_bytes: u64,
     tmp_dir: &Path,
     threads: Option<usize>,
 ) -> Result<()> {
-    let reader = open_input(input)?;
-
     let mut builder = ExternalSorterBuilder::new()
         .with_tmp_dir(tmp_dir)
         .with_buffer(MemoryLimitedBufferBuilder::new(mem_bytes));

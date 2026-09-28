@@ -73,9 +73,22 @@ results/Splice_vs_SpliceHQ.query_diff_regions.B.bed.gz
 
 ### `maligno compare` command
 
-`compare` runs the whole pipeline in four main steps:
+`compare` takes two alignment files, each **PAF, SAM or BAM** (format auto-detected
+per file, so mixing e.g. a BAM with a PAF is fine; CRAM is not supported). SAM/BAM
+inputs are converted internally with the same code as `maligno sam2paf -p -U`
+(primary + supplementary records, unmapped reads kept), so results are identical to
+converting them yourself first. Any BAM sort order works.
 
-1. **Sort** both PAFs by `Query_Name`.
+```bash
+maligno compare \
+  -a sample.bwamem.sorted.bam  --label-a bwamem \
+  -b sample.minibwa.sorted.bam --label-b minibwa \
+  -o results/ --prefix bwamem_vs_minibwa
+```
+
+It then runs the whole pipeline in four main steps:
+
+1. **Sort** both inputs by `Query_Name`.
 2. **Verify** both PAFs carry the **same read-ID set**. By default it **errors**
    if they differ, reporting how many IDs are shared / only in A / only in B.
 3. **Select representative alignment for each readID within each read set (A and B)**.
@@ -90,13 +103,14 @@ results/Splice_vs_SpliceHQ.query_diff_regions.B.bed.gz
 
 | Flag | Purpose |
 |------|---------|
-| `-a`, `-b` | input PAF for set A / B (supports `.gz` compressed files) |
+| `-a`/`--aln-a`, `-b`/`--aln-b` | input alignments for set A / B: PAF (`.gz` OK), SAM or BAM |
+| `--sam-records` | SAM/BAM inputs only: `primary-supp` (default, = `sam2paf -p`), `primary` (= `-P`), or `all`; unmapped reads are always kept |
 | `--label-a`, `--label-b` | names for each set, used in filenames and recorded in the comparison table's `Label_A` / `Label_B` columns |
 | `-o`, `--outdir` | output directory |
 | `-p`, `--prefix` | filename prefix for all outputs |
 | `--sort-mem` | in-RAM sort buffer per file (default `1G`; `K`/`M`/`G`) |
 | `--sort-threads` | sort threads (default `1`) |
-| `--presorted` | skip the input PAF sorting step and assumes the inputs already hold the same reads in the same order |
+| `--presorted` | skip the sorting step; assumes the inputs already hold the same reads in the same order (for SAM/BAM: name-sort both with `samtools sort -n`; coordinate-sorted BAMs are rejected). Sorting differently than maligno can cause small differences in the selected representative alignment |
 | `--allow-id-mismatch` | compare the shared intersection instead of erroring when read-ID sets differ |
 | `--format` | which serialization(s) of the comparison table: `tsv`, `parquet`, or `both` (default) |
 | `--emit-alninfo`, `--emit-readinfo` | write those per-set tables (off by default) |
@@ -186,7 +200,7 @@ tables — lives in **[`docs/output-tables/`](docs/output-tables/)**.
 The full manual lives in **[`docs/REFERENCE.md`](docs/REFERENCE.md)**:
 
 - `compare-toolkit`'s individual building blocks
-- `sam2paf` utility program (SAM → PAF).
+- `sam2paf` utility program (SAM/BAM → PAF).
 - The complete column dictionary for every output table.
 - Static HPC build and the source layout.
 
@@ -238,12 +252,13 @@ Full definitions are in the [reference](docs/REFERENCE.md#compare-toolkit-merge-
 
 ---
 
-## Preprocessing STAR BAMs for `sam2paf` conversion (adding the `MD` tag)
+## Preprocessing STAR BAMs for SAM/BAM input (adding the `MD` tag)
 
-`maligno sam2paf` uses an aligner-supplied `cs:Z:` SAM tag as-is when one is
-present (e.g. minimap2 emits it natively).
+`maligno sam2paf` (and `compare` on SAM/BAM input) uses an aligner-supplied `cs:Z:`
+SAM tag as-is when one is present (e.g. minimap2 emits it natively).
 When there's no `cs` tag, it falls back to deriving one from **`CIGAR` +
-`MD` + `SEQ`**.
+`MD` + `SEQ`**. A mapped record with neither a `cs` tag nor a usable `MD` tag
+(or with `MD` but `SEQ` = `*`, common for secondary alignments) is an **error**.
 
 If the aligner does NOT emit an `MD` tag it will need to be generated with `samtools calmd`.
 
@@ -267,7 +282,11 @@ samtools calmd -b star_output.bam reference.fasta > star_output.calmd.bam
 - Any aligner that doesn't emit a `cs` tag hits this same requirement for
   `MD` — e.g. `bwa mem` always emits `MD` by default, but `minibwa map` needs
   an explicit `-b MD` flag to emit it at all. (or set `minibwa map` to emit the cs tag with `-b cs`)
-- Check that your aligner's BAM actually carries `cs` or `MD` before running `sam2paf`.
+- Check that your aligner's BAM actually carries `cs` or `MD` before running `sam2paf`
+  or `compare` on it.
+- `compare` compares `cs` strings as text, so both sides should use the same `cs`
+  form. SAM/BAM conversion produces the short form (minimap2's default); don't pair
+  it with a PAF made with `minimap2 --cs=long`.
 
 ---
 

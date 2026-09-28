@@ -1,6 +1,6 @@
 [package]
 name = "maligno-rs"
-version = "0.29.0"
+version = "0.30.0"
 edition = "2024"
 
 [[bin]]
@@ -21,6 +21,14 @@ ext-sort = { version = "0.1", features = ["memory-limit"] }
 arrow-array  = { version = "=59.3.0", default-features = false }
 arrow-schema = { version = "=59.3.0", default-features = false }
 parquet      = { version = "=59.3.0", default-features = false, features = ["arrow", "zstd"] }
+
+# SAM/BAM input for `compare` and `sam2paf`. default-features = false drops `curl`
+# (curl-sys + openssl-sys, which break static musl builds; `s3`/`gcs` imply it too).
+# `bzip2`/`lzma` are CRAM-only codecs and maligno never reads CRAM, so they stay off.
+rust-htslib = { version = "=0.46.0", default-features = false }
+# Not used directly: pins rust-htslib 0.46's C bindings. hts-sys 2.2.1 changed binding
+# types (e.g. usize lengths) and no longer compiles with rust-htslib 0.46.0.
+hts-sys     = { version = "=2.2.0", default-features = false }
 
 [profile.release]
 opt-level = 3

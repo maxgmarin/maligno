@@ -38,37 +38,79 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
+use crate::aln_input::{self, with_paf_lines, AlnFormat};
 use crate::compare_streaming::validate_set_label;
+use crate::sam2paf::convert::Options as Sam2pafOptions;
 use crate::comparison_row::{write_compare_header, ComparisonRow};
 use crate::parquet_out::{ComparisonParquetWriter, OutputFormat};
 use crate::compare_summary::{classify, CompareSummary};
-use crate::external_sort::{parse_mem, read_id_set_check, sort_paf_to_file};
+use crate::external_sort::{parse_mem, read_id_set_check, sort_lines_to_file};
 use crate::find_query_diff::{AlnDiffAccumulator, AlnDiffStats, CompareBy, DiffSpace};
-use crate::io_utils::{open_input, open_output};
+use crate::io_utils::open_output;
 use crate::paf_groups::PafGroups;
 use crate::readinfo::{collapse_group, ReadInfoRow, READINFO_HEADER};
 use crate::record::AlnInfo;
 
 /// Reject stdin (`-`) for `compare`'s two-file inputs. `compare` always needs two
 /// independent files, so piping a single stream in for one side doesn't make
-/// sense — require a real path for both `--paf-a` and `--paf-b`.
-fn require_paf_path(s: &str) -> Result<String, String> {
+/// sense — require a real path for both `--aln-a` and `--aln-b`.
+fn require_aln_path(s: &str) -> Result<String, String> {
     if s == "-" {
-        Err("stdin ('-') is not supported here; provide a path to a PAF file".to_string())
+        Err("stdin ('-') is not supported here; provide a path to a PAF, SAM or BAM file"
+            .to_string())
     } else {
         Ok(s.to_string())
     }
 }
 
+/// Which SAM/BAM records `compare` converts (the `sam2paf` `-p`/`-P` filters).
+/// Unmapped reads are always kept (`sam2paf -U`).
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SamRecords {
+    /// Primary + supplementary; skip secondary (sam2paf -p).
+    PrimarySupp,
+    /// Primary only; skip secondary and supplementary (sam2paf -P).
+    Primary,
+    /// Every record.
+    All,
+}
+
+impl SamRecords {
+    fn sam2paf_options(self) -> Sam2pafOptions {
+        Sam2pafOptions {
+            pri_only: self != SamRecords::All,
+            pri_pri_only: self == SamRecords::Primary,
+            long_cs: false,
+            convert_unaligned: true,
+        }
+    }
+    fn sam2paf_flags(self) -> &'static str {
+        match self {
+            SamRecords::PrimarySupp => "-p -U",
+            SamRecords::Primary => "-P -U",
+            SamRecords::All => "-U",
+        }
+    }
+}
+
 #[derive(clap::Args, Debug)]
 pub struct CompareArgs {
-    /// PAF for dataset A ('.gz' auto-decompressed).
-    #[arg(short = 'a', long = "paf-a", value_name = "a.paf", value_parser = require_paf_path)]
-    paf_a: String,
+    /// Alignments for dataset A: PAF ('.gz' auto-decompressed), SAM or BAM
+    /// (format auto-detected; CRAM is not supported).
+    #[arg(short = 'a', long = "aln-a", alias = "paf-a", value_name = "a.paf|a.sam|a.bam",
+          value_parser = require_aln_path)]
+    aln_a: String,
 
-    /// PAF for dataset B ('.gz' auto-decompressed).
-    #[arg(short = 'b', long = "paf-b", value_name = "b.paf", value_parser = require_paf_path)]
-    paf_b: String,
+    /// Alignments for dataset B: PAF ('.gz' auto-decompressed), SAM or BAM
+    /// (format auto-detected; CRAM is not supported).
+    #[arg(short = 'b', long = "aln-b", alias = "paf-b", value_name = "b.paf|b.sam|b.bam",
+          value_parser = require_aln_path)]
+    aln_b: String,
+
+    /// SAM/BAM inputs only: which records to convert to PAF [default: primary-supp].
+    /// Unmapped reads are always kept.
+    #[arg(long = "sam-records", value_enum, value_name = "WHICH")]
+    sam_records: Option<SamRecords>,
 
     /// Name for dataset A, recorded in the comparison table's `Label_A` column.
     #[arg(long = "label-a", value_name = "LABEL", default_value = "SetA",
@@ -179,25 +221,65 @@ pub fn run(args: &CompareArgs) -> Result<()> {
     let diff_regions_a_out = path(format!("{}.query_diff_regions.A.bed.gz", args.prefix));
     let diff_regions_b_out = path(format!("{}.query_diff_regions.B.bed.gz", args.prefix));
 
+    // ── Input formats: PAF used as-is; SAM/BAM converted on the fly by the
+    // unchanged `sam2paf` path (see `aln_input`), so everything below sees the
+    // exact PAF lines `sam2paf <flags>` would have written.
+    let fmt_a = aln_input::detect(&args.aln_a)?;
+    let fmt_b = aln_input::detect(&args.aln_b)?;
+    let sam_records = args.sam_records.unwrap_or(SamRecords::PrimarySupp);
+    let sam_opts = sam_records.sam2paf_options();
+    for (side, label, p, fmt) in [("A", &args.label_a, &args.aln_a, fmt_a), ("B", &args.label_b, &args.aln_b, fmt_b)] {
+        if fmt.is_paf() {
+            eprintln!("[INFO] {side} ({label}): PAF input {p}");
+        } else {
+            eprintln!(
+                "[INFO] {side} ({label}): {} input {p}, converting as `sam2paf {}`",
+                fmt.name(),
+                sam_records.sam2paf_flags()
+            );
+        }
+    }
+    if fmt_a.is_paf() && fmt_b.is_paf() && args.sam_records.is_some() {
+        eprintln!("  WARNING: --sam-records has no effect: both inputs are PAF.");
+    }
+
     // Inputs fed to the compare pass: the freshly sorted temp files by default,
-    // or the user's PAFs directly under --presorted (no sort, no set-check).
+    // or the user's inputs directly under --presorted (no sort, no set-check).
     let (a_in, b_in): (String, String) = if args.presorted {
         // ── --presorted: skip sort (Step 1) and set-check (Step 2) ────────────
         // The lex set-check assumes byte-lex order, which we don't require here;
-        // instead the lock-step compare pass verifies the two PAFs carry the same
+        // instead the lock-step compare pass verifies the two inputs carry the same
         // reads in the same order, erroring on the first divergence.
+        for (p, fmt) in [(&args.aln_a, fmt_a), (&args.aln_b, fmt_b)] {
+            if !fmt.is_paf() && aln_input::sort_order(p)?.as_deref() == Some("coordinate") {
+                bail!(
+                    "--presorted needs read-grouped input, but '{p}' is coordinate-sorted \
+                     (@HD SO:coordinate); drop --presorted, or name-sort both files with \
+                     `samtools sort -n`"
+                );
+            }
+        }
         eprintln!(
             "[INFO] --presorted: skipping sort and read-ID set-check; \
              same read order is verified during the compare pass."
         );
-        (args.paf_a.clone(), args.paf_b.clone())
+        eprintln!(
+            "  WARNING: input sorted differently than maligno's own sort can cause small \
+             differences in which alignment is selected as a read's representative."
+        );
+        (args.aln_a.clone(), args.aln_b.clone())
     } else {
-        // ── Step 1: sort both PAFs by Query_Name (consistent rule) ────────────
-        eprintln!("[INFO] sorting both PAFs by Query_Name...");
-        sort_paf_to_file(&args.paf_a, &a_sorted, mem, &tmp_dir, Some(args.sort_threads))
-            .with_context(|| format!("sorting PAF A ({})", args.paf_a))?;
-        sort_paf_to_file(&args.paf_b, &b_sorted, mem, &tmp_dir, Some(args.sort_threads))
-            .with_context(|| format!("sorting PAF B ({})", args.paf_b))?;
+        // ── Step 1: sort both inputs by Query_Name (consistent rule) ──────────
+        eprintln!("[INFO] sorting both inputs by Query_Name...");
+        let sort_one = |p: &str, fmt: AlnFormat, out: &str| {
+            with_paf_lines(p, fmt, &sam_opts, |lines| {
+                sort_lines_to_file(lines, out, mem, &tmp_dir, Some(args.sort_threads))
+            })
+        };
+        sort_one(&args.aln_a, fmt_a, &a_sorted)
+            .with_context(|| format!("sorting input A ({})", args.aln_a))?;
+        sort_one(&args.aln_b, fmt_b, &b_sorted)
+            .with_context(|| format!("sorting input B ({})", args.aln_b))?;
 
         // ── Step 2: read-ID set-equality check (O(1) memory), before any output ─
         eprintln!("[INFO] verifying the two PAFs share the same read-ID set...");
@@ -239,23 +321,31 @@ pub fn run(args: &CompareArgs) -> Result<()> {
     } else {
         Some(AlnDiffAccumulator::new(&diff_reads_out, DiffSpace::Query, CompareBy::All)?)
     };
-    let result = compare_sorted_pafs(
-        &a_in,
-        &b_in,
-        &args.label_a,
-        &args.label_b,
-        compare_tsv.as_deref(),
-        if args.emit_readinfo { Some(&a_readinfo) } else { None },
-        if args.emit_readinfo { Some(&b_readinfo) } else { None },
-        if args.emit_alninfo { Some(&a_alninfo) } else { None },
-        if args.emit_alninfo { Some(&b_alninfo) } else { None },
-        compare_parquet.as_deref(),
-        args.allow_id_mismatch,
-        &mut summary,
-        diff_acc,
-        &diff_regions_a_out,
-        &diff_regions_b_out,
-    );
+    // Sorted temp files are PAF; --presorted inputs keep their own format (SAM/BAM
+    // are converted on the fly, straight into the merge).
+    let (in_fmt_a, in_fmt_b) =
+        if args.presorted { (fmt_a, fmt_b) } else { (AlnFormat::Paf, AlnFormat::Paf) };
+    let result = with_paf_lines(&a_in, in_fmt_a, &sam_opts, |lines_a| {
+        with_paf_lines(&b_in, in_fmt_b, &sam_opts, |lines_b| {
+            compare_sorted_pafs(
+                lines_a,
+                lines_b,
+                &args.label_a,
+                &args.label_b,
+                compare_tsv.as_deref(),
+                if args.emit_readinfo { Some(&a_readinfo) } else { None },
+                if args.emit_readinfo { Some(&b_readinfo) } else { None },
+                if args.emit_alninfo { Some(&a_alninfo) } else { None },
+                if args.emit_alninfo { Some(&b_alninfo) } else { None },
+                compare_parquet.as_deref(),
+                args.allow_id_mismatch,
+                &mut summary,
+                diff_acc,
+                &diff_regions_a_out,
+                &diff_regions_b_out,
+            )
+        })
+    });
     let (counts, _diff_stats) = match result {
         Ok(v) => v,
         Err(e) => {
@@ -285,9 +375,9 @@ pub fn run(args: &CompareArgs) -> Result<()> {
             }
             return if args.presorted {
                 Err(e).context(
-                    "--presorted requires both PAFs to contain the same reads in the \
-                     same order (grouped by Query_Name); omit --presorted to sort them \
-                     automatically",
+                    "--presorted requires both inputs to contain the same reads in the \
+                     same order (grouped by Query_Name; for SAM/BAM, name-sort both with \
+                     `samtools sort -n`); omit --presorted to sort them automatically",
                 )
             } else {
                 Err(e)
@@ -346,8 +436,8 @@ fn pull<R: BufRead>(
 /// comparison table. Returns ((matched, a_only, b_only), diff stats if run).
 #[allow(clippy::too_many_arguments)]
 fn compare_sorted_pafs(
-    a_sorted: &str,
-    b_sorted: &str,
+    a_sorted: Box<dyn BufRead>,
+    b_sorted: Box<dyn BufRead>,
     label_a: &str,
     label_b: &str,
     compare_tsv: Option<&str>,
@@ -401,8 +491,8 @@ fn compare_sorted_pafs(
     AlnInfo::write_header(al_a.as_mut())?;
     AlnInfo::write_header(al_b.as_mut())?;
 
-    let mut groups_a = PafGroups::new(open_input(a_sorted)?, /* warn_unsorted = */ false);
-    let mut groups_b = PafGroups::new(open_input(b_sorted)?, false);
+    let mut groups_a = PafGroups::new(a_sorted, /* warn_unsorted = */ false);
+    let mut groups_b = PafGroups::new(b_sorted, false);
 
     let header_cols: Vec<&str> = READINFO_HEADER.split('\t').collect();
 

@@ -6,6 +6,19 @@ use anyhow::{Context, Result};
 use super::cigar::{build_merged_cigar, write_cigar_no_clips, CigarStats};
 use super::cs_generator::generate_cs;
 
+/// A per-record error that aborts conversion instead of being warned about and
+/// skipped: currently, a mapped record whose cs tag cannot be produced.
+#[derive(Debug)]
+pub struct Fatal(String);
+
+impl std::fmt::Display for Fatal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Fatal {}
+
 /// Runtime options forwarded from the CLI.
 #[derive(Debug, Clone, Default)]
 pub struct Options {
@@ -44,9 +57,13 @@ pub fn convert<R: BufRead, W: Write>(
         }
 
         if let Err(e) = process_record(record, &ctg_len, opts, lineno, writer) {
-            // Match JS behaviour: print warnings to stderr but keep going for
-            // non-fatal errors.  Fatal errors (unknown contig, inconsistent MD)
-            // propagate up.
+            // A record whose cs tag can't be produced aborts the run: emitting it
+            // without cs would silently mis-summarize the read downstream.
+            if e.is::<Fatal>() {
+                return Err(e);
+            }
+            // Match JS behaviour: anything else is printed as a warning and the
+            // record skipped.
             eprintln!("WARNING at line {lineno}: {e}");
         }
         line.clear();
@@ -207,17 +224,22 @@ fn process_record<W: Write>(
         (cs_stats.clip_lead, qlen - cs_stats.clip_trail)
     };
 
-    // Generate cs tag if not already present as a cs:Z: SAM tag.
-    let cs_out: Option<String> = if let Some(cs_str) = tags.cs {
-        Some(cs_str.to_owned())
-    } else if tags.md.is_some() && seq != "*" {
-        let merged = build_merged_cigar(cigar_str);
-        match generate_cs(&merged, tags.md.unwrap(), seq, opts.long_cs, lineno) {
-            Ok(s) => Some(s),
-            Err(e) => { eprintln!("WARNING: {e}"); None }
+    // cs tag: taken from cs:Z: if present, else built from MD + SEQ. A mapped record
+    // with neither is fatal (see `Fatal`).
+    let cs_out: String = match (tags.cs, tags.md) {
+        (Some(cs_str), _) => cs_str.to_owned(),
+        (None, Some(md)) if seq != "*" => {
+            generate_cs(&build_merged_cigar(cigar_str), md, seq, opts.long_cs, lineno)
+                .map_err(|e| Fatal(format!("read '{qname_raw}': {e}")))?
         }
-    } else {
-        None
+        (None, md) => {
+            let why = if md.is_some() { "has an MD tag but SEQ is '*'" } else { "has no cs:Z or MD tag" };
+            return Err(Fatal(format!(
+                "line {lineno}: mapped read '{qname_raw}' {why}, so no cs tag can be built. \
+                 Align with cs output (e.g. minimap2 --cs), add MD (samtools calmd), \
+                 or skip secondary alignments (-p/-P)"
+            )).into());
+        }
     };
 
     // Alignment type: 'S' = secondary, 'P' = primary/supplementary.
@@ -241,8 +263,7 @@ fn process_record<W: Write>(
            cs_stats.i_count + cs_stats.d_count)?;
     // Write CIGAR without clip ops directly — avoids one String allocation.
     write_cigar_no_clips(out, cigar_str)?;
-    if let Some(ref cs) = cs_out { write!(out, "\tcs:Z:{cs}")?; }
-    writeln!(out)?;
+    writeln!(out, "\tcs:Z:{cs_out}")?;
 
     Ok(())
 }
@@ -333,5 +354,57 @@ fn calibrate_nm(cs: &CigarStats, nm_tag: Option<u32>, lineno: u64) -> (Option<u3
         // Standard CIGAR, no NM: assume no mismatches.
         eprintln!("WARNING at line {lineno}: no NM tag; assuming zero mismatches");
         (None, 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HEADER: &str = "@SQ\tSN:chr1\tLN:1000\n";
+
+    fn run(records: &str, opts: &Options) -> Result<String> {
+        let mut out = Vec::new();
+        convert(format!("{HEADER}{records}").as_bytes(), &mut out, opts)?;
+        Ok(String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn cs_from_md_or_cs_tag() {
+        let md = "r1\t0\tchr1\t101\t60\t10M\t*\t0\t0\tACGTACGTAC\t*\tNM:i:0\tMD:Z:10\n";
+        assert!(run(md, &Options::default()).unwrap().ends_with("\tcs:Z::10\n"));
+        let cs = "r1\t0\tchr1\t101\t60\t10M\t*\t0\t0\t*\t*\tNM:i:0\tcs:Z::10\n";
+        assert!(run(cs, &Options::default()).unwrap().ends_with("\tcs:Z::10\n"));
+    }
+
+    #[test]
+    fn mapped_record_without_cs_or_md_is_fatal() {
+        let rec = "r1\t0\tchr1\t101\t60\t10M\t*\t0\t0\tACGTACGTAC\t*\tNM:i:0\n";
+        let err = run(rec, &Options::default()).unwrap_err();
+        assert!(err.is::<Fatal>() && err.to_string().contains("no cs:Z or MD tag"), "{err}");
+    }
+
+    #[test]
+    fn md_with_seq_star_is_fatal() {
+        let rec = "r1\t256\tchr1\t101\t0\t10M\t*\t0\t0\t*\t*\tNM:i:0\tMD:Z:10\n";
+        let err = run(rec, &Options::default()).unwrap_err();
+        assert!(err.is::<Fatal>() && err.to_string().contains("SEQ is '*'"), "{err}");
+    }
+
+    #[test]
+    fn filtered_and_unmapped_records_skip_the_guard() {
+        // Secondary without cs/MD, dropped by -p; unmapped placeholder kept by -U.
+        let recs = "r1\t256\tchr1\t101\t0\t10M\t*\t0\t0\t*\t*\n\
+                    r2\t4\t*\t0\t0\t*\t*\t0\t0\tACGTA\t*\n";
+        let opts = Options { pri_only: true, convert_unaligned: true, ..Options::default() };
+        assert_eq!(run(recs, &opts).unwrap(), "r2\t5\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0\n");
+    }
+
+    #[test]
+    fn non_fatal_errors_still_only_warn() {
+        // Unknown contig: warned about and skipped, conversion continues.
+        let recs = "r1\t0\tchrX\t101\t60\t10M\t*\t0\t0\t*\t*\tcs:Z::10\n\
+                    r2\t0\tchr1\t101\t60\t10M\t*\t0\t0\t*\t*\tNM:i:0\tcs:Z::10\n";
+        assert!(run(recs, &Options::default()).unwrap().starts_with("r2\t"));
     }
 }

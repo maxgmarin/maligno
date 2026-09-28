@@ -1,28 +1,29 @@
 //! Subcommand `sam2paf`: SAM → PAF converter.
 //!
 //! A high-performance Rust port of the `sam2paf` sub-command from
-//! paftools.MGM.js. Reads a SAM file (or stdin) and writes PAF records to
+//! paftools.MGM.js. Reads a SAM or BAM file (or SAM on stdin) and writes PAF records to
 //! stdout. Output is byte-for-byte compatible with paftools.js sam2paf.
 //!
 //! This is a utility subcommand intended for use *before* the main pipeline:
 //!   SAM ──sam2paf──▶ PAF ──paf2alninfo──▶ alninfo ──readinfo──▶ readinfo ──compare──▶ compare
 
 mod cigar;
-mod convert;
+pub(crate) mod convert;
 mod cs_generator;
 mod md;
 
-use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Write};
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 
 use convert::Options;
 
+use crate::aln_input;
+
 #[derive(clap::Args, Debug)]
 pub struct Sam2pafArgs {
-    /// Input SAM file; use '-' to read from stdin.
-    #[arg(value_name = "in.sam")]
+    /// Input SAM or BAM file (auto-detected); use '-' to read SAM from stdin.
+    #[arg(value_name = "in.sam|in.bam")]
     pub input: String,
 
     /// Convert primary and supplementary alignments only
@@ -63,10 +64,12 @@ pub fn run(args: &Sam2pafArgs) -> Result<()> {
         let reader = BufReader::with_capacity(1 << 20, io::stdin().lock());
         convert::convert(reader, &mut writer, &opts)?;
     } else {
-        let file = File::open(&args.input)
-            .map_err(|e| anyhow::anyhow!("cannot open '{}': {}", args.input, e))?;
-        let reader = BufReader::with_capacity(1 << 20, file);
-        convert::convert(reader, &mut writer, &opts)?;
+        // SAM or BAM (sniffed); a BAM is read as the SAM text `samtools view -h` prints.
+        let fmt = aln_input::detect(&args.input)?;
+        if fmt.is_paf() {
+            bail!("'{}' is not a SAM or BAM file", args.input);
+        }
+        convert::convert(aln_input::open_sam_text(&args.input, fmt)?, &mut writer, &opts)?;
     }
 
     writer.flush()?;

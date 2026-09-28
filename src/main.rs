@@ -52,6 +52,7 @@
 
 
 // ── Pipeline modules ──────────────────────────────────────────────────────────
+mod aln_input;          // PAF/SAM/BAM input detection; BAM → SAM text → sam2paf stream
 mod cigar_junctions;    // CIGAR-based intron extractor (utility; not yet wired in)
 mod comparison_row;     // comparison-table schema: column lists, row type, TSV writers
 mod parquet_out;        // Parquet writer for the comparison table (schema derived from comparison_row)

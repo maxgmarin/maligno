@@ -48,10 +48,10 @@ maligno compare-toolkit merge-readinfo -a A.readinfo.tsv.gz -b B.readinfo.tsv.gz
 
 | Subcommand    | Input                              | Output                                  |
 |---------------|------------------------------------|-----------------------------------------|
-| **`compare`** | two PAFs (`-a`, `-b`; file paths only, no stdin) | **a results directory** (`--outdir`/`--prefix`): the comparison TSV, and (by default) `find-aln-diff`'s default-mode differing-reads + region tables — **the primary entry point**. Sorts inputs and verifies read-ID sets match. Emits the single 96-column comparison table as TSV, Parquet or both (`--format`); `--skip-find-aln-diff` opts out of the fused diff output; per-set alninfo + readinfo for A and B are opt-in (`--emit-alninfo`/`--emit-readinfo`) |
+| **`compare`** | two alignment files, each PAF, SAM or BAM (`-a`/`--aln-a`, `-b`/`--aln-b`; auto-detected, mixed OK, no CRAM; file paths only, no stdin) | **a results directory** (`--outdir`/`--prefix`): the comparison TSV, and (by default) `find-aln-diff`'s default-mode differing-reads + region tables — **the primary entry point**. Sorts inputs and verifies read-ID sets match. Emits the single 96-column comparison table as TSV, Parquet or both (`--format`); `--skip-find-aln-diff` opts out of the fused diff output; per-set alninfo + readinfo for A and B are opt-in (`--emit-alninfo`/`--emit-readinfo`) |
 | `compare-toolkit paf2tables`  | PAF (`-i`, `.gz`/`-` ok)           | **alninfo TSV** (`--alninfo`, 35 cols) and/or **readinfo TSV** (`--readinfo`, 33 cols), in one pass |
 | `compare-toolkit merge-readinfo` | two readinfo TSVs (`-a`, `-b`) | per-read comparison table (`-o`, 96 cols); the same table `compare` writes. Writes Parquet when `-o` ends in `.parquet`, TSV otherwise |
-| `sam2paf`     | SAM file or stdin (`-`)            | PAF written to stdout                   |
+| `sam2paf`     | SAM or BAM file (auto-detected), or SAM on stdin (`-`) | PAF written to stdout      |
 
 `compare-toolkit` groups together the lower-level building blocks used
 internally by `compare` (`paf2tables`, `merge-readinfo`, and `summary` — see
@@ -132,10 +132,26 @@ don't have to pre-sort or worry about ordering:
 
 ```bash
 maligno compare -a A.paf -b B.paf --label-a A --label-b B --outdir results/ --prefix AvsB
+maligno compare -a A.bam -b B.bam --label-a A --label-b B --outdir results/ --prefix AvsB
 ```
 
+**Input formats.** Each of `-a`/`--aln-a` and `-b`/`--aln-b` (the old `--paf-a`/`--paf-b`
+spellings still work) is sniffed with htslib and may be PAF (plain or `.gz`), SAM
+(plain or gzip/BGZF) or BAM, and the two may differ. CRAM is rejected. A SAM/BAM
+side never gets separate conversion logic. A BAM is rendered back to SAM text
+record by record (htslib `sam_format1`, i.e. a built-in `samtools view -h`), and
+that text goes through the unchanged `sam2paf` converter on a worker thread,
+streamed through a pipe into Step 1's sort. No intermediate PAF is written. The
+PAF lines `compare` sees are byte-identical to `samtools view -h X.bam | maligno
+sam2paf <flags> -`, so every output is identical to converting first. Conversion
+flags: `-U` is always on (unmapped reads are kept); `--sam-records` picks the
+record filter: `primary-supp` (default, `sam2paf -p`), `primary` (`-P`), or `all`.
+A mapped record with no `cs:Z` and no usable `MD` (+`SEQ`) aborts the run (see
+[`sam2paf`](#sam2paf)). Because Step 1 re-sorts, any BAM sort order is fine.
+`--keep-sorted-paf` also leaves you the converted (sorted) PAFs.
+
 What it does, in order:
-1. **Sorts** both PAFs by `Query_Name` (byte-lex) with an in-process external sort
+1. **Sorts** both inputs by `Query_Name` (byte-lex) with an in-process external sort
    (`ext-sort`: buffers up to `--sort-mem`, default 1G, spilling to temp files under
    `--sort-tmp-dir`, default `--outdir`). This guarantees grouping and a consistent
    matching order — it can't silently mis-compare unsorted input.
@@ -187,6 +203,15 @@ and **errors on the first divergence** (leaving no partial output). Because noth
 is sorted, `--presorted` cannot be combined with `--allow-id-mismatch` (computing a
 shared intersection needs a known sort order) or `--keep-sorted-paf` (no temp files are
 created). Use it to avoid the sort cost when you trust your inputs are aligned.
+SAM/BAM inputs work with `--presorted` too, and are converted straight into the
+compare pass with no temp files. Name-sort both with `samtools sort -n`: its
+READ1-before-READ2 tie-break keeps each mate's records (`Query_Name` gains a
+`/1`/`/2` suffix) contiguous. Raw paired-end aligner output generally does not,
+e.g. bwa's `X/1, X/2, X/1-supplementary`. A SAM/BAM whose header says
+`@HD SO:coordinate` is rejected under `--presorted`. As with PAFs, output rows
+follow the input order. **Caveat:** input sorted differently than maligno's own
+sort can cause small differences in which alignment is selected as a read's
+representative (a few reads in a million in testing).
 
 Ideal for comparing two parameter sets / references run on the **same** read or
 transcript set. **Precondition:** a `Query_Name` identifies one read/sequence
@@ -203,10 +228,19 @@ same inputs.
 cargo build --release
 # → target/release/maligno
 
-# Static Linux binary for HPC (no runtime deps)
+# Static Linux binary for HPC (no runtime deps). The bundled htslib/zlib C code
+# needs the musl C compiler too, not just the linker set in .cargo/config.toml:
+CC_x86_64_unknown_linux_musl=x86_64-linux-musl-gcc \
+AR_x86_64_unknown_linux_musl=x86_64-linux-musl-ar \
 cargo build --release --target x86_64-unknown-linux-musl
 # → target/x86_64-unknown-linux-musl/release/maligno
 ```
+
+SAM/BAM input uses `rust-htslib` (which compiles a bundled htslib) with
+`default-features = false`. That drops its `curl` feature (curl-sys + openssl-sys),
+which breaks static musl builds, and the CRAM-only `bzip2`/`lzma` codecs. `hts-sys`
+is pinned to `=2.2.0` in `Cargo.toml` because 2.2.1 no longer compiles with
+`rust-htslib` 0.46.0.
 
 ---
 
@@ -239,11 +273,15 @@ binary use the musl cross-build above.
 ```bash
 BIN=./target/release/maligno
 
-# 0. BAM → PAF  (requires samtools; -h preserves @SQ header for contig lengths)
-samtools view -h refA.bam | $BIN sam2paf -U - | gzip > refA.paf.gz
-samtools view -h refB.bam | $BIN sam2paf -U - | gzip > refB.paf.gz
+# BAM directly (converted internally exactly as `sam2paf -p -U`; any sort order):
+$BIN compare -a refA.bam -b refB.bam \
+  --label-a RefA --label-b RefB --outdir results/ --prefix RefA_vs_RefB
 
-# 1. Compare — sorts both PAFs, checks read-ID sets match, writes the results dir.
+# Or convert first, e.g. to keep the PAFs (identical results):
+$BIN sam2paf -p -U refA.bam | gzip > refA.paf.gz
+$BIN sam2paf -p -U refB.bam | gzip > refB.paf.gz
+
+# Compare: sorts both inputs, checks read-ID sets match, writes the results dir.
 #    No pre-sorting needed; compare does it (--sort-mem caps the in-RAM sort buffer).
 $BIN compare -a refA.paf.gz -b refB.paf.gz \
   --label-a RefA --label-b RefB --outdir results/ --prefix RefA_vs_RefB --sort-mem 2G
@@ -737,8 +775,19 @@ output like STAR's, or a shuffled multi-threaded aligner output).
 
 ### `sam2paf`
 
-Converts SAM alignments to PAF format. A high-performance port of the `sam2paf`
-sub-command from paftools.js — output is byte-for-byte compatible.
+Converts SAM or BAM alignments to PAF format. A high-performance port of the
+`sam2paf` sub-command from paftools.js — output is byte-for-byte compatible. The
+input format is auto-detected: `maligno sam2paf in.bam` gives the same bytes as
+`samtools view -h in.bam | maligno sam2paf -`. Stdin (`-`) is SAM text only.
+
+**cs requirement.** Each mapped, kept record's `cs` comes from its `cs:Z:` tag or
+is built from `MD` + `SEQ`. If neither is possible (no `cs` and no `MD`, or `MD`
+with `SEQ` = `*`, as on many secondary records) the run **stops with an error**
+naming the read, rather than writing a PAF line with no `cs`. Downstream, an empty
+`cs` would silently count as zero matches/mismatches. Fixes: align with cs output,
+add `MD` (`samtools calmd`), or skip secondaries with `-p`/`-P`. Records dropped by
+`-p`/`-P` and unmapped placeholders are never checked. Other per-record problems
+(e.g. a contig missing from `@SQ`) are still warnings and the record is skipped.
 
 Key flags:
 
@@ -1320,6 +1369,7 @@ in the comparison regardless of sort order.
 ```
 src/
 ├── main.rs                 — CLI dispatcher (clap subcommands)
+├── aln_input.rs            — PAF/SAM/BAM detection (htslib) + BAM → SAM text → sam2paf stream (compare, sam2paf)
 ├── compare.rs              — PRIMARY `compare` command (on-rails: sort → verify read-IDs → tables → compare → fused find-aln-diff core)
 ├── external_sort.rs        — in-process PAF external sort (ext-sort) + O(1) read-ID set check
 ├── paf2tables.rs           — PAF → alninfo and/or readinfo (one pass)
@@ -1345,7 +1395,7 @@ src/
 │   └── rollup.rs           — per-side unmatched-junction rollup accumulator and writer
 └── sam2paf/
     ├── mod.rs              — sam2paf CLI args + run()
-    ├── convert.rs          — SAM → PAF conversion logic
+    ├── convert.rs          — SAM → PAF conversion logic (+ fatal missing-cs guard)
     ├── cigar.rs            — CIGAR string parser
     ├── md.rs               — MD-tag iterator
     └── cs_generator.rs     — cs-tag generator (MD + CIGAR → cs string)
