@@ -4,7 +4,7 @@
 **differs** between set A and set B, plus 8 classification booleans.
 Written by `compare` by default (fused into its single merge pass, fixed at
 `--space query --compare-by all`; `--skip-find-aln-diff` opts out) and by
-standalone `compare-toolkit find-aln-diff` (any `--space`/`--compare-by`
+standalone `toolkit find-aln-diff` (any `--space`/`--compare-by`
 combination — filenames gain a `.junctions`/`reference_diff` segment
 accordingly; see [REFERENCE.md](../REFERENCE.md#--compare-by--what-defines-a-difference-within-the-active---space)
 for the full mode matrix).

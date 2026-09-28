@@ -11,10 +11,10 @@
 //!      settings (`--skip-find-aln-diff` to opt out). The per-set alninfo +
 //!      readinfo tables are opt-in (`--emit-alninfo`/`--emit-readinfo`).
 //!
-//!   2. Manual building blocks (full control), grouped under `compare-toolkit`:
-//!        `maligno compare-toolkit paf2tables -i A.sorted.paf --alninfo A.alninfo.tsv.gz --readinfo A.readinfo.tsv.gz`
+//!   2. Manual building blocks (full control), grouped under `toolkit`:
+//!        `maligno toolkit paf2tables -i A.sorted.paf --alninfo A.alninfo.tsv.gz --readinfo A.readinfo.tsv.gz`
 //!        (same for B), then
-//!        `maligno compare-toolkit merge-readinfo -a A.readinfo.tsv.gz -b B.readinfo.tsv.gz -o compare.tsv.gz`
+//!        `maligno toolkit merge-readinfo -a A.readinfo.tsv.gz -b B.readinfo.tsv.gz -o compare.tsv.gz`
 //!
 //! Commands:
 //!
@@ -24,22 +24,22 @@
 //!                                         comparison table plus, by default,
 //!                                         `find-aln-diff`'s default-mode outputs.
 //!   2. `sam2paf`                          SAM → PAF converter (utility; use
-//!                                         before compare-toolkit/compare)
-//!   3. `compare-toolkit find-aln-diff`    comparison table → differing reads +
+//!                                         before toolkit/compare)
+//!   3. `toolkit find-aln-diff`            comparison table → differing reads +
 //!                                         the merged genomic regions where they
 //!                                         cluster, in query or reference space
 //!                                         (also driven inline by `compare`'s
 //!                                         default output — see above)
-//!   4. `compare-toolkit paf2tables`       PAF → alninfo TSV and/or readinfo TSV
+//!   4. `toolkit paf2tables`               PAF → alninfo TSV and/or readinfo TSV
 //!                                         tables — a decomposed piece of what
 //!                                         `compare` does internally
-//!   5. `compare-toolkit merge-readinfo`   two readinfo TSVs → per-read
+//!   5. `toolkit merge-readinfo`           two readinfo TSVs → per-read
 //!                                         comparison TSV — ditto
-//!   6. `compare-toolkit summary`          comparison table → aggregate summary
+//!   6. `toolkit summary`                  comparison table → aggregate summary
 //!                                         statistics (alignment status +
 //!                                         query/reference identity) — the same
 //!                                         thing `compare` tallies inline
-//!   7. `compare-toolkit query-junction-diff` comparison table (Parquet) →
+//!   7. `toolkit query-junction-diff`      comparison table (Parquet) →
 //!                                         per-read, per-side splice-junction
 //!                                         reconstruction (query-space selected,
 //!                                         genomic-space paired) and diff, plus
@@ -56,8 +56,8 @@ mod aln_input;          // PAF/SAM/BAM input detection; BAM → SAM text → sam
 mod cigar_junctions;    // CIGAR-based intron extractor (utility; not yet wired in)
 mod comparison_row;     // comparison-table schema: column lists, row type, TSV writers
 mod parquet_out;        // Parquet writer for the comparison table (schema derived from comparison_row)
-mod compare_streaming;  // `compare-toolkit merge-readinfo` command + merge-join machinery
-mod compare_summary;    // `compare-toolkit summary` command + shared classifier/accumulator
+mod compare_streaming;  // `toolkit merge-readinfo` command + merge-join machinery
+mod compare_summary;    // `toolkit summary` command + shared classifier/accumulator
 mod find_query_diff;   // `find-aln-diff` command (differing reads + regions, query or reference space)
 mod query_junction_diff; // `query-junction-diff` command (per-read, per-side splice-junction reconstruction + diff)
 mod interval_merge;     // generic sort+sweep interval merge (bedtools merge -c -o count)
@@ -102,7 +102,7 @@ enum Commands {
     /// SAM -> PAF converter (conversion utility).
     Sam2paf(Sam2pafArgs),
     /// Lower-level building blocks and analysis steps used internally by `compare`.
-    #[command(name = "compare-toolkit")]
+    #[command(name = "toolkit")]
     CompareToolkit {
         #[command(subcommand)]
         command: ToolkitCommands,

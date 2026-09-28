@@ -1,4 +1,4 @@
-//! `query-junction-diff` — from a `compare` / `compare-toolkit merge-readinfo`
+//! `query-junction-diff` — from a `compare` / `toolkit merge-readinfo`
 //! table, reconstruct each differing read's splice junctions on both sides
 //! (A/B), paired correctly in query and genomic coordinate space, and report
 //! which junctions are unsupported by the other side.
@@ -89,7 +89,7 @@ fn is_mapped(target_chr: &str) -> bool {
 /// table → `compare.tsv`/`.parquet` schema — not the original PAFs.
 #[derive(clap::Args, Debug)]
 pub struct QueryJunctionDiffArgs {
-    /// Comparison table from `compare` / `compare-toolkit merge-readinfo` —
+    /// Comparison table from `compare` / `toolkit merge-readinfo` —
     /// Parquet only (`.parquet`). This command runs a second pass over the
     /// same file (see the module doc comment), so there is no `--input-format`
     /// choice and no TSV/stdin support.

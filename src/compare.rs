@@ -12,17 +12,17 @@
 //!      alninfo + readinfo tables are tee'd out as side outputs as it goes, when
 //!      requested (`--emit-alninfo` / `--emit-readinfo`; off by default).
 //!
-//! This is the porcelain over the `compare-toolkit` plumbing subcommands
+//! This is the porcelain over the `toolkit` plumbing subcommands
 //! (`paf2tables`, `merge-readinfo`, …): the comparison table is byte-identical
-//! to running `compare-toolkit merge-readinfo` on the sorted readinfo files,
-//! and the side outputs are byte-identical to `compare-toolkit paf2tables` on
+//! to running `toolkit merge-readinfo` on the sorted readinfo files,
+//! and the side outputs are byte-identical to `toolkit paf2tables` on
 //! the sorted PAFs.
 //!
 //! By default the same pass also drives `find-aln-diff`'s core (via
 //! `find_query_diff::AlnDiffAccumulator`) at its default settings (`--space
 //! query --compare-by all`), so `compare` additionally emits the differing
 //! reads + region tables without a second read of its own output table —
-//! byte-identical to running standalone `compare-toolkit find-aln-diff`
+//! byte-identical to running standalone `toolkit find-aln-diff`
 //! against the emitted comparison table. `--skip-find-aln-diff` opts out;
 //! other `--space`/`--compare-by` combinations still require the standalone
 //! command.

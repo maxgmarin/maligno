@@ -3,7 +3,7 @@
 `{prefix}.{label}.alninfo.tsv.gz` — **per-alignment** table: one row per PAF
 alignment record (every alignment for every read, not just the best one).
 
-Produced by `compare-toolkit paf2tables --alninfo` and, opt-in, by
+Produced by `toolkit paf2tables --alninfo` and, opt-in, by
 `compare --emit-alninfo` (once per side, i.e. `{prefix}.{label_a}.alninfo.tsv.gz`
 and `{prefix}.{label_b}.alninfo.tsv.gz`). Off by default in `compare` — see
 [REFERENCE.md](../REFERENCE.md) for why. Pure streaming output: rows are

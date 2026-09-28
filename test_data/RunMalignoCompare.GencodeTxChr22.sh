@@ -8,6 +8,6 @@ maligno compare \
   --outdir test_results --prefix Splice_vs_SpliceHQ \
   --emit-alninfo --emit-readinfo
 
-maligno compare-toolkit query-junction-diff \
+maligno toolkit query-junction-diff \
   -i test_results/Splice_vs_SpliceHQ.compare.parquet \
   --outdir test_results --prefix Splice_vs_SpliceHQ

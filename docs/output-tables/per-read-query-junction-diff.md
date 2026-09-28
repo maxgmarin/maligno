@@ -3,7 +3,7 @@
 `{prefix}.query_junction_diff.per_read_per_junc_info.tsv.gz` — one row per
 reconstructed splice junction, per side (A/B), per read selected as
 "differing" (see [query-junction-diff-summary.md](query-junction-diff-summary.md)
-for the selection formula). Written by `compare-toolkit query-junction-diff`.
+for the selection formula). Written by `toolkit query-junction-diff`.
 
 11 columns.
 

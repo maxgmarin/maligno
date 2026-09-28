@@ -4,7 +4,7 @@
 carrying its best (representative) alignment plus a few aggregates over all
 of that read's alignments.
 
-Produced by `compare-toolkit paf2tables --readinfo` and, opt-in, by
+Produced by `toolkit paf2tables --readinfo` and, opt-in, by
 `compare --emit-readinfo` (once per side). Off by default in `compare`.
 Requires the PAF be grouped by `Query_Name` (contiguous runs); built by the
 **readinfo collapse** step shared by both commands.

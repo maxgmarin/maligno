@@ -5,7 +5,7 @@
 junctions, per side, that were never matched on the other side, with how many
 reads support each — plus how many reads *total*, across the whole
 comparison table, carry that same junction on this side. Written by
-`compare-toolkit query-junction-diff`, one file per side (mirrors the
+`toolkit query-junction-diff`, one file per side (mirrors the
 `query_diff_regions.{A,B}.bed.gz` per-side-file convention).
 
 This command runs in two passes. Pass 1 builds this table's first 5 columns

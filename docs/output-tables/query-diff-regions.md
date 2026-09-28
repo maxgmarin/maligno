@@ -5,7 +5,7 @@
 [`query_diff_reads.tsv`](query-diff-reads.md) cluster, one file per
 coordinate side (A's own placement / B's own placement). Written by
 `compare` by default (same fused pass as the reads table) and by standalone
-`compare-toolkit find-aln-diff`.
+`toolkit find-aln-diff`.
 
 Loci are formed by a generic sort + single-sweep interval merge
 (`bedtools merge -c -o count` equivalent), over the genomic interval of

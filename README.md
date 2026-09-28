@@ -134,7 +134,7 @@ A `compare` run can write the following files in the user defined output directo
 | `{prefix}.query_diff_reads.tsv.gz` | 10 | table of all reads with difference in alignment between set A and B  |
 | `{prefix}.query_diff_regions.{A,B}.bed.gz` | 10 | genomic regions where differing reads cluster, per set |
 
-Separately, **`compare-toolkit query-junction-diff`** takes an existing
+Separately, **`toolkit query-junction-diff`** takes an existing
 `compare.parquet` (Parquet only — see below), selects reads whose
 **query-space** splice junctions differ, and reconstructs those junctions
 per side, paired in both query and genomic coordinate space, plus a rollup
@@ -142,7 +142,7 @@ of which specific junctions are unsupported by the other side and how many
 reads *total* (across the whole table) carry each one:
 
 ```bash
-maligno compare-toolkit query-junction-diff \
+maligno toolkit query-junction-diff \
   -i results/Splice_vs_SpliceHQ.compare.parquet \
   --outdir results/ --prefix Splice_vs_SpliceHQ
 ```
@@ -192,14 +192,14 @@ zcat < test_data/test_results/Splice_vs_SpliceHQ.compare.tsv.gz \
 The comparison table's column-by-column format lives in
 **[`docs/COMPARE_TABLE.md`](docs/COMPARE_TABLE.md)**.
 
-A per-column spec for every output file `compare` (and `compare-toolkit
+A per-column spec for every output file `compare` (and `toolkit
 query-junction-diff`) can write — alninfo, readinfo, the comparison table, the
 summary TSV, the diff-reads/regions tables, and the query-junction-diff
 tables — lives in **[`docs/output-tables/`](docs/output-tables/)**.
 
 The full manual lives in **[`docs/REFERENCE.md`](docs/REFERENCE.md)**:
 
-- `compare-toolkit`'s individual building blocks
+- `toolkit`'s individual building blocks
 - `sam2paf` utility program (SAM/BAM → PAF).
 - The complete column dictionary for every output table.
 - Static HPC build and the source layout.
@@ -242,13 +242,13 @@ The headline is the **per-read alignment status**, followed by **identity** stat
 | `present_only_in_A_by_id` / `present_only_in_B_by_id` | sequences found in only one set's PAF (will be 0 unless `--allow-id-mismatch` is used) |
 
 To get the same summary from an existing comparison table, use
-**`compare-toolkit summary`**:
+**`toolkit summary`**:
 
 ```bash
-maligno compare-toolkit summary -i AvsB.compare.tsv.gz -o AvsB.compare.summary.tsv
+maligno toolkit summary -i AvsB.compare.tsv.gz -o AvsB.compare.summary.tsv
 ```
 
-Full definitions are in the [reference](docs/REFERENCE.md#compare-toolkit-merge-readinfo-and-the-comparison-core).
+Full definitions are in the [reference](docs/REFERENCE.md#toolkit-merge-readinfo-and-the-comparison-core).
 
 ---
 

@@ -1,7 +1,7 @@
 # Output-table specs
 
 Column-by-column specifications for every file `maligno compare` (and its
-`compare-toolkit` building blocks) can write. Each doc gives, for its file:
+`toolkit` building blocks) can write. Each doc gives, for its file:
 what produces it, when it's written, and a table with one row per column.
 
 | File | Spec |
