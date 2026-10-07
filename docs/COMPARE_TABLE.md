@@ -1,19 +1,21 @@
 # The comparison table
 
-`compare` (and `toolkit merge-readinfo`) write one row per read, 96
+`compare` (and `toolkit merge-readinfo`) write one row per read, 100
 columns, organized in column groups (left to right):
 
 | Group | Cols | What it holds |
 |-------|:----:|---------------|
 | **Join keys** | 1–2 | `Read_Name`, `Read_Len` |
 | **Set labels** | 3–4 | `Label_A`, `Label_B` — the `--label-a` / `--label-b` values, repeated on every row |
-| **Per-side data — A** | 5–35 | the best alignment's stats for set A, each column suffixed `_A` |
-| **Per-side data — B** | 36–66 | the same columns for set B, suffixed `_B` |
-| **Comparison metrics** | 67–92 | A-vs-B differences/ratios: `Strand_Match`, `seqid_Diff`, coverage/length diffs, score diffs (`AS_Diff`, `ms_Diff`, …), indel/soft-clip diffs, and junction-set counts in both query and genomic space |
-| **Non-overlap objects** | 93–96 | the actual junctions that failed to overlap: `Junctions_OnlyA/B` and `Genomic_Junctions_OnlyA/B` |
+| **Per-side data — A** | 5–37 | the best alignment's stats for set A, each column suffixed `_A` |
+| **Per-side data — B** | 38–70 | the same columns for set B, suffixed `_B` |
+| **Comparison metrics** | 71–96 | A-vs-B differences/ratios: `Strand_Match`, `seqid_Diff`, coverage/length diffs, score diffs (`AS_Diff`, `ms_Diff`, …), indel/soft-clip diffs, and junction-set counts in both query and genomic space |
+| **Non-overlap objects** | 97–100 | the actual junctions that failed to overlap: `Junctions_OnlyA/B` and `Genomic_Junctions_OnlyA/B` |
 
 Within each per-side block the columns are grouped by topic — locus and span,
-alignment selection and score, identity and coverage, junction counts, cs-derived
+alignment selection and score (including the per-type alignment counts
+`Num_Aln_tpP` / `Num_Aln_tpS`, added in v0.32.0, which shifted every later column),
+identity and coverage, junction counts, cs-derived
 event counts, then the three long strings (`junctions`, `genomic_junctions`, `cs`)
 last. Inspect the exact layout of any table with
 `gzip -dc … | head -1 | tr '\t' '\n' | nl`.

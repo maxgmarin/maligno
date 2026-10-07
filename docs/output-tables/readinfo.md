@@ -15,10 +15,10 @@ representative row is the one with the highest `ms`, ties broken by highest
 (stable sort). All per-alignment columns below (locus, strand, `cs`,
 junctions, coordinates, event counts, `tp_tag`) come from that single
 winning row — only `AS_Max`/`ms_Max`/`Query_Aln_Cov_Max`/`Query_Aln_Len_Max`/
-`seqid_Max`/`Num_Aln`/`Num_Aln_MaxScore` are aggregated over the *whole*
-group.
+`seqid_Max`/`Num_Aln`/`Num_Aln_MaxScore`/`Num_Aln_tpP`/`Num_Aln_tpS` are
+aggregated over the *whole* group.
 
-34 columns.
+36 columns.
 
 | # | Column | Description |
 |---|---|---|
@@ -56,6 +56,8 @@ group.
 | 32 | `Target_Start` | Best alignment's target-coordinate span start (0-based half-open) |
 | 33 | `Target_End` | Best alignment's target-coordinate span end |
 | 34 | `tp_tag` | Best alignment's PAF `tp:A` tag (`P`/`S`/`I`); `*` if absent or unaligned |
+| 35 | `Num_Aln_tpP` | Count of the read's **aligned** rows whose `tp:A` is `P` or `I` (SAM primary **+ supplementary**); `0` for an unaligned read |
+| 36 | `Num_Aln_tpS` | Count of the read's **aligned** rows whose `tp:A` is `S` or `i` (secondary); `0` for an unaligned read |
 
 **Notes**
 - `Query_Start`/`Query_End` + `Target_Start`/`Target_End` + `TargetChr` +
@@ -64,4 +66,20 @@ group.
 - A `MQ_Best` difference between two `readinfo` files (same reads, different
   aligner/parameters) flags reads where the two runs disagree on mapping
   uniqueness.
-- Column count bumped 33 → 34 when `tp_tag` was added (v0.25.0).
+- **`Num_Aln_tpP` / `Num_Aln_tpS`** split `Num_Aln` by PAF `tp:A` type:
+  - `tpP` counts `P` and `I` rows. In PAF (and in maligno's `sam2paf` output),
+    **supplementary alignments are `tp:A:P` too**, so `tpP` is SAM primary +
+    supplementary, and `tpP > 1` means the read is split into
+    `tpP − 1` extra segments (chimeric / split alignment).
+  - `tpS` counts `S` and `i` rows: secondary (alternative) placements.
+  - A mapped row with no `tp` tag counts toward neither, so
+    `Num_Aln_tpP + Num_Aln_tpS <= Num_Aln`; the remainder is untagged rows.
+  - The representative alignment, `Num_Aln` and `Num_Aln_MaxScore` don't depend
+    on these counts.
+  - **Counts reflect the input as filtered.** On SAM/BAM input, `compare`'s
+    default `--sam-records primary-supp` (`sam2paf -p`) drops secondary records,
+    so `tpS` is always `0` unless you pass `--sam-records all`;
+    `--sam-records primary` (`-P`) also drops supplementary records, so `tpP <= 1`.
+    For minimap2 PAF, secondaries appear only if minimap2 emitted them.
+- Column count bumped 33 → 34 when `tp_tag` was added (v0.25.0), and 34 → 36 when
+  `Num_Aln_tpP`/`Num_Aln_tpS` were appended (v0.32.0).

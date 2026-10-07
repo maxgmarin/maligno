@@ -426,7 +426,7 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
 
     // ── Input format: resolve, then open ───────────────────────────────────────
     // For a Parquet input, project down to just the columns this command reads
-    // (19 of the comparison table's 96) — Parquet skips decoding the rest, which
+    // (19 of the comparison table's 100) — Parquet skips decoding the rest, which
     // is where its per-column storage actually pays off.
     let wanted: Vec<String> = ["Read_Name", "Label_A", "Label_B"]
         .into_iter()

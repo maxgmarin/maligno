@@ -104,7 +104,7 @@ It then runs the whole pipeline in four main steps:
 | Flag | Purpose |
 |------|---------|
 | `-a`/`--aln-a`, `-b`/`--aln-b` | input alignments for set A / B: PAF (`.gz` OK), SAM or BAM |
-| `--sam-records` | SAM/BAM inputs only: `primary-supp` (default, = `sam2paf -p`), `primary` (= `-P`), or `all`; unmapped reads are always kept |
+| `--sam-records` | SAM/BAM inputs only: `primary-supp` (default, = `sam2paf -p`), `primary` (= `-P`), or `all`; unmapped reads are always kept. This also decides which alignment types the `Num_Aln_tpP`/`Num_Aln_tpS` counts can see (the default drops secondaries, so `Num_Aln_tpS` is `0`) |
 | `--label-a`, `--label-b` | names for each set, used in filenames and recorded in the comparison table's `Label_A` / `Label_B` columns |
 | `-o`, `--outdir` | output directory |
 | `-p`, `--prefix` | filename prefix for all outputs |
@@ -127,9 +127,9 @@ A `compare` run can write the following files in the user defined output directo
 | File | Cols | Contents |
 |------|------|----------|
 | `{prefix}.{label}.alninfo.tsv.gz` | 36 | **per-alignment** table: one row per PAF alignment (every alignment, per set); opt-in via `--emit-alninfo` |
-| `{prefix}.{label}.readinfo.tsv.gz` | 34 | **per-read** table: the chosen best alignment for each read (per set); opt-in via `--emit-readinfo` |
-| `{prefix}.compare.tsv.gz` | 96 | the **comparison** table (unless `--format parquet`) |
-| `{prefix}.compare.parquet` | 96 | the same table as Parquet (unless `--format tsv`) |
+| `{prefix}.{label}.readinfo.tsv.gz` | 36 | **per-read** table: the chosen best alignment for each read (per set); opt-in via `--emit-readinfo` |
+| `{prefix}.compare.tsv.gz` | 100 | the **comparison** table (unless `--format parquet`) |
+| `{prefix}.compare.parquet` | 100 | the same table as Parquet (unless `--format tsv`) |
 | `{prefix}.compare.summary.tsv` | 2 | **aggregate summary statistics** (see below) |
 | `{prefix}.query_diff_reads.tsv.gz` | 10 | table of all reads with difference in alignment between set A and B  |
 | `{prefix}.query_diff_regions.{A,B}.bed.gz` | 10 | genomic regions where differing reads cluster, per set |
@@ -175,7 +175,7 @@ maligno compare \
 # Inspect a comparison header (column number → name).
 zcat < test_data/test_results/Splice_vs_SpliceHQ.compare.tsv.gz | head -1 | tr '\t' '\n' | nl
 
-# Sanity-check column counts (expect 36, 34, 96, plus 10 for the query_diff_reads.tsv.gz output table.
+# Sanity-check column counts (expect 36, 36, 100, plus 10 for the query_diff_reads.tsv.gz output table.
 for f in test_data/test_results/Splice_vs_SpliceHQ.*.tsv.gz; do
   printf '%s\t' "$f"; zcat < "$f" | awk -F'\t' '{print NF}' | sort -u | paste -sd, -
 done
@@ -211,7 +211,7 @@ The full manual lives in **[`docs/REFERENCE.md`](docs/REFERENCE.md)**:
 
 #### The alignment comparison table (`{prefix}.compare.tsv.gz` or `{prefix}.compare.parquet`)
 
-One row per read, 96 columns: the representative alignment's stats for set A and
+One row per read, 100 columns: the representative alignment's stats for set A and
 for set B (suffixed `_A` / `_B`), plus a block of columns comparing how those two
 alignments differ (score, coverage, indels, soft-clipping, and junction agreement
 in both query and genomic space).

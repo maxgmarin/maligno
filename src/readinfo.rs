@@ -57,7 +57,8 @@ pub const READINFO_HEADER: &str = "Read_Name\tRead_Len\t\
     genomic_junctions\t\
     Query_Start\tQuery_End\t\
     Target_Start\tTarget_End\t\
-    tp_tag";
+    tp_tag\t\
+    Num_Aln_tpP\tNum_Aln_tpS";
 
 // ── ReadInfo row ─────────────────────────────────────────────────────────────
 
@@ -106,6 +107,10 @@ pub struct ReadInfoRow {
     /// Best alignment's PAF `tp:A` tag (alignment type: 'P' primary, 'S'
     /// secondary, 'I' inversion of the primary). '*' when absent or unmapped.
     pub tp_tag: char,
+    /// Mapped alignment rows whose `tp:A` is `P` or `I` (SAM primary + supplementary).
+    pub num_aln_tpp: u64,
+    /// Mapped alignment rows whose `tp:A` is `S` or `i` (secondary).
+    pub num_aln_tps: u64,
     /// All fields except Read_Name and Read_Len, pre-formatted for pass-through.
     pub raw_fields: Vec<String>,
 }
@@ -189,8 +194,8 @@ pub(crate) fn parse_aln_row(line: &str) -> Option<AlnRow> {
 /// Sort order: ms desc → AS desc → MQ desc. The highest-scoring,
 /// highest-confidence alignment becomes the representative; all per-alignment
 /// columns (target, strand, junctions, cs, coordinates, event counts) come
-/// from that single row. Aggregate columns (Num_Aln, Num_Aln_MaxScore) are
-/// computed over the full group.
+/// from that single row. Aggregate columns (Num_Aln, Num_Aln_tpP, Num_Aln_tpS,
+/// Num_Aln_MaxScore) are computed over the full group.
 pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
     rows.sort_by(|a, b| {
         b.ms
@@ -241,6 +246,8 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
     let mut query_aln_len_max: u64 = 0;
     let mut seqid_max: f64 = f64::NAN;
     let mut num_aln: u64 = 0;
+    let mut num_aln_tpp: u64 = 0;
+    let mut num_aln_tps: u64 = 0;
 
     for row in rows.iter() {
         let rf = &row.fields;
@@ -264,6 +271,12 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
 
         if row.is_aligned {
             num_aln += 1;
+            // Split mapped rows by PAF `tp:A`; a missing tag counts toward neither.
+            match rf.get(COL_TP_TAG).and_then(|s| s.chars().next()) {
+                Some('P' | 'I') => num_aln_tpp += 1,
+                Some('S' | 'i') => num_aln_tps += 1,
+                _ => {}
+            }
         }
     }
 
@@ -322,6 +335,8 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
         target_start.to_string(),
         target_end.to_string(),
         tp_tag.to_string(),
+        num_aln_tpp.to_string(),
+        num_aln_tps.to_string(),
     ];
 
     ReadInfoRow {
@@ -359,6 +374,8 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
         target_start,
         target_end,
         tp_tag,
+        num_aln_tpp,
+        num_aln_tps,
         raw_fields,
     }
 }
@@ -478,4 +495,111 @@ fn flush_group<W: Write + ?Sized>(group: &mut Vec<AlnRow>, out: &mut W) -> Resul
     }
     collapse_group(group).write(out)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 36-column alninfo row for read `r1`: zeros everywhere except the fields
+    /// `collapse_group` keys on. `target` "*" makes an unmapped placeholder; `tp`
+    /// "" drops the tp_tag column entirely (an older 35-column alninfo row).
+    fn row(target: &str, ms: i64, aln_score: i64, mapq: u32, tp: &str) -> AlnRow {
+        let mut f = vec!["0".to_string(); COL_TP_TAG + 1];
+        f[COL_QUERY_NAME] = "r1".into();
+        f[COL_QUERY_LEN] = "100".into();
+        f[COL_STRAND] = if target == "*" { "*" } else { "+" }.into();
+        f[COL_TARGET_NAME] = target.into();
+        f[COL_MS] = ms.to_string();
+        f[COL_AS] = aln_score.to_string();
+        f[COL_MQ] = mapq.to_string();
+        f[COL_CS] = String::new();
+        f[COL_JUNCTIONS] = "()".into();
+        f[COL_GENOMIC_JUNCTIONS] = "()".into();
+        if tp.is_empty() {
+            f.pop();
+        } else {
+            f[COL_TP_TAG] = tp.into();
+        }
+        parse_aln_row(&f.join("\t")).expect("valid alninfo row")
+    }
+
+    /// Collapse `rows`, check the tpP + tpS <= Num_Aln invariant, and return
+    /// (Num_Aln_tpP, Num_Aln_tpS, Num_Aln).
+    fn counts(mut rows: Vec<AlnRow>) -> (u64, u64, u64) {
+        let ri = collapse_group(&mut rows);
+        assert!(ri.num_aln_tpp + ri.num_aln_tps <= ri.num_aln);
+        // The two new columns are the last two readinfo fields, after tp_tag.
+        let n = ri.raw_fields.len();
+        assert_eq!(ri.raw_fields[n - 2], ri.num_aln_tpp.to_string());
+        assert_eq!(ri.raw_fields[n - 1], ri.num_aln_tps.to_string());
+        (ri.num_aln_tpp, ri.num_aln_tps, ri.num_aln)
+    }
+
+    #[test]
+    fn header_ends_with_the_type_counts_and_matches_the_row_width() {
+        let cols: Vec<&str> = READINFO_HEADER.split('\t').collect();
+        assert_eq!(cols.len(), 36);
+        assert_eq!(&cols[33..], &["tp_tag", "Num_Aln_tpP", "Num_Aln_tpS"]);
+        let ri = collapse_group(&mut [row("chr1", 50, 50, 60, "P")]);
+        assert_eq!(2 + ri.raw_fields.len(), cols.len());
+    }
+
+    #[test]
+    fn single_primary() {
+        assert_eq!(counts(vec![row("chr1", 50, 50, 60, "P")]), (1, 0, 1));
+    }
+
+    #[test]
+    fn split_read_counts_every_tp_p_segment() {
+        let rows = vec![row("chr1", 50, 50, 60, "P"), row("chr2", 30, 30, 60, "P")];
+        assert_eq!(counts(rows), (2, 0, 2));
+    }
+
+    #[test]
+    fn primary_plus_secondaries() {
+        let rows = vec![
+            row("chr1", 50, 50, 60, "P"),
+            row("chr2", 50, 50, 0, "S"),
+            row("chr3", 40, 40, 0, "S"),
+        ];
+        assert_eq!(counts(rows), (1, 2, 3));
+    }
+
+    #[test]
+    fn inversions_fold_into_tp_p_and_tp_s() {
+        let rows = vec![
+            row("chr1", 50, 50, 60, "P"),
+            row("chr1", 20, 20, 60, "I"),
+            row("chr2", 20, 20, 0, "i"),
+        ];
+        assert_eq!(counts(rows), (2, 1, 3));
+    }
+
+    #[test]
+    fn mapped_rows_without_a_tp_tag_count_toward_neither() {
+        let rows = vec![row("chr1", 50, 50, 60, "*"), row("chr2", 40, 40, 60, "")];
+        assert_eq!(counts(rows), (0, 0, 2));
+    }
+
+    #[test]
+    fn unmapped_read_is_zero_zero() {
+        assert_eq!(counts(vec![row("*", 0, 0, 0, "*")]), (0, 0, 0));
+    }
+
+    #[test]
+    fn representative_and_existing_aggregates_are_unchanged() {
+        // A secondary ties the primary on (ms, AS) and wins on MQ: the representative
+        // is still chosen by ms -> AS -> MQ, regardless of tp.
+        let mut rows = vec![
+            row("chr1", 50, 50, 10, "P"),
+            row("chr2", 50, 50, 60, "S"),
+            row("chr3", 20, 20, 60, "P"),
+        ];
+        let ri = collapse_group(&mut rows);
+        assert_eq!(ri.target_chr, "chr2");
+        assert_eq!(ri.tp_tag, 'S');
+        assert_eq!((ri.num_aln, ri.num_aln_maxscore), (3, 2));
+        assert_eq!((ri.num_aln_tpp, ri.num_aln_tps), (2, 1));
+    }
 }

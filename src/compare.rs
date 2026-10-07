@@ -149,7 +149,7 @@ pub struct CompareArgs {
     #[arg(long = "emit-alninfo")]
     emit_alninfo: bool,
 
-    /// Write the per-set readinfo (34-col) tables (off by default).
+    /// Write the per-set readinfo (36-col) tables (off by default).
     #[arg(long = "emit-readinfo")]
     emit_readinfo: bool,
 

@@ -47,7 +47,7 @@ use crate::junction::{
 /// differ from `readinfo.rs`'s `READINFO_HEADER`. Before v0.14.0 it was that header
 /// verbatim; it is now grouped by topic — locus, alignment selection,
 /// identity/coverage, junction counts, cs-derived event counts, and the three long
-/// strings last — so the 96-column table is readable via
+/// strings last — so the 100-column table is readable via
 /// `head -1 | tr '\t' '\n' | nl`. **This divergence from `READINFO_HEADER` is
 /// deliberate; do not "resync" the two.**
 pub(crate) const READINFO_DATA_COLS: &[&str] = &[
@@ -61,6 +61,8 @@ pub(crate) const READINFO_DATA_COLS: &[&str] = &[
     // Alignment selection & score.
     "MQ_Best",
     "Num_Aln",
+    "Num_Aln_tpP",
+    "Num_Aln_tpS",
     "Num_Aln_MaxScore",
     "AS_Max",
     "ms_Max",
@@ -227,7 +229,7 @@ pub(crate) struct AlignmentMetrics {
 
 /// One side of the comparison: the raw transport columns plus the parsed view.
 pub(crate) struct AlignmentRow<'r> {
-    /// The 31 per-side columns in `READINFO_DATA_COLS` order, exactly as read.
+    /// The 33 per-side columns in `READINFO_DATA_COLS` order, exactly as read.
     raw: [&'r str; N_SIDE_COLS],
     pub(crate) metrics: AlignmentMetrics,
 }
@@ -257,7 +259,7 @@ impl<'r> AlignmentRow<'r> {
         Self { raw, metrics }
     }
 
-    /// The 31 per-side columns in `READINFO_DATA_COLS` order, exactly as read.
+    /// The 33 per-side columns in `READINFO_DATA_COLS` order, exactly as read.
     /// The Parquet writer walks this in step with the column list.
     pub(crate) fn raw(&self) -> &[&'r str; N_SIDE_COLS] {
         &self.raw
@@ -604,7 +606,7 @@ mod tests {
         AlignmentDiff::compute(&side(a), &side(b))
     }
 
-    /// Render one full row and split it into its 96 fields.
+    /// Render one full row and split it into its 100 fields.
     fn render(a: &[(&str, &'static str)], b: &[(&str, &'static str)]) -> Vec<String> {
         let mut buf: Vec<u8> = Vec::new();
         ComparisonRow::build("read1", 100, "SetA", "SetB", |c| lookup(a, c), |c| lookup(b, c))
@@ -623,7 +625,7 @@ mod tests {
         s.trim_end_matches('\n').split('\t').map(String::from).collect()
     }
 
-    /// Index of an output column in the 96-column header.
+    /// Index of an output column in the 100-column header.
     fn col(name: &str) -> usize {
         header_fields()
             .iter()
@@ -637,7 +639,7 @@ mod tests {
     fn header_and_row_field_counts_agree() {
         let h = header_fields();
         let r = render(&[], &[]);
-        assert_eq!(h.len(), 96, "header should have 96 columns");
+        assert_eq!(h.len(), 100, "header should have 100 columns");
         assert_eq!(
             r.len(),
             h.len(),
@@ -647,7 +649,7 @@ mod tests {
         );
         assert_eq!(
             4 + 2 * READINFO_DATA_COLS.len() + comparison_col_names().len(),
-            96
+            100
         );
     }
 
@@ -656,11 +658,17 @@ mod tests {
         let h = header_fields();
         assert_eq!(&h[..4], &["Read_Name", "Read_Len", "Label_A", "Label_B"]);
         assert_eq!(h[4], "TargetChr_A");
-        assert_eq!(h[34], "cs_A");
-        assert_eq!(h[35], "TargetChr_B");
-        assert_eq!(h[65], "cs_B");
-        assert_eq!(h[66], "Strand_Match");
-        assert_eq!(h[95], "Genomic_Junctions_OnlyB");
+        assert_eq!(h[36], "cs_A");
+        assert_eq!(h[37], "TargetChr_B");
+        assert_eq!(h[69], "cs_B");
+        assert_eq!(h[70], "Strand_Match");
+        assert_eq!(h[99], "Genomic_Junctions_OnlyB");
+        // The alignment-type counts sit directly after Num_Aln on each side.
+        for side in ["A", "B"] {
+            let n = col(&format!("Num_Aln_{side}"));
+            assert_eq!(h[n + 1], format!("Num_Aln_tpP_{side}"));
+            assert_eq!(h[n + 2], format!("Num_Aln_tpS_{side}"));
+        }
     }
 
     // ── escaping (no test dataset exercises this: real data has no \, tab, CR or LF) ──
@@ -680,7 +688,7 @@ mod tests {
         let a = [("cs", "a\tb")];
         let r = render(&a, &[]);
         assert_eq!(r[col("cs_A")], "a\\tb");
-        assert_eq!(r.len(), 96, "an embedded tab must not add a field");
+        assert_eq!(r.len(), 100, "an embedded tab must not add a field");
     }
 
     #[test]

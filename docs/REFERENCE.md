@@ -48,9 +48,9 @@ maligno toolkit merge-readinfo -a A.readinfo.tsv.gz -b B.readinfo.tsv.gz -o comp
 
 | Subcommand    | Input                              | Output                                  |
 |---------------|------------------------------------|-----------------------------------------|
-| **`compare`** | two alignment files, each PAF, SAM or BAM (`-a`/`--aln-a`, `-b`/`--aln-b`; auto-detected, mixed OK, no CRAM; file paths only, no stdin) | **a results directory** (`--outdir`/`--prefix`): the comparison TSV, and (by default) `find-aln-diff`'s default-mode differing-reads + region tables — **the primary entry point**. Sorts inputs and verifies read-ID sets match. Emits the single 96-column comparison table as TSV, Parquet or both (`--format`); `--skip-find-aln-diff` opts out of the fused diff output; per-set alninfo + readinfo for A and B are opt-in (`--emit-alninfo`/`--emit-readinfo`) |
-| `toolkit paf2tables`  | PAF (`-i`, `.gz`/`-` ok)           | **alninfo TSV** (`--alninfo`, 35 cols) and/or **readinfo TSV** (`--readinfo`, 33 cols), in one pass |
-| `toolkit merge-readinfo` | two readinfo TSVs (`-a`, `-b`) | per-read comparison table (`-o`, 96 cols); the same table `compare` writes. Writes Parquet when `-o` ends in `.parquet`, TSV otherwise |
+| **`compare`** | two alignment files, each PAF, SAM or BAM (`-a`/`--aln-a`, `-b`/`--aln-b`; auto-detected, mixed OK, no CRAM; file paths only, no stdin) | **a results directory** (`--outdir`/`--prefix`): the comparison TSV, and (by default) `find-aln-diff`'s default-mode differing-reads + region tables — **the primary entry point**. Sorts inputs and verifies read-ID sets match. Emits the single 100-column comparison table as TSV, Parquet or both (`--format`); `--skip-find-aln-diff` opts out of the fused diff output; per-set alninfo + readinfo for A and B are opt-in (`--emit-alninfo`/`--emit-readinfo`) |
+| `toolkit paf2tables`  | PAF (`-i`, `.gz`/`-` ok)           | **alninfo TSV** (`--alninfo`, 36 cols) and/or **readinfo TSV** (`--readinfo`, 36 cols), in one pass |
+| `toolkit merge-readinfo` | two readinfo TSVs (`-a`, `-b`) | per-read comparison table (`-o`, 100 cols); the same table `compare` writes. Writes Parquet when `-o` ends in `.parquet`, TSV otherwise |
 | `sam2paf`     | SAM or BAM file (auto-detected), or SAM on stdin (`-`) | PAF written to stdout      |
 
 `toolkit` groups together the lower-level building blocks used
@@ -376,9 +376,9 @@ to one summary row:
 A two-pointer **merge-join** over two sorted readinfo files, matching on
 **(Read_Name, Read_Len)**. This is the engine behind both `merge-readinfo` (readinfo
 TSVs in) and the primary `compare` (which feeds it collapsed rows straight from PAFs).
-For each matched read it emits the 31 data columns from each
+For each matched read it emits the 33 data columns from each
 side (suffixed `_A` / `_B`) plus 30 comparison/object columns
-(`AS_Diff`, `ms_Ratio`, `seqid_Diff`, `Junction_Distance`, `N_Matched_Junctions`, `Genomic_N_Matched_Junctions`, `Junctions_OnlyA`, …) — 96 columns in total, including the four leading key/label columns.
+(`AS_Diff`, `ms_Ratio`, `seqid_Diff`, `Junction_Distance`, `N_Matched_Junctions`, `Genomic_N_Matched_Junctions`, `Junctions_OnlyA`, …) — 100 columns in total, including the four leading key/label columns.
 
 **Junction set comparison.** Junctions are compared as **sets** of query coordinates
 (deduplicated on both sides):
@@ -889,7 +889,7 @@ tsvwhere "$CMP" Genomic_N_Unmatched_Junctions pos \
                 {print $h["Read_Name"]"\t"$h["TargetChr_A"]"\t"$h["TargetChr_B"]"\t"$h["Genomic_N_Matched_Junctions"]"\t"$h["Genomic_N_Junctions_OnlyA"]"\t"$h["Genomic_N_Junctions_OnlyB"]}' \
   | column -t -s $'\t' | less -S
 
-# Verify column counts (expect 35, 33, 96)
+# Verify column counts (expect 36, 36, 100)
 gzip -dc < /tmp/Splice.alninfo.tsv.gz             | awk -F'\t' '{print NF}' | sort | uniq -c
 gzip -dc < /tmp/Splice.readinfo.tsv.gz            | awk -F'\t' '{print NF}' | sort | uniq -c
 gzip -dc < /tmp/Splice_vs_SpliceHQ.compare.tsv.gz | awk -F'\t' '{print NF}' | sort | uniq -c

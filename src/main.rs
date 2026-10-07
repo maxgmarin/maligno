@@ -20,7 +20,7 @@
 //!
 //!   1. `compare`                          end-to-end comparison of all input
 //!                                         alignments (PRIMARY analysis entry
-//!                                         point). Emits the single 96-column
+//!                                         point). Emits the single 100-column
 //!                                         comparison table plus, by default,
 //!                                         `find-aln-diff`'s default-mode outputs.
 //!   2. `sam2paf`                          SAM → PAF converter (utility; use

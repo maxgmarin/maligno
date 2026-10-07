@@ -492,7 +492,7 @@ pub fn run(args: &CompareSummaryArgs) -> Result<()> {
     ];
 
     // For a Parquet input, project down to just the 16 columns this command
-    // reads (of the comparison table's 96) — Parquet skips decoding the rest,
+    // reads (of the comparison table's 100) — Parquet skips decoding the rest,
     // which is where its per-column storage actually pays off.
     let wanted: Vec<String> = ["Label_A", "Label_B"]
         .into_iter()
