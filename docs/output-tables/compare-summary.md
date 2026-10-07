@@ -4,7 +4,7 @@
 comparison table, tallied as `compare` streams its rows (constant memory).
 2 columns: `Category`, `Count`. The same schema is written by
 `toolkit summary` (computed from an existing `compare.tsv`/`.parquet`)
-and, with `space`/`compare_by` provenance rows prepended, by
+and, with `space`/`compare_by` rows added after `label_A`/`label_B`, by
 `toolkit find-aln-diff`.
 
 Every `Category` below is one **row** in the file, in this order:
@@ -30,8 +30,8 @@ Every `Category` below is one **row** in the file, in this order:
 | `ref_diff_position_diff_aln` | Both position and `cs` differ |
 | `ref_same_position_same_junctions` | Among same-position reads, **genomic-coordinate** junction sets also match |
 | `ref_same_position_diff_junctions` | Among same-position reads, genomic-coordinate junction sets differ |
-| `present_only_in_A_by_id` | Read present in only A's PAF (built-in `compare` tally only; `0` unless `--allow-id-mismatch`) |
-| `present_only_in_B_by_id` | Read present in only B's PAF |
+| `present_only_in_A_by_id` | Read present only in input A (`compare` and `toolkit merge-readinfo` only; `0` unless `--allow-id-mismatch`) |
+| `present_only_in_B_by_id` | Read present only in input B |
 
 **Notes**
 - Classification is computed from each side's **representative (best)

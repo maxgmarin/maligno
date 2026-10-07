@@ -6,11 +6,29 @@ A-vs-B comparison block. This is the **primary output** of `compare` (and of
 `toolkit merge-readinfo`, which produces the identical table from
 readinfo TSVs directly).
 
-Layout: 4 join/label columns, then the 33 per-side columns once suffixed
-`_A` and once suffixed `_B`, then 30 comparison columns. Per-side suffixes
-are always the fixed `_A`/`_B` — never the dataset label — so column names
-are identical across every comparison run; which dataset each side *is*
-comes from the `Label_A`/`Label_B` data columns instead.
+Columns are organized in groups, left to right:
+
+| Group | Cols | What it holds |
+|-------|:----:|---------------|
+| **Join keys** | 1–2 | `Read_Name`, `Read_Len` |
+| **Set labels** | 3–4 | `Label_A`, `Label_B`: the `--label-a` / `--label-b` values, repeated on every row |
+| **Per-side data, A** | 5–37 | the representative alignment's stats for set A, each column suffixed `_A` |
+| **Per-side data, B** | 38–70 | the same 33 columns for set B, suffixed `_B` |
+| **Comparison metrics** | 71–96 | A-vs-B differences and ratios: `Strand_Match`, `seqid_Diff`, coverage/length diffs, score diffs (`AS_Diff`, `ms_Diff`, …), indel/soft-clip diffs, and junction-set counts in both query and genomic space |
+| **Non-overlap objects** | 97–100 | the junctions that failed to overlap: `Junctions_OnlyA/B` and `Genomic_Junctions_OnlyA/B` |
+
+Within each per-side block the columns are grouped by topic: locus and span,
+alignment selection and score (including the per-type alignment counts
+`Num_Aln_tpP` / `Num_Aln_tpS`), identity and coverage, junction counts,
+cs-derived event counts, then the three long strings (`junctions`,
+`genomic_junctions`, `cs`) last. Print the exact layout of any table with
+`gzip -dc … | head -1 | tr '\t' '\n' | nl`.
+
+Per-side columns always use the **fixed** `_A` / `_B` suffixes, never the
+dataset label, so column names are identical for every comparison and stay
+unambiguous even when a label contains an underscore. Which dataset each side
+*is* comes from the `Label_A` / `Label_B` columns, carried on every row so any
+subset of rows stays self-describing.
 
 ## Join keys & labels (columns 1–4)
 
@@ -94,8 +112,8 @@ inner subtraction is A − B but is then made symmetric by `unsigned_abs()`.
 | 88 | `N_Unmatched_Junctions` | Query-space: symmetric difference, `N_Junctions_OnlyA + N_Junctions_OnlyB` |
 | 89 | `N_Junctions_OnlyA` | Query-space junctions found only in A, `\|A \ B\|` |
 | 90 | `N_Junctions_OnlyB` | Query-space junctions found only in B, `\|B \ A\|` |
-| 91 | `Junction_Distance` | Legacy positional junction-distance metric |
-| 92 | `Junc_Dist_V2` | Legacy metric: `50 * \|JuncCount_A - JuncCount_B\|` |
+| 91 | `Junction_Distance` | Sum of absolute differences between A's and B's query-space junction positions, paired in order (stops at the shorter list) |
+| 92 | `Junc_Dist_V2` | `50 * \|JuncCount_A - JuncCount_B\|` |
 | 93 | `Genomic_N_Matched_Junctions` | Genomic-coordinate junction sets: size of the overlap (always emitted; meaningful when both sides map to the same reference) |
 | 94 | `Genomic_N_Unmatched_Junctions` | Genomic-coordinate: symmetric difference |
 | 95 | `Genomic_N_Junctions_OnlyA` | Genomic-coordinate junctions found only in A |
@@ -110,15 +128,17 @@ inner subtraction is A − B but is then made symmetric by `unsigned_abs()`.
   comparison uses the `junctions` columns; genomic-space comparison
   reattaches each side's `TargetChr` to its `genomic_junctions` pairs first,
   so junctions on different contigs can never falsely match.
+- The `junctions` / `genomic_junctions` columns and the trailing `*_OnlyA/B`
+  object lists use a Python tuple-of-tuples format; parse them in Python with
+  `ast.literal_eval`. See [REFERENCE.md](../REFERENCE.md#junction-comparison)
+  for the format.
 - **Nulls mean undefined, not zero.** An unmapped side has a null `cs` and a
   null `seqid_Max`; a ratio over a zero denominator is null. A real `0` stays
   `0`, and `TargetChr` stays `*` for unmapped (it's the mapping indicator).
 - Parquet uses the same 100 columns, same names, same order as the TSV — see
-  [REFERENCE.md](../REFERENCE.md) for the TSV↔Parquet null/escaping mapping.
-- **Columns 13–14 / 46–47 (`Num_Aln_tpP`, `Num_Aln_tpS`) were added in v0.32.0**
-  (96 → 100 columns), directly after `Num_Aln`, so every later column moved: by 2
-  within the `_A` block, and by 4 for the `_B` block and the comparison block.
-  Select columns by header name, not by position.
+  [REFERENCE.md](../REFERENCE.md#tsv-and-parquet) for the TSV↔Parquet null/escaping mapping.
+- Select columns by header name, not by position: positions can change when
+  columns are added.
 - Full classification logic (`query_identical`, `ref_same_position_same_aln`,
   etc.) derived from this table's columns is documented in
   [compare-summary.md](compare-summary.md) and

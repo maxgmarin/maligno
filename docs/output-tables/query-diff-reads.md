@@ -6,7 +6,7 @@ Written by `compare` by default (fused into its single merge pass, fixed at
 `--space query --compare-by all`; `--skip-find-aln-diff` opts out) and by
 standalone `toolkit find-aln-diff` (any `--space`/`--compare-by`
 combination — filenames gain a `.junctions`/`reference_diff` segment
-accordingly; see [REFERENCE.md](../REFERENCE.md#--compare-by--what-defines-a-difference-within-the-active---space)
+accordingly; see [REFERENCE.md](../REFERENCE.md#--compare-by)
 for the full mode matrix).
 
 10 columns.
@@ -32,7 +32,7 @@ for the full mode matrix).
 - For a both-mapped read, exactly one of columns 6–9 is `1` (they partition
   the four reference-space outcomes).
 - A read is only written here if it's a *difference* under the accumulator's
-  active mode — a read considered "identical" is excluded. That now includes
+  active mode — a read considered "identical" is excluded. That includes
   `aligned_neither` reads: neither aligner mapping a read at all counts as
   `query_identical` (both aligners agreeing, not disagreeing — see
   [compare-summary.md](compare-summary.md)), so it never appears in this

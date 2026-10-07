@@ -6,7 +6,7 @@ alignment record (every alignment for every read, not just the best one).
 Produced by `toolkit paf2tables --alninfo` and, opt-in, by
 `compare --emit-alninfo` (once per side, i.e. `{prefix}.{label_a}.alninfo.tsv.gz`
 and `{prefix}.{label_b}.alninfo.tsv.gz`). Off by default in `compare` — see
-[REFERENCE.md](../REFERENCE.md) for why. Pure streaming output: rows are
+[REFERENCE.md](../REFERENCE.md#outputs) for why. Pure streaming output: rows are
 written in PAF input order, one PAF line in, one row out (malformed lines are
 skipped with a stderr warning). An unmapped PAF record (`Target_Name == "*"`)
 still produces a full row, with alignment-derived fields zeroed/`NaN`.
@@ -57,4 +57,3 @@ still produces a full row, with alignment-derived fields zeroed/`NaN`.
   parse with `ast.literal_eval` in Python.
 - `seqid` and `Query_Aln_Cov` are `NaN`, not `0`, when undefined (unmapped, or
   a zero-length denominator).
-- Column count bumped 35 → 36 when `tp_tag` was added (v0.25.0).

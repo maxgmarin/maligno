@@ -7,22 +7,15 @@
 //! Why it exists: the comparison table is written once and re-read many times —
 //! by the notebooks, and by `find-aln-diff` re-run standalone with
 //! `--compare-by junctions`. Parquet stores each column separately, so a reader
-//! touching a few of the 100 columns never pays for the rest. Note the cost being
-//! avoided is **splitting every row into 100 fields**, not decompression:
-//! gunzipping the whole 408 MB table takes only 0.22 s.
+//! touching a few of the 100 columns never pays for the rest. The cost being
+//! avoided is **splitting every row into 100 fields**, not decompression, which
+//! is cheap.
 //!
-//! Measured on the 507,365-row Splice-vs-SpliceHQ table (DuckDB 1.5.5, default CSV
-//! sampling, best of three): the 16 columns `find-aln-diff` needs take 2.01 s
-//! from `tsv.gz` versus 0.55 s from Parquet (3.6×); a two-column aggregate drops
-//! from 0.85 s to 0.02 s (48×); a full 96-column scan gains least, 3.97 s to
-//! 2.31 s (1.7×). Writing is faster too — 4.5 s versus 10.8 s, measured with
-//! maligno itself. The cost is size: Parquet+zstd is ~31% larger here (85 MB vs
-//! 65 MB), because six long-string columns dominate the table and gzip compresses
-//! across the whole row stream where Parquet compresses each column alone.
-//!
-//! (Benchmark those numbers with DuckDB's *default* sampling. `sample_size=-1`
-//! forces a full-file type-inference scan before any row is read, which maligno
-//! never pays and which inflates the TSV side 2–4×.)
+//! Reading a few columns from Parquet is several times faster than from the
+//! gzipped TSV, and writing it is faster too. The cost is size: Parquet+zstd is
+//! somewhat larger, because a few long-string columns dominate the table and
+//! gzip compresses across the whole row stream where Parquet compresses each
+//! column alone.
 //!
 //! **The schema is derived, never restated.** Column names and order come from
 //! `comparison_row`'s `READINFO_DATA_COLS` and `comparison_col_names()`, the same
@@ -64,11 +57,9 @@ const SCHEMA_VERSION: &str = "2";
 /// Rows buffered before a row group is flushed. Bounds peak memory at
 /// O(row group) rather than O(reads).
 ///
-/// 20k was chosen by measurement on the 507,365-row table: row-group size is a
-/// pure memory dial here, with no cost in speed or size. 20k vs 100k rows gave
-/// 4.53s vs 4.57s to write (noise) and 86.3 MB either way, but 306 MB vs 490 MB
-/// peak RSS. There is a further ~270 MB of fixed overhead from parquet's per-column
-/// writers (measured with 96 columns) and their zstd contexts that no row-group choice affects.
+/// Row-group size is a pure memory dial here: larger groups don't change write
+/// speed or file size, but raise peak memory. Parquet's per-column writers and
+/// their zstd contexts add a fixed overhead that no row-group choice affects.
 const ROW_GROUP_ROWS: usize = 20_000;
 
 // ── Column types ─────────────────────────────────────────────────────────────

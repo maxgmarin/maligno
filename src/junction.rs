@@ -63,7 +63,7 @@ pub fn junction_set_stats(a: &[i64], b: &[i64]) -> (u64, u64, u64) {
 
 /// Parse a Python tuple-of-tuples string of `(start, end)` integer pairs.
 ///
-/// As of v0.2.3 the serialized form for `genomic_junctions` drops the chromosome
+/// The serialized form for `genomic_junctions` drops the chromosome
 /// from each inner tuple — chrom is available separately via the per-row
 /// `TargetChr` (alninfo) / `TargetChr_A` & `TargetChr_B` (compare) column. The caller
 /// reconstructs full `(chrom, start, end)` tuples by combining this output with
@@ -217,7 +217,7 @@ pub fn format_junction_tuple(juncs: &[i64]) -> String {
 
 /// Render `&[(String, u64, u64)]` as a Python tuple-of-tuples string.
 ///
-/// As of v0.2.3 the chrom field is **intentionally dropped on serialization** —
+/// The chrom field is **intentionally dropped on serialization** —
 /// chrom is available separately via the per-row `TargetChr` sibling column, so
 /// embedding it in every tuple was redundant noise. The in-memory tuple keeps
 /// its `String` chrom (used by `genomic_junction_set_stats` and friends for
@@ -420,7 +420,7 @@ mod tests {
 
     #[test]
     fn format_genomic_single_has_trailing_comma() {
-        // Chrom field is dropped on serialization (v0.2.3+).
+        // Chrom field is dropped on serialization.
         let v = vec![("chr22".to_string(), 100, 250)];
         assert_eq!(format_genomic_junction_tuple(&v), "((100, 250),)");
     }
@@ -448,7 +448,7 @@ mod tests {
 
     #[test]
     fn format_then_parse_genomic_roundtrip_pairs_only() {
-        // After v0.2.3 the serialized form drops chrom, so the round-trip
+        // The serialized form drops chrom, so the round-trip
         // returns just (start, end) pairs. The caller reconstructs full tuples
         // by combining the per-row TargetChr with these pairs.
         let v = vec![

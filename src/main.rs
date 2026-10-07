@@ -1,54 +1,36 @@
-//! maligno — unified PAF alignment-comparison toolkit.
+//! maligno — unified alignment-comparison toolkit (PAF, SAM and BAM input).
 //!
-//! Two ways to get from a pair of PAFs (sample A and B) to a per-read comparison
-//! table — both produce **identical** comparison results:
+//! Two ways to get from a pair of alignment files (sets A and B) to the per-read
+//! alignment comparison table; both produce **identical** tables:
 //!
-//!   1. On-rails (primary) — `compare`:
-//!        `maligno compare -a A.paf -b B.paf --outdir results/ --prefix AvsB`
-//!      Sorts both PAFs (consistent order), verifies they share the same read-ID
-//!      set. Then it writes the comparison table, and by default also
-//!      `find-aln-diff`'s differing-reads + region tables at its default
-//!      settings (`--skip-find-aln-diff` to opt out). The per-set alninfo +
-//!      readinfo tables are opt-in (`--emit-alninfo`/`--emit-readinfo`).
+//!   1. `compare` (primary entry point):
+//!        `maligno compare -a A.bam -b B.bam --outdir results/ --prefix AvsB`
+//!      Sorts both inputs by read name, verifies they share the same read-ID set,
+//!      then writes the alignment comparison table and, by default,
+//!      `find-aln-diff`'s differing-reads and region tables
+//!      (`--skip-find-aln-diff` to opt out). The per-set alninfo and readinfo
+//!      tables are opt-in (`--emit-alninfo` / `--emit-readinfo`).
 //!
-//!   2. Manual building blocks (full control), grouped under `toolkit`:
-//!        `maligno toolkit paf2tables -i A.sorted.paf --alninfo A.alninfo.tsv.gz --readinfo A.readinfo.tsv.gz`
+//!   2. Building blocks, grouped under `toolkit`:
+//!        `maligno toolkit paf2tables -i A.sorted.paf --readinfo A.readinfo.tsv.gz`
 //!        (same for B), then
 //!        `maligno toolkit merge-readinfo -a A.readinfo.tsv.gz -b B.readinfo.tsv.gz -o compare.tsv.gz`
 //!
 //! Commands:
 //!
-//!   1. `compare`                          end-to-end comparison of all input
-//!                                         alignments (PRIMARY analysis entry
-//!                                         point). Emits the single 100-column
-//!                                         comparison table plus, by default,
-//!                                         `find-aln-diff`'s default-mode outputs.
-//!   2. `sam2paf`                          SAM → PAF converter (utility; use
-//!                                         before toolkit/compare)
-//!   3. `toolkit find-aln-diff`            comparison table → differing reads +
-//!                                         the merged genomic regions where they
-//!                                         cluster, in query or reference space
-//!                                         (also driven inline by `compare`'s
-//!                                         default output — see above)
-//!   4. `toolkit paf2tables`               PAF → alninfo TSV and/or readinfo TSV
-//!                                         tables — a decomposed piece of what
-//!                                         `compare` does internally
-//!   5. `toolkit merge-readinfo`           two readinfo TSVs → per-read
-//!                                         comparison TSV — ditto
-//!   6. `toolkit summary`                  comparison table → aggregate summary
-//!                                         statistics (alignment status +
-//!                                         query/reference identity) — the same
-//!                                         thing `compare` tallies inline
-//!   7. `toolkit query-junction-diff`      comparison table (Parquet) →
-//!                                         per-read, per-side splice-junction
-//!                                         reconstruction (query-space selected,
-//!                                         genomic-space paired) and diff, plus
-//!                                         a total-occurrence count for each
-//!                                         flagged junction across all reads
+//!   - `compare`                      two alignment files -> alignment comparison table
+//!                                    (+ summary and differing reads/regions)
+//!   - `sam2paf`                      SAM/BAM -> PAF converter (also run internally
+//!                                    by `compare` on SAM/BAM inputs)
+//!   - `toolkit paf2tables`           PAF -> alninfo and/or readinfo tables
+//!   - `toolkit merge-readinfo`       two readinfo tables -> alignment comparison table
+//!   - `toolkit summary`              alignment comparison table -> summary statistics
+//!   - `toolkit find-aln-diff`        alignment comparison table -> differing reads and
+//!                                    the regions where they cluster
+//!   - `toolkit query-junction-diff`  alignment comparison table (Parquet) -> per-read,
+//!                                    per-side splice-junction reconstruction and diff
 //!
-//! The comparison itself is a streaming merge-join (constant memory): only reads
-//! present in BOTH inputs (matched on Read_Name + Read_Len) produce an output row.
-//! `compare` guarantees the inputs are sorted and share the same read-ID set.
+//! Only reads present in both inputs, matched on Read_Name, produce an output row.
 
 
 // ── Pipeline modules ──────────────────────────────────────────────────────────
@@ -70,7 +52,7 @@ mod compare;            // primary `compare` command (on-rails: sort → tables 
 mod external_sort;      // in-process PAF sort (ext-sort) + read-ID set check
 mod paf2tables;         // PAF → alninfo and/or readinfo, one pass
 mod paf_groups;         // shared PAF → per-read group reader (paf2tables / compare)
-mod readinfo;           // shared collapse library (utils-readinfo CLI unregistered; run()/ReadInfoArgs/flush_group kept for future reuse)
+mod readinfo;           // shared collapse library (standalone alninfo → readinfo CLI not registered; run()/ReadInfoArgs/flush_group kept for future reuse)
 mod record;
 
 // ── sam2paf utility submodule ─────────────────────────────────────────────────
@@ -97,13 +79,13 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// end-to-end comparison of all input alignments (Primary analysis entry point).
+    /// End-to-end comparison of two alignment files (primary entry point).
     Compare(CompareArgs),
-    /// SAM -> PAF converter (conversion utility).
+    /// SAM/BAM -> PAF converter.
     Sam2paf(Sam2pafArgs),
-    /// Lower-level building blocks and analysis steps used internally by `compare`.
+    /// Building blocks, and follow-up analyses on an alignment comparison table.
     #[command(name = "toolkit")]
-    CompareToolkit {
+    Toolkit {
         #[command(subcommand)]
         command: ToolkitCommands,
     },
@@ -111,17 +93,17 @@ enum Commands {
 
 #[derive(Subcommand, Debug)]
 enum ToolkitCommands {
-    /// PAF -> alninfo TSV and/or readinfo TSV tables.
+    /// PAF -> alninfo and/or readinfo tables.
     Paf2tables(Paf2TablesArgs),
-    /// Two readinfo TSVs -> per-read comparison TSV.
+    /// Two readinfo tables -> alignment comparison table (TSV or Parquet).
     #[command(name = "merge-readinfo")]
     MergeReadinfo(MergeReadinfoArgs),
-    /// Comparison table → aggregate summary statistics.
+    /// Alignment comparison table -> aggregate summary statistics.
     Summary(CompareSummaryArgs),
-    /// Comparison table → find differing reads and the regions where they cluster.
+    /// Alignment comparison table -> differing reads and the regions where they cluster.
     #[command(name = "find-aln-diff")]
     FindAlnDiff(FindAlnDiffArgs),
-    /// Comparison table → per-read, per-side splice-junction reconstruction and diff.
+    /// Alignment comparison table -> per-read, per-side splice-junction reconstruction and diff.
     #[command(name = "query-junction-diff")]
     QueryJunctionDiff(QueryJunctionDiffArgs),
 }
@@ -131,7 +113,7 @@ fn main() -> Result<()> {
     match &cli.command {
         Commands::Compare(args) => compare::run(args),
         Commands::Sam2paf(args) => sam2paf::run(args),
-        Commands::CompareToolkit { command } => match command {
+        Commands::Toolkit { command } => match command {
             ToolkitCommands::Paf2tables(args)    => paf2tables::run(args),
             ToolkitCommands::MergeReadinfo(args) => compare_streaming::run(args),
             ToolkitCommands::Summary(args)       => compare_summary::run(args),

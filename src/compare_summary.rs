@@ -415,10 +415,9 @@ impl CompareSummary {
 
 #[derive(clap::Args, Debug)]
 pub struct CompareSummaryArgs {
-    /// Comparison table from `compare` / `toolkit merge-readinfo`: TSV (`.gz` ok;
-    /// `-` = stdin) or Parquet (`--format parquet` / `-o x.parquet`). See
-    /// `--input-format`.
-    #[arg(short = 'i', long = "input", value_name = "compare.tsv|compare.parquet")]
+    /// Alignment comparison table (.parquet or .tsv[.gz]; `-` reads TSV from stdin).
+    /// See `--input-format`.
+    #[arg(short = 'i', long = "input", value_name = "compare.parquet|compare.tsv[.gz]")]
     input: String,
 
     /// Input serialization. `auto` (default) selects Parquet for a
@@ -428,38 +427,17 @@ pub struct CompareSummaryArgs {
     input_format: InputFormat,
 
     /// Write the summary TSV here (default: stderr only). `.gz` ok; `-` for stdout.
-    #[arg(short = 'o', long = "output", value_name = "summary.tsv")]
+    #[arg(short = 'o', long = "output", value_name = "summary.tsv[.gz]")]
     output: Option<String>,
 }
 
-/// Confirm a compare-table header uses the fixed `_A` / `_B` side suffixes
-/// introduced in v0.13.0. Shared by `toolkit summary` and `find-aln-diff`.
-///
-/// Pre-v0.13.0 tables suffixed per-side columns with the dataset *label*
-/// (`TargetChr_Splice`), which made column names dataset-specific and ambiguous
-/// whenever a label itself contained an underscore. Those tables are not
-/// readable by this version — the error tells the user to regenerate.
+/// Confirm a compare-table header uses the fixed `_A` / `_B` side suffixes.
+/// Shared by `toolkit summary`, `find-aln-diff` and `query-junction-diff`.
 pub(crate) fn require_ab_schema(cols: &[&str]) -> Result<()> {
     let has_a = cols.contains(&"TargetChr_A");
     let has_b = cols.contains(&"TargetChr_B");
     if has_a && has_b {
         return Ok(());
-    }
-    // A legacy table is recognizable by label-suffixed `TargetChr_*` columns;
-    // name them in the error so the cause is obvious.
-    let legacy: Vec<&str> = cols
-        .iter()
-        .copied()
-        .filter(|c| c.starts_with("TargetChr_"))
-        .collect();
-    if !legacy.is_empty() {
-        bail!(
-            "this comparison table uses the pre-v0.13.0 label-suffixed schema ({}) \
-             — regenerate it with maligno v0.13+ (`compare` / `toolkit merge-readinfo`), \
-             which writes fixed `TargetChr_A` / `TargetChr_B` columns plus \
-             `Label_A` / `Label_B`",
-            legacy.join(", ")
-        );
     }
     bail!(
         "comparison table is missing the `TargetChr_A` / `TargetChr_B` columns \
@@ -510,7 +488,7 @@ pub fn run(args: &CompareSummaryArgs) -> Result<()> {
     let col_index: HashMap<&str, usize> =
         cols.iter().copied().enumerate().map(|(i, c)| (c, i)).collect();
 
-    // Require the v0.13+ fixed `_A` / `_B` side suffixes.
+    // Require the fixed `_A` / `_B` side suffixes.
     require_ab_schema(&cols)?;
 
     let resolve = |side: &str| -> Result<HashMap<&'static str, usize>> {
@@ -582,17 +560,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_label_suffixed_schema_is_rejected_with_regenerate_hint() {
-        // A pre-v0.13.0 table: per-side columns suffixed with the dataset label.
-        let cols = ["Read_Name", "TargetChr_Splice", "TargetChr_SpliceHQ"];
-        let err = require_ab_schema(&cols).unwrap_err().to_string();
-        assert!(err.contains("pre-v0.13.0"), "unexpected error: {err}");
-        assert!(err.contains("regenerate"), "unexpected error: {err}");
-        // Names the offending columns so the cause is obvious.
-        assert!(err.contains("TargetChr_Splice"), "unexpected error: {err}");
-    }
-
-    #[test]
     fn one_sided_ab_schema_is_rejected() {
         // `TargetChr_B` missing → not a usable comparison table.
         let cols = ["Read_Name", "TargetChr_A"];
@@ -660,16 +627,15 @@ mod tests {
     #[test]
     fn set_labels_allow_underscores() {
         use crate::compare_streaming::validate_set_label;
-        // The whole point of fixed `_A`/`_B` suffixes: an underscore in a label
-        // is no longer ambiguous, so it must be accepted.
+        // Side identity comes from the fixed `_A`/`_B` suffixes, not the label,
+        // so underscores in a label are fine and must be accepted.
         assert_eq!(validate_set_label("my_run_1").unwrap(), "my_run_1");
         assert_eq!(validate_set_label("Splice").unwrap(), "Splice");
     }
 
     // ─── classify(): junction-identity fields ──────────────────────────────
-    // Relocated from find_query_diff.rs (formerly free-standing
-    // `junctions_identical`/`genomic_junctions_identical` tests), now driven
-    // through `classify()`'s full accessor interface.
+    // Tests for `classify()`'s junction-identity fields, driven through its full
+    // accessor interface.
 
     /// Build a `get_a`/`get_b`-shaped accessor from a fixed field list. Both
     /// sides default to "mapped, same reference position, same cs" so a test

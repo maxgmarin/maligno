@@ -85,14 +85,11 @@ fn is_mapped(target_chr: &str) -> bool {
     !(target_chr.is_empty() || target_chr == "*")
 }
 
-/// Reconstruct one read's differing splice junctions on both sides. Comparison
-/// table → `compare.tsv`/`.parquet` schema — not the original PAFs.
+/// Reconstruct each differing read's splice junctions on both sides, from a
+/// comparison table (Parquet), not the original PAFs.
 #[derive(clap::Args, Debug)]
 pub struct QueryJunctionDiffArgs {
-    /// Comparison table from `compare` / `toolkit merge-readinfo` —
-    /// Parquet only (`.parquet`). This command runs a second pass over the
-    /// same file (see the module doc comment), so there is no `--input-format`
-    /// choice and no TSV/stdin support.
+    /// Alignment comparison table in Parquet format
     #[arg(short = 'i', long = "input", value_name = "compare.parquet")]
     input: String,
 

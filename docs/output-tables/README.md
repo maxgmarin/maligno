@@ -16,6 +16,6 @@ what produces it, when it's written, and a table with one row per column.
 | `{prefix}.query_junction_diff.per_read_per_junc_info.tsv.gz` | [per-read-query-junction-diff.md](per-read-query-junction-diff.md) |
 | `{prefix}.query_junction_diff.unmatched_junctions.{A,B}.tsv.gz` | [query-junction-diff-unmatched.md](query-junction-diff-unmatched.md) |
 
-These are per-column references. For prose explanations, schema-migration
-history, and the classification logic behind the derived columns, see the
-main [REFERENCE.md](../REFERENCE.md) and [COMPARE_TABLE.md](../COMPARE_TABLE.md).
+These are per-column references. For how each command works and the
+classification logic behind the derived columns, see the main
+[REFERENCE.md](../REFERENCE.md).

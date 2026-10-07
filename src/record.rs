@@ -80,7 +80,7 @@ impl AlnInfo {
         //   +strand: start = query_start,          end = query_len - query_end
         //   -strand: start = query_len - query_end, end = query_start
         //
-        // Unmapped records must be excluded (v0.15.0). Their query_start/query_end are
+        // Unmapped records must be excluded. Their query_start/query_end are
         // placeholder zeros and their strand is '*', so `softclip_lengths` would take
         // the non-'+' arm and conclude `start = query_len - 0 = query_len` — reporting
         // the whole read as soft-clipped, with one soft-clip event. That is a real
@@ -303,7 +303,7 @@ fn write_junction_tuple<W: Write>(w: &mut W, junctions: &[i64]) -> std::io::Resu
 
 /// Write genomic junctions in Python's `str(tuple of tuples)` format.
 ///
-/// As of v0.2.3 the chrom field is **dropped on serialization** — chrom is available
+/// The chrom field is **dropped on serialization** — chrom is available
 /// per-row via the `Target_Name` (alninfo) / `TargetChr` (readinfo) sibling column,
 /// so embedding it in every tuple was redundant. The in-memory `AlnInfo` keeps the
 /// chrom (used by downstream set-comparison for cross-chrom safety); only the
@@ -360,10 +360,10 @@ mod tests {
     #[test]
     fn unmapped_record_reports_no_softclipping() {
         // The canonical unmapped row `sam2paf --convert-unaligned` emits: strand and
-        // target are '*', and the query interval is a placeholder (0, 0). Before
-        // v0.15.0 this reported the entire read as soft-clipped (start = query_len,
-        // events = 1), because the '*' strand fell through to the non-'+' arm of
-        // `softclip_lengths` and `query_len - 0` is `query_len`.
+        // target are '*', and the query interval is a placeholder (0, 0). Without
+        // the unmapped exclusion this would report the entire read as soft-clipped
+        // (start = query_len, events = 1), because the '*' strand falls through to
+        // the non-'+' arm of `softclip_lengths` and `query_len - 0` is `query_len`.
         let a = aln("read1\t67\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0");
         assert_eq!(a.n_softclipped_bases_start, 0, "no alignment means no clipped start");
         assert_eq!(a.n_softclipped_bases_end, 0);

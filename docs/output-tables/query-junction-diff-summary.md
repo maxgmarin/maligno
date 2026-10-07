@@ -2,7 +2,7 @@
 
 `{prefix}.query_junction_diff.summary.tsv` — parse-time funnel counts written
 by `toolkit query-junction-diff`, over an existing
-`compare.tsv`/`.parquet`. Always uncompressed. 2 columns: `Category`, `Count`.
+`compare.parquet`. Always uncompressed. 2 columns: `Category`, `Count`.
 
 Every `Category` below is one **row** in the file, in this order:
 

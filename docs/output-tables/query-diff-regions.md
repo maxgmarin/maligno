@@ -43,6 +43,3 @@ these tables.
   still be counted here (it was flagged as a *reference*-space difference).
 - Bad intervals (unparseable coordinates, or `end <= start`) are skipped and
   counted internally rather than aborting the run.
-- Verified against a real `bedtools merge` oracle at both small (~11.6K
-  reads) and genome scale (~986K reads, 31.5K differing) — exact match on
-  `(chrom, start, end, n_diff_aln_total)` in both cases.

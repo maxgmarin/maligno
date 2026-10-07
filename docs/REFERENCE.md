@@ -1,851 +1,655 @@
 # maligno — Reference
 
-Full reference for **maligno**, a unified toolkit for alignment processing and
-cross-file comparison. Subcommands cover the full pipeline from raw alignments
-(BAM/PAF) to per-read comparison statistics.
+Complete reference for **maligno**: every command, what it reads and writes,
+and how it decides what to report. For installation and a quick start, see the
+[README](../README.md). For column-by-column definitions of every output file,
+see [`docs/output-tables/`](output-tables/README.md).
 
-> New here? Start with the [README](../README.md) quick start. This document is
-> the complete reference: every subcommand, the full column dictionary, schema
-> migration notes, troubleshooting, and the source layout.
+**Contents**
+
+- [Overview](#overview)
+- Commands
+  - [`compare`](#compare): end-to-end comparison of two alignment files (primary entry point)
+  - [`sam2paf`](#sam2paf): SAM/BAM → PAF converter
+  - [`toolkit paf2tables`](#toolkit-paf2tables): PAF → alninfo and/or readinfo tables
+  - [`toolkit merge-readinfo`](#toolkit-merge-readinfo): two readinfo tables → comparison table
+  - [`toolkit summary`](#toolkit-summary): comparison table → summary statistics
+  - [`toolkit find-aln-diff`](#toolkit-find-aln-diff): comparison table → differing reads and regions
+  - [`toolkit query-junction-diff`](#toolkit-query-junction-diff): comparison table → per-read splice-junction diff
+- Shared definitions
+  - [Representative alignment](#representative-alignment)
+  - [Classification](#classification)
+  - [Junction comparison](#junction-comparison)
+  - [TSV and Parquet](#tsv-and-parquet)
+- [Working with the output tables](#working-with-the-output-tables)
+- [Troubleshooting](#troubleshooting)
+- [Build](#build)
 
 ---
 
-## Two ways to compare two PAFs
+## Overview
 
-Both start from PAFs for sample A and B and produce the **identical** comparison
-table. Use `compare` for the safe, do-it-all path; drop to the subcommands when
-you want manual control.
+maligno compares two sets of alignments of the **same reads** (for example,
+one read set aligned with two parameter sets, two aligners, or to two
+references), read by read.
 
-**1. On-rails (primary) — `compare`:** one command that sorts both PAFs (so
-order is guaranteed), verifies they carry the same read-ID
-set, and writes a results directory with the comparison table (the per-set
-alninfo + readinfo tables are opt-in — `--emit-alninfo`/`--emit-readinfo`).
+There are two ways to produce the comparison table, and both give the
+**identical** table:
+
+**1. `compare` (recommended):** one command that sorts both inputs, checks
+they carry the same reads, and writes a results directory.
 
 ```
-  A.paf ─┐                                            results/AvsB.compare.tsv.gz
-         ├─ compare (sort → verify → compare) ─▶      results/AvsB.{A,B}.alninfo.tsv.gz   (--emit-alninfo)
-  B.paf ─┘                                            results/AvsB.{A,B}.readinfo.tsv.gz  (--emit-readinfo)
+  A.paf|sam|bam ─┐                                  {prefix}.compare.tsv.gz / .parquet
+                 ├─ compare (sort → verify → compare) ─▶  {prefix}.compare.summary.tsv
+  B.paf|sam|bam ─┘                                  {prefix}.query_diff_reads.tsv.gz
+                                                    {prefix}.query_diff_regions.{A,B}.bed.gz
 ```
+
 ```bash
-maligno compare -a A.paf -b B.paf --label-a A --label-b B --outdir results/ --prefix AvsB
+maligno compare -a A.bam -b B.bam --label-a A --label-b B --outdir results/ --prefix AvsB
 ```
 
-**2. Manual building blocks — `toolkit paf2tables` then
-`toolkit merge-readinfo`:** full control (you sort and pick exactly
-what to produce).
+**2. Building blocks:** `toolkit paf2tables`, then `toolkit merge-readinfo`.
+You sort the inputs yourself and keep the intermediate per-read tables.
 
 ```
   A.paf ──paf2tables──▶ A.readinfo.tsv ─┐
                                          ├─ merge-readinfo ─▶ compare.tsv
   B.paf ──paf2tables──▶ B.readinfo.tsv ─┘
 ```
-```bash
-LC_ALL=C sort -t$'\t' -k1,1 <(gzcat A.paf.gz) | gzip > A.sorted.paf.gz   # (and B)
-maligno toolkit paf2tables -i A.sorted.paf.gz --readinfo A.readinfo.tsv.gz
-maligno toolkit paf2tables -i B.sorted.paf.gz --readinfo B.readinfo.tsv.gz
-maligno toolkit merge-readinfo -a A.readinfo.tsv.gz -b B.readinfo.tsv.gz -o compare.tsv.gz
-```
 
-| Subcommand    | Input                              | Output                                  |
-|---------------|------------------------------------|-----------------------------------------|
-| **`compare`** | two alignment files, each PAF, SAM or BAM (`-a`/`--aln-a`, `-b`/`--aln-b`; auto-detected, mixed OK, no CRAM; file paths only, no stdin) | **a results directory** (`--outdir`/`--prefix`): the comparison TSV, and (by default) `find-aln-diff`'s default-mode differing-reads + region tables — **the primary entry point**. Sorts inputs and verifies read-ID sets match. Emits the single 100-column comparison table as TSV, Parquet or both (`--format`); `--skip-find-aln-diff` opts out of the fused diff output; per-set alninfo + readinfo for A and B are opt-in (`--emit-alninfo`/`--emit-readinfo`) |
-| `toolkit paf2tables`  | PAF (`-i`, `.gz`/`-` ok)           | **alninfo TSV** (`--alninfo`, 36 cols) and/or **readinfo TSV** (`--readinfo`, 36 cols), in one pass |
-| `toolkit merge-readinfo` | two readinfo TSVs (`-a`, `-b`) | per-read comparison table (`-o`, 100 cols); the same table `compare` writes. Writes Parquet when `-o` ends in `.parquet`, TSV otherwise |
-| `sam2paf`     | SAM or BAM file (auto-detected), or SAM on stdin (`-`) | PAF written to stdout      |
+Either way, the comparison table can then be analysed further with
+`toolkit summary`, `toolkit find-aln-diff` and `toolkit query-junction-diff`.
 
-`toolkit` groups together the lower-level building blocks used
-internally by `compare` (`paf2tables`, `merge-readinfo`, and `summary` — see
-below) — most users only need `compare` itself, `toolkit find-aln-diff`,
-and `toolkit summary`.
+**Input and output conventions.** Inputs and outputs ending in `.gz` are
+read and written as gzip. Most commands accept `-` for stdin/stdout. The
+exceptions are `compare`'s `-a`/`-b` (real file paths only), Parquet inputs
+(real file paths only), and `toolkit query-junction-diff` (Parquet only).
 
-All inputs/outputs transparently support gzip (`.gz` suffix) and stdin/stdout (`-`) —
-except `compare`'s `-a`/`-b`, which require real file paths (no stdin), since
-`compare` always needs two independent inputs.
+**Read identity.** maligno matches alignments across files by read name
+(`Query_Name` in PAF, `QNAME` in SAM/BAM), so each name must identify one
+read. For paired-end SAM/BAM, `/1` or `/2` is appended to each mate's name, so
+mates are compared separately.
 
-### Working with PAF files: `toolkit paf2tables` (start here)
+---
 
-`toolkit paf2tables` is the one command that turns a PAF into the
-downstream tables. Give it the output path(s) you want — it writes the
-**alninfo** table, the **readinfo** table, or **both in a single pass**
-(reading the PAF only once):
+## `compare`
 
 ```bash
-# Both tables in one pass (reads the PAF once):
-maligno toolkit paf2tables -i in.paf --alninfo alninfo.tsv.gz --readinfo readinfo.tsv.gz
-
-# Just the per-alignment table (no grouping required; works on unsorted PAF):
-maligno toolkit paf2tables -i in.paf --alninfo alninfo.tsv.gz
-
-# Just the per-read summary (best alignment per read):
-maligno toolkit paf2tables -i in.paf --readinfo readinfo.tsv.gz
+maligno compare -a <a.paf|a.sam|a.bam> -b <b.paf|b.sam|b.bam> \
+  --label-a <A> --label-b <B> --outdir <DIR> --prefix <NAME> [options]
 ```
 
-At least one of `--alninfo` / `--readinfo` must be given. 
+Runs the full comparison and handles its own preconditions: inputs don't
+need to be pre-sorted.
 
-**Grouping requirement.** The `--readinfo` output requires the PAF be **grouped**
-by `Query_Name` (each read's alignments contiguous); `--alninfo` never cares
-about order. By default `paf2tables` groups contiguous runs and prints a one-shot
-warning if the input isn't byte-lex sorted. Add **`--strict-grouping`** to turn a
-silently-wrong non-grouped input into a hard error — it tracks completed read
-names (memory ∝ number of distinct reads) and aborts if a `Query_Name` reappears
-non-contiguously:
+### Inputs
+
+`-a`/`--aln-a` and `-b`/`--aln-b` are each **PAF** (`.paf[.gz]`), **SAM**
+(plain or gzip/BGZF) or **BAM**. The format is detected per file, so the two
+can differ (e.g. BAM vs PAF). CRAM is not supported. Any BAM sort order works.
+
+SAM/BAM inputs are converted to PAF on the fly with the same code as
+`maligno sam2paf -U` (no intermediate file is written), so results are identical
+to converting first. Unmapped reads are always kept. `--sam-records` picks
+which records are converted:
+
+| `--sam-records` | Records kept | Equivalent |
+|---|---|---|
+| `primary-supp` (default) | primary + supplementary; skip secondary | `sam2paf -p -U` |
+| `primary` | primary only | `sam2paf -P -U` |
+| `all` | every record | `sam2paf -U` |
+
+This also decides which alignments the per-read `Num_Aln_tpP` / `Num_Aln_tpS`
+counts can see. Under the default, secondaries are dropped, so `Num_Aln_tpS`
+is `0`.
+
+Every kept, mapped SAM/BAM record needs a `cs` tag, or an `MD` tag plus `SEQ`
+to build one from. A record with neither stops the run (see
+[`sam2paf`](#sam2paf), and the README's section on preprocessing STAR BAMs).
+
+### What it does
+
+1. **Sort.** Both inputs are sorted by read name (byte order) with an
+   in-process external sort. It holds up to `--sort-mem` (default `1G`) per
+   file in memory, uses `--sort-threads` threads (default `1`), and spills to
+   temporary files under `--sort-tmp-dir` (default: `--outdir`).
+2. **Verify.** Checks that both inputs carry the **same set of read names**.
+   If they differ, `compare` stops with an error that reports how many names
+   are shared, only in A, and only in B (with examples). With
+   `--allow-id-mismatch` it instead compares the shared reads only; reads
+   found in only one input get no row and are counted in the summary as
+   `present_only_in_A_by_id` / `present_only_in_B_by_id`.
+3. **Compare.** In one pass over both sorted inputs, each read's alignments
+   are collapsed to a [representative alignment](#representative-alignment)
+   on each side, the two are [classified](#classification), and one row per
+   read is written to the comparison table. The summary statistics and the
+   differing-reads and region tables are produced in the same pass.
+
+### Outputs
+
+Written to `--outdir`, named by `--prefix`:
+
+| File | Written | Spec |
+|---|---|---|
+| `{prefix}.compare.tsv.gz` | by default (`--format tsv` or `both`) | [compare.md](output-tables/compare.md) |
+| `{prefix}.compare.parquet` | by default (`--format parquet` or `both`) | [compare.md](output-tables/compare.md) |
+| `{prefix}.compare.summary.tsv` | always | [compare-summary.md](output-tables/compare-summary.md) |
+| `{prefix}.query_diff_reads.tsv.gz` | by default | [query-diff-reads.md](output-tables/query-diff-reads.md) |
+| `{prefix}.query_diff_regions.A.bed.gz`, `.B.bed.gz` | by default | [query-diff-regions.md](output-tables/query-diff-regions.md) |
+| `{prefix}.{label_a}.alninfo.tsv.gz`, `{prefix}.{label_b}.alninfo.tsv.gz` | with `--emit-alninfo` | [alninfo.md](output-tables/alninfo.md) |
+| `{prefix}.{label_a}.readinfo.tsv.gz`, `{prefix}.{label_b}.readinfo.tsv.gz` | with `--emit-readinfo` | [readinfo.md](output-tables/readinfo.md) |
+
+- `--format tsv|parquet|both` (default `both`) chooses the comparison table's
+  serialization.
+- The differing-reads and region tables are `toolkit find-aln-diff`'s output
+  at its default settings (`--space query --compare-by all`). They are
+  byte-identical to running that command on the comparison table.
+  `--skip-find-aln-diff` turns them off. For the other `--space` /
+  `--compare-by` modes, run [`toolkit find-aln-diff`](#toolkit-find-aln-diff)
+  on the comparison table.
+- The per-set alninfo and readinfo tables are off by default. They are the
+  largest outputs, and no other maligno command reads them.
+- An abbreviated summary is also printed to stderr.
+- The sorted intermediate PAFs are deleted at the end unless you pass
+  `--keep-sorted-paf`. For SAM/BAM inputs, these are the converted PAFs.
+
+### Labels
+
+`--label-a` / `--label-b` (defaults `SetA` / `SetB`) name the two sets. They
+are written to the comparison table's `Label_A` / `Label_B` columns and to the
+summary, and are used in the per-set output filenames. They must be non-empty,
+must differ from each other, and must not contain tabs, newlines, `/` or `\`.
+Underscores are fine. Columns are always suffixed `_A` / `_B`, whatever the
+labels are.
+
+### `--presorted`
+
+Skips the sort (step 1) when the inputs are already prepared. Both inputs must
+contain the **same reads in the same relative order**, with each read's
+records contiguous. Any consistent order works; byte order is not required.
+Instead of the upfront check (step 2), the comparison pass checks that the
+files line up read for read and stops at the first divergence, leaving no
+partial output. `--presorted` cannot be combined with `--allow-id-mismatch` or
+`--keep-sorted-paf`.
+
+For SAM/BAM inputs, name-sort both with `samtools sort -n`. Its tie-break
+keeps each mate's records contiguous, which raw paired-end aligner output
+generally does not. A SAM/BAM whose header says `@HD SO:coordinate` is
+rejected under `--presorted`.
+
+Output rows follow the input order. If your sort differs from maligno's,
+ties for the [representative alignment](#representative-alignment) can
+occasionally resolve differently (a few reads per million in testing).
+
+### Options
+
+| Flag | Purpose |
+|---|---|
+| `-a`/`--aln-a`, `-b`/`--aln-b` | input alignments for set A / B (PAF, SAM or BAM) |
+| `--sam-records` | SAM/BAM only: `primary-supp` (default), `primary`, or `all` |
+| `--label-a`, `--label-b` | set names (default `SetA` / `SetB`) |
+| `-o`/`--outdir`, `-p`/`--prefix` | output directory and filename prefix |
+| `--format` | comparison table as `tsv`, `parquet`, or `both` (default) |
+| `--allow-id-mismatch` | compare the shared reads instead of erroring when the read-name sets differ |
+| `--presorted` | skip the sort; inputs must already be in the same read order |
+| `--emit-alninfo`, `--emit-readinfo` | also write the per-set alninfo / readinfo tables |
+| `--sort-mem` | in-memory sort buffer per file (default `1G`; `K`/`M`/`G` suffix) |
+| `--sort-tmp-dir` | directory for sort spill files (default: `--outdir`) |
+| `--sort-threads` | sort threads (default `1`) |
+| `--keep-sorted-paf` | keep the sorted intermediate PAFs |
+| `--skip-find-aln-diff` | don't write the differing-reads and region tables |
+
+---
+
+## `sam2paf`
 
 ```bash
-maligno toolkit paf2tables -i in.paf --readinfo readinfo.tsv.gz --strict-grouping
+maligno sam2paf [options] <in.sam|in.bam|->  > out.paf
 ```
 
-The standard way to guarantee grouping (and satisfy the downstream
-`merge-readinfo` byte-lex requirement at the same time) is a single up-front sort:
+Converts SAM or BAM to PAF on stdout. Its output is byte-for-byte compatible
+with the `sam2paf` command of minimap2's `paftools.js`. The input format is
+detected automatically; `-` reads SAM text from stdin. `maligno sam2paf in.bam`
+gives the same bytes as `samtools view -h in.bam | maligno sam2paf -`.
+
+| Flag | Meaning |
+|---|---|
+| `-p` | primary + supplementary alignments only (skip secondary, FLAG 0x100) |
+| `-P` | primary alignments only (skip secondary and supplementary, FLAG 0x800); implies `-p` |
+| `-L` | write the `cs` tag in long form (`=ACGT`) instead of the default short form (`:N`) |
+| `-U` | write a placeholder PAF record for each unmapped read (otherwise unmapped reads are dropped) |
+
+Pass `-U` when the PAF will be compared: unmapped reads then appear as
+`Num_Aln = 0` rows instead of disappearing.
+
+**The `cs` requirement.** Each kept, mapped record's `cs` comes from its
+`cs:Z:` tag when present, or is built from `CIGAR` + `MD` + `SEQ`. If neither
+is possible (no `cs` and no `MD`, or `MD` with `SEQ` = `*`, as on many
+secondary records), the run **stops with an error** naming the read. Fixes:
+
+- align with `cs` output enabled,
+- add `MD` with `samtools calmd`,
+- or skip secondaries with `-p` / `-P`.
+
+Records dropped by `-p` / `-P`, and unmapped records, are not checked. Other
+per-record problems (e.g. a contig missing from the `@SQ` header lines) print
+a warning and skip the record.
+
+The `cs` strings maligno compares are text, so both sides of a comparison
+should use the same form. SAM/BAM conversion produces the short form, which is
+minimap2's default. Don't compare it against a PAF made with
+`minimap2 --cs=long`.
+
+---
+
+## `toolkit paf2tables`
+
+```bash
+maligno toolkit paf2tables -i <in.paf[.gz]|-> [--alninfo <alninfo.tsv[.gz]>] [--readinfo <readinfo.tsv[.gz]>] [--strict-grouping]
+```
+
+Turns a PAF into maligno's tables, writing either or both in a single pass
+over the PAF. At least one output must be given.
+
+- **`--alninfo`** writes one row per PAF record (36 columns; see
+  [alninfo.md](output-tables/alninfo.md)). Each record's `cs` tag is walked to
+  count matches, substitutions, insertions, deletions and splice junctions;
+  soft-clip lengths, junction coordinates and identity/coverage are derived
+  from it. Rows are written in input order with constant memory, and input
+  order doesn't matter. Unmapped records (`Target_Name == "*"`) get a row with
+  zeroed statistics.
+- **`--readinfo`** writes one row per read (36 columns; see
+  [readinfo.md](output-tables/readinfo.md)): the read's
+  [representative alignment](#representative-alignment) plus per-read
+  aggregates.
+
+**Grouping.** `--readinfo` requires each read's records to be **contiguous**
+in the input. By default contiguous runs are grouped, and a one-time warning
+is printed if the read names are not in byte order. That catches the common
+cases (e.g. a name-sorted but not byte-sorted aligner output, or shuffled
+multi-threaded output), but a scattered read can still slip through.
+**`--strict-grouping`** turns any non-contiguous read into an error. It keeps
+the set of completed read names in memory, so memory grows with the number of
+reads.
+
+The simplest way to guarantee grouping, and the byte order
+`toolkit merge-readinfo` needs, is to sort the PAF once up front:
 
 ```bash
 LC_ALL=C sort -t$'\t' -k1,1 in.paf | maligno toolkit paf2tables -i - --readinfo readinfo.tsv.gz
-```
-
-#### Handling non-grouped input — current behavior and roadmap
-
-readinfo correctness depends on every read's alignments being **contiguous**;
-alninfo never cares. Current behavior + the roadmap for richer handling
-(cheapest → most robust):
-
-1. **Contiguous streaming + one-shot lex-decrease warning** *(current default,
-   O(1) memory).* Fast, but silently wrong if a read's alignments are scattered
-   and no lex-decrease trips the warning.
-2. **`--strict-grouping` seen-set guard** *(now; O(#distinct reads) memory).*
-   Hard-errors on non-contiguous reappearance — turns "silently wrong" into
-   "loudly wrong" without buffering alignments.
-3. **`--unsorted` full in-memory grouping** *(future; O(file) memory).* Buffer
-   all alignments into a `HashMap<Query_Name, …>`, then collapse — order-
-   independent; fine for small/medium PAFs.
-4. **Internal external-sort fallback** *(future; bounded memory, any size).*
-   Spill to temp files and merge-sort by `Query_Name` before grouping.
-5. **Two-pass offset index on seekable input** *(future; bounded memory).* Pass 1
-   indexes `Query_Name → byte offsets`; pass 2 seeks per read (regular files only).
-6. **Actionable auto-detect error** *(future).* On detecting unsorted input, print
-   the exact tailored `LC_ALL=C sort … | maligno toolkit paf2tables …` command to run.
-7. **`--assume-grouped` fast-path** *(future).* Skip all checks for maximum
-   throughput when the caller guarantees grouping.
-
-### Primary: on-rails `compare`
-
-`compare` runs the whole pipeline for you and **owns its preconditions** — you
-don't have to pre-sort or worry about ordering:
-
-```bash
-maligno compare -a A.paf -b B.paf --label-a A --label-b B --outdir results/ --prefix AvsB
-maligno compare -a A.bam -b B.bam --label-a A --label-b B --outdir results/ --prefix AvsB
-```
-
-**Input formats.** Each of `-a`/`--aln-a` and `-b`/`--aln-b` (the old `--paf-a`/`--paf-b`
-spellings still work) is sniffed with htslib and may be PAF (plain or `.gz`), SAM
-(plain or gzip/BGZF) or BAM, and the two may differ. CRAM is rejected. A SAM/BAM
-side never gets separate conversion logic. A BAM is rendered back to SAM text
-record by record (htslib `sam_format1`, i.e. a built-in `samtools view -h`), and
-that text goes through the unchanged `sam2paf` converter on a worker thread,
-streamed through a pipe into Step 1's sort. No intermediate PAF is written. The
-PAF lines `compare` sees are byte-identical to `samtools view -h X.bam | maligno
-sam2paf <flags> -`, so every output is identical to converting first. Conversion
-flags: `-U` is always on (unmapped reads are kept); `--sam-records` picks the
-record filter: `primary-supp` (default, `sam2paf -p`), `primary` (`-P`), or `all`.
-A mapped record with no `cs:Z` and no usable `MD` (+`SEQ`) aborts the run (see
-[`sam2paf`](#sam2paf)). Because Step 1 re-sorts, any BAM sort order is fine.
-`--keep-sorted-paf` also leaves you the converted (sorted) PAFs.
-
-What it does, in order:
-1. **Sorts** both inputs by `Query_Name` (byte-lex) with an in-process external sort
-   (`ext-sort`: buffers up to `--sort-mem`, default 1G, spilling to temp files under
-   `--sort-tmp-dir`, default `--outdir`). This guarantees grouping and a consistent
-   matching order — it can't silently mis-compare unsorted input.
-2. **Verifies** both PAFs carry the **same `Query_Name` set** (O(1) memory). By
-   default it **errors** if they differ, reporting how many IDs are shared / only
-   in A / only in B (with examples). Pass `--allow-id-mismatch` to compare the
-   shared intersection instead.
-3. In a **single in-memory pass**, collapses both sorted PAFs in lock-step and
-   feeds the merge-join directly (no readinfo written-then-reread), writing the
-   comparison table and — by default — driving `find-aln-diff`'s default-mode
-   core (`--space query --compare-by all`) inline, in the same pass, over the
-   same matched-read classification already computed for the summary; the
-   per-set `alninfo` + `readinfo` tables are also tee'd out in this pass, but
-   only when requested (`--emit-alninfo`/`--emit-readinfo`):
-   ```
-   {prefix}.compare.tsv.gz
-   {prefix}.compare.summary.tsv
-   {prefix}.query_diff_reads.tsv.gz
-   {prefix}.query_diff_regions.A.bed.gz
-   {prefix}.query_diff_regions.B.bed.gz
-   {prefix}.{label_a}.alninfo.tsv.gz    {prefix}.{label_b}.alninfo.tsv.gz    (--emit-alninfo)
-   {prefix}.{label_a}.readinfo.tsv.gz   {prefix}.{label_b}.readinfo.tsv.gz   (--emit-readinfo)
-   ```
-   The sorted PAFs are scratch (removed unless `--keep-sorted-paf`).
-
-Pass **`--emit-alninfo`** and/or **`--emit-readinfo`** to additionally write
-those per-set tables (off by default — no file is created and the bytes are
-never serialized/compressed unless requested). On a full genome-wide
-GENCODE v49 benchmark (507,365 transcripts, run outside this repo), these two
-tables accounted for **~49% of `compare`'s total output size** (210M of 430M)
-and **~35% of its runtime** (83.5s → 54.4s with both omitted) — they're the
-biggest disk/time cost in a `compare` run by a wide margin, hence off by
-default. The comparison table itself is unaffected either way.
-
-Pass **`--skip-find-aln-diff`** to skip the fused differing-reads + region-table
-output (the last three files above) and restore `compare`'s pre-fusion output
-set. This is a fixed-mode shortcut only — for reference-space differences or
-`--compare-by junctions`, run standalone `toolkit find-aln-diff` against
-the emitted comparison table (see [Differing reads & regions](#differing-reads--regions-toolkit-find-aln-diff)
-below); it produces byte-identical output to the fused default when run with
-matching settings, since both share the same underlying accumulator.
-
-**`--presorted`** skips the internal sort (Step 1) when your inputs are already
-prepared. It only requires that both PAFs contain the **same reads in the same
-relative order**, grouped by `Query_Name` — *any* consistent ordering works (e.g.
-`samtools sort -n` output; byte-lex is **not** required). Instead of the upfront
-set-check, the single compare pass verifies the two files line up read-for-read
-and **errors on the first divergence** (leaving no partial output). Because nothing
-is sorted, `--presorted` cannot be combined with `--allow-id-mismatch` (computing a
-shared intersection needs a known sort order) or `--keep-sorted-paf` (no temp files are
-created). Use it to avoid the sort cost when you trust your inputs are aligned.
-SAM/BAM inputs work with `--presorted` too, and are converted straight into the
-compare pass with no temp files. Name-sort both with `samtools sort -n`: its
-READ1-before-READ2 tie-break keeps each mate's records (`Query_Name` gains a
-`/1`/`/2` suffix) contiguous. Raw paired-end aligner output generally does not,
-e.g. bwa's `X/1, X/2, X/1-supplementary`. A SAM/BAM whose header says
-`@HD SO:coordinate` is rejected under `--presorted`. As with PAFs, output rows
-follow the input order. **Caveat:** input sorted differently than maligno's own
-sort can cause small differences in which alignment is selected as a read's
-representative (a few reads in a million in testing).
-
-Ideal for comparing two parameter sets / references run on the **same** read or
-transcript set. **Precondition:** a `Query_Name` identifies one read/sequence
-(maligno sorts by name only). The comparison table is identical to the manual
-`toolkit paf2tables` → `toolkit merge-readinfo` path on the
-same inputs.
-
----
-
-## Build
-
-```bash
-# Native (macOS / Linux host)
-cargo build --release
-# → target/release/maligno
-
-# Static Linux binary for HPC (no runtime deps). The bundled htslib/zlib C code
-# needs the musl C compiler too, not just the linker set in .cargo/config.toml:
-CC_x86_64_unknown_linux_musl=x86_64-linux-musl-gcc \
-AR_x86_64_unknown_linux_musl=x86_64-linux-musl-ar \
-cargo build --release --target x86_64-unknown-linux-musl
-# → target/x86_64-unknown-linux-musl/release/maligno
-```
-
-SAM/BAM input uses `rust-htslib` (which compiles a bundled htslib) with
-`default-features = false`. That drops its `curl` feature (curl-sys + openssl-sys),
-which breaks static musl builds, and the CRAM-only `bzip2`/`lzma` codecs. `hts-sys`
-is pinned to `=2.2.0` in `Cargo.toml` because 2.2.1 no longer compiles with
-`rust-htslib` 0.46.0.
-
----
-
-## Install
-
-Build and copy the `maligno` binary into a `bin/` directory of your choice:
-
-```bash
-# Default: installs to ~/.cargo/bin/maligno (usually already on PATH)
-cargo install --path .
-
-# Or choose the install root — cargo appends bin/ automatically
-cargo install --path . --root ~/.local      # → ~/.local/bin/maligno
-
-# Add --force to overwrite a previous install when rebuilding
-cargo install --path . --root ~/.local --force
-```
-
-Ensure the target `bin/` directory is on your `PATH` (e.g. add
-`export PATH="$HOME/.local/bin:$PATH"` to your shell rc) so you can run `maligno`
-from anywhere. `cargo install` builds for the host machine; for the HPC static
-binary use the musl cross-build above.
-
----
-
-## Usage
-
-### Primary: on-rails `compare` from BAM/PAF
-
-```bash
-BIN=./target/release/maligno
-
-# BAM directly (converted internally exactly as `sam2paf -p -U`; any sort order):
-$BIN compare -a refA.bam -b refB.bam \
-  --label-a RefA --label-b RefB --outdir results/ --prefix RefA_vs_RefB
-
-# Or convert first, e.g. to keep the PAFs (identical results):
-$BIN sam2paf -p -U refA.bam | gzip > refA.paf.gz
-$BIN sam2paf -p -U refB.bam | gzip > refB.paf.gz
-
-# Compare: sorts both inputs, checks read-ID sets match, writes the results dir.
-#    No pre-sorting needed; compare does it (--sort-mem caps the in-RAM sort buffer).
-$BIN compare -a refA.paf.gz -b refB.paf.gz \
-  --label-a RefA --label-b RefB --outdir results/ --prefix RefA_vs_RefB --sort-mem 2G
-# → results/RefA_vs_RefB.{RefA,RefB}.alninfo.tsv.gz
-#   results/RefA_vs_RefB.{RefA,RefB}.readinfo.tsv.gz
-#   results/RefA_vs_RefB.compare.tsv.gz
-```
-
-### Explicit intermediates: `toolkit paf2tables` then `toolkit merge-readinfo`
-
-Same result, but materializes the per-file `readinfo` (and optionally `alninfo`)
-tables for other analyses.
-
-```bash
-BIN=./target/release/maligno
-# (steps 0 and 0.5 as above)
-
-# 1. PAF → readinfo  (one row per read; best alignment chosen by ms, then AS, then MQ).
-#    Add --alninfo <path> to also emit the 35-col per-alignment table in the same pass.
-$BIN toolkit paf2tables -i refA.sorted.paf.gz --readinfo refA.readinfo.tsv.gz
-$BIN toolkit paf2tables -i refB.sorted.paf.gz --readinfo refB.readinfo.tsv.gz
-
-# 2. Compare the two readinfo files (streaming, constant memory; strict order by default).
-$BIN toolkit merge-readinfo \
-  -a refA.readinfo.tsv.gz --label-a RefA \
-  -b refB.readinfo.tsv.gz --label-b RefB \
-  -o RefA_vs_RefB.compare.tsv.gz
+gzip -dc in.paf.gz | LC_ALL=C sort -t$'\t' -k1,1 | maligno toolkit paf2tables -i - --readinfo readinfo.tsv.gz
 ```
 
 ---
 
-## How each step works
-
-### `toolkit paf2tables` (alninfo conversion)
-
-Parses each PAF record (12 mandatory fields + `ms:i`, `AS:i`, `cs:Z` tags), walks the
-`cs` tag to accumulate match/substitution/insertion/deletion/splice statistics, computes
-soft-clip lengths, junction coordinates (strand-aware), and derived scalars
-(`seqid`, `Query_Aln_Len`, `Query_Aln_Cov`). This is the `--alninfo` output of
-`paf2tables`.
-
-**Pure streaming, constant memory** for the alninfo output. Each PAF line is parsed and
-written independently in input order — no internal collect-then-sort. For the explicit
-pipeline (`paf2tables` → `merge-readinfo`), pre-sort the PAF by `Query_Name` once upstream:
+## `toolkit merge-readinfo`
 
 ```bash
-LC_ALL=C sort -t$'\t' -k1,1 in.paf > sorted.paf
+maligno toolkit merge-readinfo -a <readinfo_a.tsv[.gz]> -b <readinfo_b.tsv[.gz]> \
+  [--label-a A] [--label-b B] -o <compare.parquet|compare.tsv[.gz]> [--allow-id-mismatch]
 ```
 
-Unix `sort` does external-sort with bounded memory and handles files larger than RAM.
-The pre-sort satisfies both the `--readinfo` contiguity requirement and
-`merge-readinfo`'s byte-lex sort requirement in one pass.
+Joins two readinfo tables into the alignment comparison table. It runs the same
+pairing, [classification](#classification) and row writing as `compare`, so the
+table is identical to the one `compare` writes from the same reads (see
+[compare.md](output-tables/compare.md)). Output is Parquet when `-o` ends in
+`.parquet`, otherwise TSV (`.tsv[.gz]`).
 
-**Unaligned reads are kept.** A PAF record with `Target_Name == "*"` produces a full row
-with zeroed alignment statistics, allowing unaligned reads to flow through the entire
-pipeline.
-
-### Readinfo collapse (used by `toolkit paf2tables --readinfo` and `compare`)
-
-The per-read collapse step. Groups alninfo rows by `Query_Name` (contiguous in sorted input) and collapses each group
-to one summary row:
-
-- **Best alignment** is the row with the highest `ms`, ties broken by highest `AS`, then by
-  highest `MQ`. Full `(ms, AS, MQ)` ties fall through to alninfo input order (stable sort
-  within each `Query_Name` run) — typically the aligner's emission order for that read.
-- **Aggregates over all alignments of the read:** `AS_Max`, `ms_Max`, `Query_Aln_Cov_Max`,
-  `Query_Aln_Len_Max`, `seqid_Max`.
-- `Num_Aln` counts only aligned rows (`Target_Name != "*"`), so a read that is present but
-  entirely unaligned gets a row with `Num_Aln = 0` and zeroed stats.
-- `Num_Aln_MaxScore` counts alignments tied at the chosen-best sort key for this read —
-  i.e., tied at **both** `ms_Max` **and** the highest `AS` among ms-tied rows. This matches
-  the full `(ms desc, AS desc)` selection rule used to pick the best alignment.
-  `Num_Aln_MaxScore = 1` ⇒ a single unambiguous winner under the selection rule;
-  `> 1` ⇒ alignments remain indistinguishable on both `ms` and `AS`, and file order
-  broke the tie. Practical note: STAR-style aligners write `ms=0` for every alignment, so
-  `ms_Max = 0` and `AS` does the actual selection work — counting at `(ms, AS)` keeps
-  `Num_Aln_MaxScore` informative in that case (otherwise it would equal `Num_Aln`).
-- `MQ_Best` carries the mapping-quality (PAF col 12) of the best-scoring alignment — the
-  same alignment from which `TargetChr`, `Strand`, `cs`, `junctions`, etc. are taken. For
-  STAR-aligned data the common values are 255 (uniquely mapped), 3 (NH=2), 1 (NH=3), 0
-  (NH>3). A difference in `MQ_Best` between two readinfo files surfaces reads where the two
-  aligners (or parameter sets) disagree on mapping uniqueness.
-- `Query_Start` / `Query_End` and `Target_Start` / `Target_End` carry the best alignment's
-  query-coordinate span on the read and target-coordinate span on the reference (both
-  0-based half-open, same convention as PAF / BED). Combined with `TargetChr` and `Strand`,
-  this gives each read a complete BED-style alignment interval — useful for downstream
-  genomic-region analysis (e.g., `bedtools merge` on filtered subsets of the compare output
-  to identify regions where SetA and SetB differ).
-
-### `toolkit merge-readinfo` (and the comparison core)
-
-A two-pointer **merge-join** over two sorted readinfo files, matching on
-**(Read_Name, Read_Len)**. This is the engine behind both `merge-readinfo` (readinfo
-TSVs in) and the primary `compare` (which feeds it collapsed rows straight from PAFs).
-For each matched read it emits the 33 data columns from each
-side (suffixed `_A` / `_B`) plus 30 comparison/object columns
-(`AS_Diff`, `ms_Ratio`, `seqid_Diff`, `Junction_Distance`, `N_Matched_Junctions`, `Genomic_N_Matched_Junctions`, `Junctions_OnlyA`, …) — 100 columns in total, including the four leading key/label columns.
-
-**Junction set comparison.** Junctions are compared as **sets** of query coordinates
-(deduplicated on both sides):
-
-| Column | Meaning |
-|--------|---------|
-| `N_Matched_Junctions`    | size of the overlap, `\|A ∩ B\|` |
-| `N_Junctions_OnlyA`      | junctions found only in A, `\|A \ B\|` |
-| `N_Junctions_OnlyB`      | junctions found only in B, `\|B \ A\|` |
-| `N_Unmatched_Junctions`  | junctions **not** in the overlap (set symmetric difference, `OnlyA + OnlyB`) |
-
-These stay internally consistent: `N_Matched_Junctions + N_Junctions_OnlyA` equals the
-junction count of A, and likewise for B. (`Junction_Distance` and `Junc_Dist_V2` are
-retained positional/legacy metrics.)
-
-**Genomic-junction comparison.** When both alignments are to the *same* reference, junctions
-are also compared in **reference coordinates** in addition to the query-coordinate metrics
-above. These are **always emitted**; four count columns appear in the comparison block:
-
-| Column                          | Meaning |
-|---------------------------------|---------|
-| `Genomic_N_Matched_Junctions`   | overlap on `(chrom, start, end)` sets |
-| `Genomic_N_Unmatched_Junctions` | set symmetric difference (= `OnlyA + OnlyB`) |
-| `Genomic_N_Junctions_OnlyA`     | only in A |
-| `Genomic_N_Junctions_OnlyB`     | only in B |
-
-The `genomic_junctions` column (always emitted in the alninfo and readinfo tables) uses
-0-based half-open BED coordinates in **`((start, end), ...)`** Python-tuple-of-tuples
-form, parseable with `ast.literal_eval`. The chromosome is **not** in each tuple — it's
-in the sibling `TargetChr` (alninfo) / `TargetChr_A` & `TargetChr_B` (compare) column. Cross-
-chromosome safety in the set comparison is still preserved: the comparison commands
-reconstruct full `(chrom, start, end)` keys internally by combining
-each row's parsed pairs with its per-side `TargetChr`, so junctions on different contigs
-cannot accidentally match.
-
-> **Format change (v0.2.3).** The genomic-junction tuples used to include the chrom as
-> the first element (e.g. `(('chr22', 100, 250), …)`). That was redundant with the
-> `TargetChr` column, so it was dropped. Pre-v0.2.3 TSVs need to be regenerated from PAF
-> to be readable by `compare` / `compare-readinfo`.
-
-> **Breaking schema change (v0.13.0) — fixed `_A`/`_B` side suffixes.** Per-side
-> comparison columns used to be suffixed with the *dataset label*
-> (`TargetChr_Splice`, `cs_SpliceHQ`, …). They now always use the fixed suffixes
-> `_A` and `_B`, and two new columns — **`Label_A`** and **`Label_B`**, at
-> positions 3–4 — record which dataset each side is, repeated on every row so any
-> row subset stays self-describing.
->
-> Why: label-suffixed names were dataset-specific (every downstream script had to
-> interpolate the label) and ambiguous whenever a label itself contained an
-> underscore, since `Target_Start_my_run` cannot be decomposed reliably. Column
-> counts grew by two: **94 → 96** for the full table and **47 → 49** for the
-> then-available `--mode junctions` view (removed in v0.14.0, see below).
->
-> The `…summary.tsv` categories changed to match: `aligned_only_A` /
-> `aligned_only_B` and `present_only_in_A_by_id` / `present_only_in_B_by_id`
-> (previously label-interpolated), with the labels emitted as `label_A` /
-> `label_B` provenance rows. Summary keys are therefore now stable across
-> datasets.
->
-> **Pre-v0.13.0 comparison tables are not readable** by `compare-summary` or
-> `find-query-diff` in v0.13+; they exit with an error telling you to regenerate.
-> Regenerate from PAF with `compare` (or from readinfo with `compare-readinfo`).
-> `--label-a` / `--label-b` are now also validated: they must be non-empty,
-> distinct, and free of tabs, newlines, and path separators. Underscores are fine.
-
-> **Breaking schema change (v0.14.0) — one comparison table, columns regrouped.**
-> `--mode full | junctions` has been **removed** from `compare` and
-> `compare-readinfo`. There is now exactly one comparison table (96 columns), and
-> the per-side and comparison blocks are **grouped by topic** rather than
-> following the readinfo header order. **No column was added or removed, and no
-> value changed — only positions moved.**
->
-> Why: the 49-column `junctions` view contained no column that was not already in
-> the 96-column view, under the same name and computed identically — it was purely
-> a column selection, and it bought nothing but a smaller file (and little of
-> that: `cs`, `junctions` and `genomic_junctions`, which it kept, are the bulk of
-> the table's bytes). Subsetting columns is better done downstream, where it is
-> not limited to one hard-coded choice of subset. Removing the flag also deletes a
-> duplicated row emitter that every future schema change would have had to update
-> twice.
->
-> The per-side block (each column suffixed `_A` then `_B`) is now ordered: locus
-> and span → alignment selection and score → identity and coverage → junction
-> counts → cs-derived event counts → the three long strings (`junctions`,
-> `genomic_junctions`, `cs`) last. The comparison block is ordered:
-> orientation/identity → score → event diffs → query-space junction metrics →
-> genomic-space junction metrics → the four object lists last. Layout:
-> keys 1–4, `_A` 5–35, `_B` 36–66, comparison metrics 67–92, object lists 93–96.
->
-> This decouples the comparison table's per-side order from `readinfo.rs`'s
-> `READINFO_HEADER` (which is **unchanged** — the readinfo and alninfo formats are
-> untouched). Columns are read by name, so the divergence is deliberate.
->
-> **Impact:** scripts that select columns by *name* need no change; scripts that
-> use hard-coded column *numbers* must be updated (see the migration note on
-> column positions below, and the `tsvcut` / `tsvwhere` helpers in the test-data
-> section). Existing tables remain readable — `compare-summary` and
-> `find-query-diff` resolve every column by name.
->
-> **Not affected:** `find-query-diff`'s `--compare-by all | junctions` is a
-> *different* flag and is unchanged. It selects what counts as a difference (whole
-> cs tag vs. query-space junction set only), not which columns are written, and it
-> still suffixes its own outputs with `.junctions`. Every junction column stays in
-> the table: `N_Matched_Junctions`, `N_Unmatched_Junctions`,
-> `N_Junctions_OnlyA/B`, the four `Genomic_N_*`, `Junction_Distance`,
-> `Junc_Dist_V2`, and the four object lists. `compare` no longer writes
-> `{prefix}.compare.junctions.tsv.gz` / `.compare.junctions.summary.tsv`.
-
-> **Bug fix changing emitted values (v0.15.0) — unmapped reads no longer report
-> soft-clipping.** For an unmapped record, `N_SoftClipped_Bases_Start` was reported
-> as the full read length and `N_SoftClipped_Events` as `1`. Both are now `0`.
-> Affects the `alninfo`, `readinfo` and comparison tables, and in the comparison
-> table also `N_SoftClipped_Bases_Start_Diff`. `N_SoftClipped_Bases_End` was already
-> `0` and is unchanged.
->
-> Why: soft-clip length is computed from the alignment geometry
-> (`query_start`/`query_end`/`strand`), not from the cs tag. An unmapped PAF record
-> carries a placeholder interval of `(0, 0)` and strand `*`, so the minus/unknown
-> branch of the formula returned `query_len - 0` — mechanically concluding that the
-> whole read was soft-clipped. There is no alignment, so there are no unaligned
-> *ends*; `0` is now reported, consistent with every other alignment-derived field,
-> all of which already came out `0`/`NaN` for unmapped rows.
->
-> **Classification is unaffected.** The identity classifier reads `TargetChr`,
-> `Strand`, `cs`, `Query_Start`/`Query_End` and `Target_Start`/`Target_End` — never
-> soft-clip — so `query_identical`, `reference_identical`, every `…summary.tsv`
-> count and all `find-query-diff` output are byte-identical across this change.
->
-> **Pre-v0.15.0 tables carry the wrong values** for unmapped reads. They remain
-> readable and every other column is unaffected, so regenerate only if soft-clip
-> statistics on unmapped reads matter to your analysis. Reads that aligned in both
-> sets were never affected.
-
-> **New output format (v0.16.0) — Parquet.** `compare --format tsv|parquet|both`
-> (default `both`) and `compare-readinfo -o …parquet` write the comparison table as
-> Parquet in addition to, or instead of, the gzipped TSV. Same 96 columns, same
-> names, same order — `pd.read_parquet` is a drop-in for `pd.read_csv`.
->
-> Why: the table is written once and read many times, and column pruning means a
-> reader touching a few of the 96 columns skips the rest of the file. Measured on
-> the 507,365-row Splice-vs-SpliceHQ comparison (DuckDB 1.5.5, default CSV
-> sampling, best of three) — the 16 columns `find-query-diff` needs take 2.01 s
-> from `tsv.gz` and 0.55 s from Parquet (3.6×); a two-column aggregate drops from
-> 0.85 s to 0.02 s (48×); a full 96-column scan gains least, 3.97 s to 2.31 s
-> (1.7×). Writing is *faster* too — 4.5 s vs 10.8 s, measured with maligno itself —
-> because zstd beats gzip here and the Parquet path neither formats numbers to text
-> nor escapes 66 fields per row. Costs: ~31% more disk (85 vs 65 MB — six
-> long-string columns dominate this table) and ~306 MB peak RSS while writing
-> versus 35 MB.
->
-> Benchmark caveat worth recording: an earlier version of this note quoted 15× and
-> 470×, measured with DuckDB's `sample_size=-1`. That forces a full-file
-> type-inference scan before any row is read — a cost neither maligno nor a normal
-> reader pays — and inflated the TSV side 2–4×. Note also that decompression is not
-> the bottleneck it might appear: gunzipping the whole 408 MB table takes 0.22 s.
-> The cost being avoided is splitting every row into 96 fields.
->
-> **Nulls mean "undefined", nothing else.** A null appears where the TSV carries
-> `NaN` in a float column, or an empty `cs`. Values that mean something are kept as
-> values: `TargetChr` and `Strand` stay `*` for an unmapped side (they are the
-> mapping indicator), an empty junction set stays `"()"`, and a real `0` stays `0`.
-> A per-side column that is absent or unparseable becomes a null rather than a
-> fabricated `0`.
->
-> The two serializations are related by a documented inverse, so a Parquet file can
-> be turned back into the exact TSV: null → `NaN` for float columns and → `""`
-> otherwise, then `escape_tsv_field` once over the per-side and object-list string
-> columns. Note the asymmetry there — per-side values reach the writer already
-> escaped once, and the TSV escapes them again, so Parquet holds the *less* escaped
-> form.
->
-> At the time, `compare-summary` and `find-query-diff` read TSV only, so
-> `--format parquet` produced a table they could not consume; `both` was the
-> default for that reason. (Before v0.17.0, `--format parquet` was additionally
-> rejected unless `--skip-find-query-diff` was passed, because `compare` ran
-> `find-query-diff` itself. That coupling is gone.) Since v0.18.1, `find-aln-diff`
-> and `toolkit summary` (renamed from `find-query-diff` /
-> `compare-summary`) can read Parquet directly via `--input-format`; `both`
-> remains the default anyway, for backward compatibility. The exact-pinned
-> `arrow-array` / `arrow-schema` / `parquet` dependencies must be bumped together.
-
-> **Breaking change (v0.17.0) — `compare` no longer runs `find-query-diff`.** It
-> now produces the per-set alninfo + readinfo tables, the comparison table
-> (`--format`), and `{prefix}.compare.summary.tsv`. The four query-diff outputs —
-> `{prefix}.query_diff_reads.tsv[.gz]`, `{prefix}.query_diff_regions.{A,B}.bed[.gz]`
-> and `{prefix}.query_diff_summary.tsv` — are no longer produced by `compare`.
->
-> Why: `compare` wrote the comparison table and then **re-read the whole thing** to
-> produce those four files — a second full pass, for outputs the caller may not
-> want. Splitting the commands removes that pass, lets `find-query-diff` be re-run
-> with different options without redoing the comparison, and makes `--format`
-> orthogonal (it no longer has to guarantee a TSV for an internal consumer).
->
-> **Migration** — add one command after `compare` (later renamed to
-> `find-aln-diff`, and gzip later became the default output, so the flag below
-> is no longer needed to match the settings the fused step used):
-> ```bash
-> maligno find-aln-diff -i results/AvsB.compare.tsv.gz \
->   --outdir results/ --prefix AvsB --compare-by all
-> ```
-> Those reproduce the four files **byte-for-byte** — verified against the
-> v0.16.0 gate baseline for all four comparison scenarios. Any other `--compare-by`
-> choice is now equally available (as is `--no-gzip`, for plain-text output).
->
-> `--skip-find-query-diff` is removed; passing it is an unknown-argument error. The
-> summary table is unaffected — it is accumulated *during* the merge pass, not by
-> re-reading the table.
-
-> **`compare` re-fuses `find-aln-diff`'s default-mode core — without reintroducing
-> the re-read.** The v0.17.0 split above was needed because the old fused step
-> worked by *re-reading* the just-written comparison table. It no longer does:
-> the differing-reads + region-table logic (`find_query_diff::AlnDiffAccumulator`)
-> now runs inline, in `compare`'s existing single merge pass, off the same
-> `get_a`/`get_b` accessors and `classify()` call already used for the summary —
-> no second pass, no re-parsing. `compare` therefore again writes
-> `{prefix}.query_diff_reads.tsv.gz` and `{prefix}.query_diff_regions.{A,B}.bed.gz`
-> by default, fixed at `--space query --compare-by all` (`find-aln-diff`'s own
-> defaults). `--skip-find-aln-diff` opts out, restoring the v0.17.0–era output
-> set. Standalone `find-aln-diff` is unchanged and still required for
-> `--space reference` or `--compare-by junctions`, or to regenerate these outputs
-> from an existing table without re-running `compare`; run against `compare`'s
-> own output table with matching settings, it reproduces the fused files
-> byte-for-byte (verified: `query_diff_reads.tsv.gz` and both region BEDs).
->
-> **Summary schema unified across all three commands.** `find-aln-diff` used to
-> derive its own `{prefix}.{stem}_summary.tsv` via a separate, mode-relabeled
-> function (`query_different_total`, `diff_aln_to_both`, `query_identical_total`,
-> …) — which, for `--compare-by all` (either `--space`), was arithmetically
-> identical to `compare.summary.tsv`'s existing rows, just under different names.
-> `find-aln-diff` now writes the **exact same schema** `compare` and
-> `toolkit summary` do (`CompareSummary::rows()`), with `space` /
-> `compare_by` provenance rows prepended — see
-> [Summary statistics](#summary-statistics-toolkit-summary) and
-> [Categories](#categories) below. Its own `CompareSummary` instance now
-> observes the *raw*, mode-independent `classify()` output (matching `compare`'s
-> and `toolkit summary`'s meaning) rather than a per-mode-overridden
-> classification — only which reads land in the reads/region-BED files stays
-> mode-dependent, not the summary counters.
->
-> **New summary/classification axis: junction-set identity.** `classify()` (and
-> therefore `CompareSummary`) gained two fields that were previously computed
-> ad hoc, per-row, only inside `find-aln-diff`'s row loop:
-> `query_junctions_identical` (query-space splice-junction *set* identity) and
-> `ref_same_position_same_junctions` (genomic-coordinate junction-set identity,
-> gated on the same reference position) — both `None`/not-counted unless both
-> sides are mapped. `CompareSummary::rows()` gained four new rows accordingly:
-> `query_junctions_identical`, `query_junctions_not_identical`,
-> `ref_same_position_same_junctions`, `ref_same_position_diff_junctions`. These
-> give the `--compare-by junctions` "identical" counts directly from
-> `compare.summary.tsv` / `toolkit summary`, without needing a
-> `--compare-by junctions` `find-aln-diff` run just to see them.
-
-> **Breaking change (v0.22.0) — `compare`'s alninfo/readinfo tables are now
-> opt-in.** `compare` used to write the per-set `alninfo` (35-col) and
-> `readinfo` (33-col) tables by default, suppressible with `--no-alninfo` /
-> `--no-readinfo`. Those flags are **removed**; the tables are now off by
-> default, written only when requested via **`--emit-alninfo`** /
-> **`--emit-readinfo`**.
->
-> Why: a full genome-wide benchmark (GENCODE v49, 507,365 transcripts) showed
-> these two tables account for ~49% of `compare`'s total output size (210M of
-> 430M) and ~35% of its runtime (83.5s → 54.4s with both omitted), yet nothing
-> downstream depends on them — `find-aln-diff` and `toolkit summary`
-> only ever read the comparison table. `toolkit paf2tables` already
-> treated these tables as opt-in (explicit `--alninfo`/`--readinfo` output
-> paths, erroring if neither is given); this makes `compare` consistent with
-> that existing convention instead of the odd one out.
->
-> **Migration:** add `--emit-alninfo --emit-readinfo` to any `compare`
-> invocation that relied on the old default (including the
-> `scripts/check-readinfo-overlap.sh` troubleshooting flow, which needs
-> readinfo files on hand). The comparison table, its summary, and the fused
-> `find-aln-diff` default output are all unaffected — this only changes the
-> two per-set side tables.
-
-> **Breaking change (v0.23.0) — `compare-pipeline` renamed to `toolkit`,
-> and `find-aln-diff` moved under it.** `compare-pipeline` is now
-> `toolkit` (same three subcommands: `paf2tables`, `merge-readinfo`,
-> `summary`), and the standalone differing-reads/regions command moved from a
-> top-level `maligno find-aln-diff` to `maligno toolkit find-aln-diff`.
->
-> Why: `compare-pipeline` read as little more than `compare` with a suffix
-> tacked on, when what it actually groups is a set of standalone building-block
-> tools — `toolkit` names that directly. `find-aln-diff` is the same
-> kind of standalone tool (it operates on an existing comparison table, just
-> like `summary` does), so it now lives alongside the other building blocks
-> instead of sitting apart at the top level.
->
-> This is a pure rename/reorganization — no flag, schema, or behavior changes.
-> `compare`'s own `--skip-find-aln-diff` flag is unaffected.
->
-> **Migration:** replace `compare-pipeline` with `toolkit` in any
-> script or invocation, and `maligno find-aln-diff ...` with
-> `maligno toolkit find-aln-diff ...`.
-
-**Strand tracking and renames (v0.2.1+).** Each side now carries a `Strand_A` / `Strand_B` data
-column (the best alignment's strand), and the comparison block starts with a `Strand_Match`
-(true/false) metric that flags strand-flips between A and B. The legacy column name
-`TargetRef_1st` has been renamed to `TargetChr` (suffixed in compare output as
-`TargetChr_A` / `TargetChr_B`).
-
-**Non-overlap junction objects (v0.2.2+).** In addition to the *counts* of non-overlapping
-junctions (`N_Junctions_OnlyA/B`, `Genomic_N_Junctions_OnlyA/B`), the comparison outputs
-now append the actual junction **objects** that failed to overlap at the very end of each
-row: `Junctions_OnlyA`, `Junctions_OnlyB` (query-coord tuples, always emitted) and
-`Genomic_Junctions_OnlyA`, `Genomic_Junctions_OnlyB` (genome-coord tuples, also always
-emitted). These
-use the same Python tuple format as the per-side `junctions` / `genomic_junctions` data
-columns — parse with `ast.literal_eval` in Python.
-
-> **Migration note (column positions).** Schema changes have shifted column positions
-> several times in pre-1.0 development: when `genomic_junctions` was added, again when
-> `Strand` and `Strand_Match` were added (v0.2.1), again when `Label_A`/`Label_B` were
-> inserted at columns 3–4 (v0.13.0), and again when the per-side and comparison blocks
-> were regrouped (v0.14.0). Scripts that filter by column *number*
-> (`awk '$73 > 0'`) need updating each time; prefer column-*name* lookup using the header,
-> which is robust to future schema growth:
-> ```bash
-> awk -F'\t' 'NR==1{for(i=1;i<=NF;i++)c[$i]=i;next} $c["N_Unmatched_Junctions"]>0'
-> ```
-> Also: if you have older readinfo TSVs with `TargetRef_1st`, rerun
-> `toolkit paf2tables --readinfo` to get the renamed column (or rename
-> in your scripts).
-
-**Join semantics — inner join.** Only reads present in **both** files produce an output
-row. Reads present in only one file are dropped but counted in the end-of-run summary
-printed to stderr:
-
-```
-Read comparison summary:
-  Label A: Splice
-  Label B: SpliceHQ
-  rows in A (readinfo-a):     505748
-  rows in B (readinfo-b):     505749
-  matched (in both, written): 505742
-  A-only (dropped, not in B): 6
-  B-only (dropped, not in A): 7
-```
-
-**Sorting requirement.** The merge-join requires both readinfo files to be in the
-**same** `(Read_Name, Read_Len)` order — byte-lex order is the most convenient guarantee.
-The `toolkit paf2tables` alninfo output is pure streaming and order-preserving
-(it does not sort internally). The cleanest fix is a one-time pre-sort upstream on the PAF, which carries
-through the entire chain:
+**Matching.** Reads are matched on **`Read_Name`** with a streaming merge:
+constant memory, one pass over each file. If a read's `Read_Len` differs between
+the two files, the output carries side A's. Both inputs must be **sorted by
+`Read_Name` in byte order**. Sort the PAF before `paf2tables` (see above), or
+sort existing readinfo files with the header kept on top:
 
 ```bash
-# Pre-sort PAF (plain or gzipped) by Query_Name.
-LC_ALL=C sort -t$'\t' -k1,1 in.paf > sorted.paf
-zcat in.paf.gz | LC_ALL=C sort -t$'\t' -k1,1 | gzip > sorted.paf.gz
-```
-
-If you already have an unsorted **alninfo** TSV, sort it on `Query_Name` (col 1) with the
-header kept separately:
-
-```bash
-# alninfo: plain
-(head -1 in.alninfo.tsv;
- tail -n +2 in.alninfo.tsv | LC_ALL=C sort -t$'\t' -k1,1) \
-  > sorted.alninfo.tsv
-
-# alninfo: gzipped
-( zcat in.alninfo.tsv.gz | head -1;
-  zcat in.alninfo.tsv.gz | tail -n +2 | LC_ALL=C sort -t$'\t' -k1,1
-) | gzip > sorted.alninfo.tsv.gz
-```
-
-If you already have an unsorted **readinfo** TSV, sort it on `(Read_Name, Read_Len)` —
-col 1 (string) then col 2 (numeric):
-
-```bash
-# readinfo: plain
-(head -1 in.readinfo.tsv;
- tail -n +2 in.readinfo.tsv | LC_ALL=C sort -t$'\t' -k1,1 -k2,2n) \
-  > sorted.readinfo.tsv
-
-# readinfo: gzipped
-( zcat in.readinfo.tsv.gz | head -1;
-  zcat in.readinfo.tsv.gz | tail -n +2 | LC_ALL=C sort -t$'\t' -k1,1 -k2,2n
+( gzip -dc in.readinfo.tsv.gz | head -1
+  gzip -dc in.readinfo.tsv.gz | tail -n +2 | LC_ALL=C sort -t$'\t' -k1,1
 ) | gzip > sorted.readinfo.tsv.gz
 ```
 
-Notes on the sort flags:
-- `LC_ALL=C` forces byte-lex order (locale-independent and deterministic).
-- `-t$'\t'` sets the field separator to TAB.
-- `-k1,1` sorts on column 1 as a string (`Query_Name` for alninfo, `Read_Name` for readinfo).
-- `-k2,2n` (readinfo only) breaks ties by `Read_Len` numerically.
-- `sort` uses external-sort under the hood, so memory stays bounded even on files larger
-  than RAM. Override its scratch directory and memory cap with `-T` and `-S` if needed
-  (e.g. `-T /scratch -S 8G`).
+- `LC_ALL=C` forces byte order, regardless of locale.
+- `-k1,1` sorts on `Read_Name`.
+- `sort` works on files larger than memory. `-T <dir>` and `-S <size>` set its
+  scratch directory and memory cap.
 
-The `--readinfo` collapse emits a one-time WARNING on stderr if its input is not byte-lex
-sorted, flagging the most common foot-gun (a name-sorted-but-not-byte-lex aligner
-output like STAR's, or a shuffled multi-threaded aligner output).
+**Unmatched reads.** By default, a read present in only one file is an error.
+With `--allow-id-mismatch`, only the reads present in both files are compared,
+and the others are counted in the summary as `present_only_in_A_by_id` /
+`present_only_in_B_by_id`. At the end, the same summary `compare` prints is
+written to stderr:
 
-### `sam2paf`
+```
+  shared: 14   only in Splice: 1   only in SpliceHQ: 1
+Comparison summary:
+  label_A                            Splice
+  label_B                            SpliceHQ
+  reads_compared                     14
+  aligned_both                       11
+  aligned_only_A                     0
+  aligned_only_B                     1
+  aligned_neither                    2
+  query_identical                    7
+  query_not_identical                6
+```
 
-Converts SAM or BAM alignments to PAF format. A high-performance port of the
-`sam2paf` sub-command from paftools.js — output is byte-for-byte compatible. The
-input format is auto-detected: `maligno sam2paf in.bam` gives the same bytes as
-`samtools view -h in.bam | maligno sam2paf -`. Stdin (`-`) is SAM text only.
-
-**cs requirement.** Each mapped, kept record's `cs` comes from its `cs:Z:` tag or
-is built from `MD` + `SEQ`. If neither is possible (no `cs` and no `MD`, or `MD`
-with `SEQ` = `*`, as on many secondary records) the run **stops with an error**
-naming the read, rather than writing a PAF line with no `cs`. Downstream, an empty
-`cs` would silently count as zero matches/mismatches. Fixes: align with cs output,
-add `MD` (`samtools calmd`), or skip secondaries with `-p`/`-P`. Records dropped by
-`-p`/`-P` and unmapped placeholders are never checked. Other per-record problems
-(e.g. a contig missing from `@SQ`) are still warnings and the record is skipped.
-
-Key flags:
-
-| Flag | Meaning |
-|------|---------|
-| `-U` | Emit placeholder PAF records for unmapped reads (recommended for full pipeline) |
-| `-p` | Primary + supplementary alignments only (skip secondary FLAG 0x100) |
-| `-P` | Primary alignments only (skip secondary and supplementary) |
-| `-L` | Output cs tag in long form (`=ACGT` instead of `:N`) |
-
-> **Note:** Pass `-U` to keep unaligned reads in the pipeline (they become `Num_Aln = 0`
-> rows in readinfo rather than disappearing entirely).
+If `reads_compared` is lower than you expect, see
+[Troubleshooting](#troubleshooting).
 
 ---
 
-
-## Test data
-
-`test_data/` contains two Chr22-scale PAFs (gzipped, ~0.5 MB each) for end-to-end testing.
+## `toolkit summary`
 
 ```bash
-BIN=./target/release/maligno
+maligno toolkit summary -i <compare.parquet|compare.tsv[.gz]|-> [-o summary.tsv[.gz]] [--input-format auto|tsv|parquet]
+```
 
-# PAF → readinfo in one pass (add --alninfo <path> to also keep the per-alignment table).
-time $BIN toolkit paf2tables -i test_data/Splice.AlnToHG38.PriAln.paf.gz   --readinfo /tmp/Splice.readinfo.tsv.gz
-time $BIN toolkit paf2tables -i test_data/SpliceHQ.AlnToHG38.PriAln.paf.gz --readinfo /tmp/SpliceHQ.readinfo.tsv.gz
+Computes the summary statistics from an existing comparison table. The schema
+is the same as `{prefix}.compare.summary.tsv`; see
+[compare-summary.md](output-tables/compare-summary.md). The result is printed
+to stderr, and also written to `-o` when given (`.tsv[.gz]`, or `-` for stdout).
 
-# Sort each readinfo on (Read_Name, Read_Len) so the two files share byte-lex order
-# (compare is strict by default — it errors on a read-name mismatch unless inputs match).
-for S in Splice SpliceHQ; do
-  ( zcat < /tmp/$S.readinfo.tsv.gz | { IFS= read -r h; printf '%s\n' "$h"; \
-      LC_ALL=C sort -t$'\t' -k1,1 -k2,2n; } ) | gzip > /tmp/$S.readinfo.sorted.tsv.gz
-done
+- **Input format:** `--input-format auto` (the default) reads Parquet for a
+  `.parquet` path and TSV otherwise. Parquet must be a real file, not stdin.
+- **Columns:** every column is looked up by name, so column order doesn't
+  matter. The set names come from `Label_A` / `Label_B`.
+- **Reads in only one input:** the table only contains reads present in both
+  inputs, so `present_only_in_A_by_id` / `present_only_in_B_by_id` are always
+  `0` here. Only `compare` and `toolkit merge-readinfo` can fill them in.
 
-time $BIN toolkit merge-readinfo \
-  -a /tmp/Splice.readinfo.sorted.tsv.gz   --label-a Splice \
-  -b /tmp/SpliceHQ.readinfo.sorted.tsv.gz --label-b SpliceHQ \
-  -o /tmp/Splice_vs_SpliceHQ.compare.tsv.gz
+The categories are defined in [Classification](#classification).
 
-# Inspect the compare output header (column number → column name)
-zcat < /tmp/Splice_vs_SpliceHQ.compare.tsv.gz | head -1 | tr '\t' '\n' | nl
+---
 
+## `toolkit find-aln-diff`
 
-# Tip: the primary on-rails `compare` does all of the above (sort + per-set tables +
-# comparison) in one command, writing everything to a results directory:
-#   $BIN compare -a Splice.paf.gz -b SpliceHQ.paf.gz \
-#     --label-a Splice --label-b SpliceHQ --outdir results/ --prefix Splice_vs_SpliceHQ
+```bash
+maligno toolkit find-aln-diff -i <compare.parquet|compare.tsv[.gz]|-> --outdir <DIR> --prefix <STR> \
+  [--space query|reference] [--compare-by all|junctions] [--emit-identical-reads] [--no-gzip] \
+  [--input-format auto|tsv|parquet]
+```
 
-# ── Select and filter columns BY NAME ───────────────────────────────────────
-# Hardcoded `cut -f N` breaks whenever the schema changes — it did in v0.13.0
-# (which inserted Label_A/Label_B at columns 3-4) and again in v0.14.0 (which
-# regrouped the per-side and comparison blocks). These two helpers resolve columns
-# from the header instead, so they keep working across versions.
+Reads a comparison table and reports every read whose alignment **differs**
+between A and B. It also writes merged genomic regions showing where those
+reads cluster. `compare` already writes this command's default-mode output;
+run it standalone for the other modes, or to regenerate the output from an
+existing table.
 
-CMP=/tmp/Splice_vs_SpliceHQ.compare.tsv.gz
+### `--space`
 
-# tsvcut <file.gz> <Name1,Name2,...>  — print just those columns, in that order.
-# (`gzip -dc` rather than `zcat`: macOS zcat rejects a plain `.gz` name.)
+Which coordinate space defines a difference:
+
+| Value | A read is identical when |
+|---|---|
+| `query` (default) | it is `query_identical`: same query span and same alignment relative to the read; a reverse-complement match counts as identical (see [Classification](#classification)) |
+| `reference` | it is reference-identical: same `TargetChr` / `Strand` / `Target_Start` and same alignment content (per `--compare-by`). Strict and literal: no reverse-complement accommodation. |
+
+### `--compare-by`
+
+What counts as "same alignment" for reads mapped in **both** sets. Reads
+mapped on only one side are always differences (`diff_aln_only_A` /
+`diff_aln_only_B`), whatever the mode.
+
+| Value | `--space query` | `--space reference` |
+|---|---|---|
+| `all` (default) | the full `cs` tag matches (motif-blind) | same position **and** same `cs` (motif-blind) |
+| `junctions` | the query-space splice-junction set matches | same position **and** same genomic-coordinate junction set |
+
+Under `junctions`, mismatches, indels and soft-clips that don't move a splice
+junction don't count. Under both modes, comparison is motif-blind: a
+differently reported intron motif at the same position and length is not a
+difference (see [Classification](#classification)).
+
+### Outputs
+
+Filenames use the `query_diff` / `query_identical` stem under `--space query`
+and `reference_diff` / `reference_identical` under `--space reference`. Under
+`--compare-by junctions`, every filename gains a `.junctions` segment. So runs
+in different modes at the same `--outdir` / `--prefix` never overwrite each
+other. Read and region tables are gzipped unless `--no-gzip` is given.
+
+| File (`--space query --compare-by all`) | Contents |
+|---|---|
+| `{prefix}.query_diff_reads.tsv.gz` | one row per differing read, with its category and 8 classification flags; see [query-diff-reads.md](output-tables/query-diff-reads.md) |
+| `{prefix}.query_diff_regions.A.bed.gz`, `.B.bed.gz` | merged loci of the differing reads, per side; see [query-diff-regions.md](output-tables/query-diff-regions.md) |
+| `{prefix}.query_diff_summary.tsv` | the [summary schema](output-tables/compare-summary.md), with `space` and `compare_by` rows after `label_A` / `label_B`; never gzipped |
+| `{prefix}.query_identical_reads.tsv.gz` | with `--emit-identical-reads` only: the complementary set of identical reads, same layout as the diff-reads table except column 2 is named `category` |
+
+Examples of other modes' names: `{prefix}.reference_diff_reads.tsv.gz`,
+`{prefix}.query_diff_reads.junctions.tsv.gz`,
+`{prefix}.reference_diff_regions.A.junctions.bed.gz`.
+
+The summary counts don't depend on the mode. The number of rows in the
+diff-reads file is printed on stderr. To get it from the summary, add the
+mode's "not identical" row to `aligned_only_A + aligned_only_B`, e.g.
+`query_not_identical + aligned_only_A + aligned_only_B` for the default mode.
+
+### Categories
+
+| `--space query` | `--space reference` | Meaning |
+|---|---|---|
+| `diff_aln_to_both` | `reference_diff` | mapped in both, not identical under the active mode |
+| `diff_aln_only_A` / `diff_aln_only_B` | (same) | mapped in one set only |
+| `query_identical_same_strand` / `query_identical_revcomp` / `query_identical_junctions` | `reference_identical` | identical under the active mode (identical-reads file only) |
+| `neither_mapped` | (none) | mapped in neither set (identical-reads file only, and only under `--space query --compare-by all`) |
+
+A read mapped in neither set counts as identical under
+`--space query --compare-by all`: both aligners agree it doesn't map. In the
+other modes it is in neither file, because those identity tests apply only to
+reads mapped on both sides.
+
+In the region tables, a read mapped on only one side contributes only to that
+side's table. Intervals that can't be parsed, or where `end <= start`, are
+skipped.
+
+---
+
+## `toolkit query-junction-diff`
+
+```bash
+maligno toolkit query-junction-diff -i <compare.parquet> --outdir <DIR> --prefix <STR>
+```
+
+For each read whose splice junctions differ between A and B, this
+reconstructs every junction on each side and pairs its position on the read
+(query space) with its position on the reference (genomic space). It then
+reports the junctions the other side doesn't support, and how often each one
+occurs across the whole table.
+
+- **Input:** **Parquet only**, from `compare` or
+  `toolkit merge-readinfo -o x.parquet`. The command reads the file twice, so
+  stdin and TSV are not accepted.
+- **Not run by `compare`:** this is a standalone command.
+- **Coordinates:** junction positions are re-derived from each side's `cs`
+  tag, so the query and genomic coordinates are correctly paired on both
+  strands.
+
+### Read selection
+
+A read is "differing", and gets junction reconstruction, when:
+
+```
+mapped_a = TargetChr_A not empty or "*"      (mapped_b likewise)
+differing =
+    mapped_a && mapped_b    => N_Junctions_OnlyA > 0 || N_Junctions_OnlyB > 0
+    mapped_a && !mapped_b   => JuncCount_A > 0
+    !mapped_a && mapped_b   => JuncCount_B > 0
+    !mapped_a && !mapped_b  => false
+```
+
+That covers two groups: reads mapped on both sides whose query-space junction
+sets differ, and reads mapped on one side only that have at least one junction
+there. A junction with nothing to compare against is unsupported by
+definition. Every other read is still counted in the summary.
+
+### Outputs
+
+| File | Contents |
+|---|---|
+| `{prefix}.query_junction_diff.summary.tsv` | counts of reads at each selection step; see [query-junction-diff-summary.md](output-tables/query-junction-diff-summary.md) |
+| `{prefix}.query_junction_diff.per_read_per_junc_info.tsv.gz` | one row per reconstructed junction, per side, per differing read; see [per-read-query-junction-diff.md](output-tables/per-read-query-junction-diff.md) |
+| `{prefix}.query_junction_diff.unmatched_junctions.A.tsv.gz` | distinct junctions found in A but unsupported in B, with the number of differing reads carrying each one and the number of reads in the whole table carrying it; see [query-junction-diff-unmatched.md](output-tables/query-junction-diff-unmatched.md) |
+| `{prefix}.query_junction_diff.unmatched_junctions.B.tsv.gz` | the same, for B unsupported in A |
+
+The per-read and unmatched-junction tables are always gzipped; the summary
+never is. In the per-read table, `junction_index` is 1-based and counted
+separately on each side, in the read's 5'→3' order. It is not a matching key
+across sides.
+
+---
+
+## Representative alignment
+
+A read can have several alignments. Before comparing, each side's alignments
+for a read are collapsed to one **representative (best) alignment**. This is
+used by `compare` and `toolkit paf2tables --readinfo`.
+
+- **Selection:** highest `ms`, then highest `AS`, then highest mapping quality
+  (`MQ`). Full ties keep the first in input order, usually the aligner's own
+  order.
+- **The best alignment supplies** `TargetChr`, `Strand`, `MQ_Best`, `cs`,
+  `junctions`, `genomic_junctions`, the event counts, and the spans
+  `Query_Start` / `Query_End` and `Target_Start` / `Target_End`. Spans are
+  0-based half-open (as in PAF and BED). Together with `TargetChr` and
+  `Strand`, they give each read a BED-style interval.
+- **Maxima over all the read's alignments:** `AS_Max`, `ms_Max`,
+  `Query_Aln_Cov_Max`, `Query_Aln_Len_Max`, `seqid_Max`.
+- **`Num_Aln`** counts the read's mapped alignments. A read that is present but
+  unmapped has `Num_Aln = 0`, `TargetChr = "*"`, and zeroed or NaN statistics.
+- **`Num_Aln_MaxScore`** counts the alignments tied with the best on both `ms`
+  and `AS`. `1` means a clear winner; `> 1` means mapping quality or input
+  order broke the tie. Aligners such as STAR write `ms = 0` for every
+  alignment, so `AS` does the actual selection.
+- **`Num_Aln_tpP` / `Num_Aln_tpS`** count mapped alignments by their `tp:A`
+  tag: `P` or `I` (primary, including supplementary) and `S` or `i`
+  (secondary). Alignments without a `tp` tag count toward neither.
+- **`MQ_Best`** is the best alignment's mapping quality. For STAR, the common
+  values are 255 (unique), 3 (2 loci), 1 (3 loci) and 0 (more than 3). A
+  difference between sides points to reads where the two runs disagree on how
+  unique the mapping is.
+
+---
+
+## Classification
+
+Each read in the comparison table is classified from the two sides'
+representative alignments, using `TargetChr`, `Strand`, `cs`,
+`Query_Start` / `Query_End`, `Target_Start`, `junctions` and
+`genomic_junctions`. These classes feed the summary statistics and
+`toolkit find-aln-diff`. The summary rows are listed in
+[compare-summary.md](output-tables/compare-summary.md).
+
+**Mapping status.** A side with `TargetChr` equal to `*` or empty is
+unmapped. Each read is `aligned_both`, `aligned_only_A`, `aligned_only_B` or
+`aligned_neither`.
+
+**Motif-blind `cs` comparison.** Wherever two `cs` strings are compared,
+each intron's 2-letter donor/acceptor motif letters are ignored; the intron's
+position and length still count. Aligners report motifs differently (STAR
+writes `~nn<len>nn` where minimap2 writes the true motif, e.g. `~ct<len>ac`),
+and that alone should not make identical alignments differ.
+
+**Query-space identity (`query_identical`).** Both sides are mapped and cover
+the same query span (`Query_Start` / `Query_End`, in forward-read
+coordinates), and either:
+
+- **same strand:** `Strand_A == Strand_B` and `cs_A == cs_B`
+  (→ `query_identical_same_strand`), or
+- **reverse complement:** `Strand_A != Strand_B` and `cs_A` equals the reverse
+  complement of `cs_B` (→ `query_identical_revcomp`). This is the same
+  read-to-reference correspondence on the opposite strand, e.g. a locus
+  inverted between two assemblies.
+
+Reads mapped in neither set also count as `query_identical`, since both sides
+agree. So
+`query_identical = query_identical_same_strand + query_identical_revcomp + aligned_neither`,
+and `query_not_identical` means "mapped in both, not identical".
+
+**Reference-space classes.** These apply to reads mapped in both sets. They
+are strict and literal: there is no reverse-complement accommodation, so a
+real strand difference always counts as a different position. There are two
+axes:
+
+- **position:** same `TargetChr`, `Strand` and `Target_Start`. With matching
+  `cs`, the end must match too.
+- **alignment:** same `cs`.
+
+The four combinations are `ref_same_position_same_aln` (reference-identical),
+`ref_same_position_diff_aln`, `ref_diff_position_same_aln` (relocated) and
+`ref_diff_position_diff_aln`.
+
+**Junction-set identity.** This is a looser test, for reads mapped in both
+sets, that compares only the deduplicated splice-junction sets and ignores
+mismatches, indels and soft-clips:
+
+- **query space:** the `junctions` sets match → `query_junctions_identical`
+  (otherwise `query_junctions_not_identical`).
+- **genomic space:** among same-position reads, the `genomic_junctions` sets
+  also match → `ref_same_position_same_junctions` (otherwise
+  `ref_same_position_diff_junctions`).
+
+---
+
+## Junction comparison
+
+Splice junctions are compared as **sets** (deduplicated on each side), in two
+coordinate spaces. These columns are always present in the comparison table;
+see [compare.md](output-tables/compare.md).
+
+| Query space (`junctions`) | Genomic space (`genomic_junctions`) | Meaning |
+|---|---|---|
+| `N_Matched_Junctions` | `Genomic_N_Matched_Junctions` | junctions in both, \|A ∩ B\| |
+| `N_Junctions_OnlyA` | `Genomic_N_Junctions_OnlyA` | only in A, \|A \ B\| |
+| `N_Junctions_OnlyB` | `Genomic_N_Junctions_OnlyB` | only in B, \|B \ A\| |
+| `N_Unmatched_Junctions` | `Genomic_N_Unmatched_Junctions` | in exactly one side (`OnlyA + OnlyB`) |
+| `Junctions_OnlyA` / `Junctions_OnlyB` | `Genomic_Junctions_OnlyA` / `Genomic_Junctions_OnlyB` | the unmatched junctions themselves |
+
+`N_Matched_Junctions + N_Junctions_OnlyA` equals A's junction count, and
+likewise for B. The same holds for the genomic columns.
+
+**Format.** Junction lists are written as Python tuples-of-tuples with
+0-based half-open coordinates, e.g. `((1200, 1201), (3400, 3401))`, and parse
+with `ast.literal_eval`. An empty set is `()`. `genomic_junctions` tuples are
+`(start, end)` on the reference; the chromosome is in the row's `TargetChr`.
+When genomic junctions are compared, each side's tuples are paired with that
+side's own `TargetChr`, so junctions on different contigs never match.
+
+---
+
+## TSV and Parquet
+
+The comparison table can be written as gzipped TSV, Parquet, or both, with the
+same 100 columns, names and order (`pd.read_parquet` is a drop-in for
+`pd.read_csv`). Parquet is much faster to read when you only need a few
+columns. `toolkit summary` and `toolkit find-aln-diff` read either form;
+`toolkit query-junction-diff` reads Parquet only.
+
+**Nulls in Parquet mean "undefined", nothing else.** A Parquet null appears
+where the TSV has `NaN` in a float column, or an empty `cs`. Meaningful values
+stay values:
+
+- `TargetChr` and `Strand` stay `*` for an unmapped side; they are the mapping
+  indicator.
+- An empty junction set stays `()`.
+- A real `0` stays `0`.
+
+A per-side value that is missing or can't be parsed becomes null, never a
+made-up `0`.
+
+**Escaping.** In the TSV, text fields escape backslash, tab, newline and
+carriage return as `\\`, `\t`, `\n`, `\r`. Parquet stores the text unescaped.
+This only matters for read names or labels containing those characters.
+
+---
+
+## Working with the output tables
+
+**Select columns by name, not number.** Column positions can change when
+columns are added, so look them up from the header. Two small shell helpers:
+
+```bash
+# tsvcut <file.gz> <Name1,Name2,...>: print just those columns, in that order.
 tsvcut () {
   gzip -dc < "$1" | awk -F'\t' -v want="$2" '
     NR==1 { n=split(want,w,","); for (i=1;i<=NF;i++) h[$i]=i
@@ -856,7 +660,7 @@ tsvcut () {
     { line=$c[1]; for (j=2;j<=n;j++) line=line "\t" $c[j]; print line }'
 }
 
-# tsvwhere <file.gz> <Name> <awk-test>  — keep the header + rows passing the test.
+# tsvwhere <file.gz> <Name> <pos|zero>: keep the header plus rows where that column is >0 (pos) or ==0 (zero).
 tsvwhere () {
   gzip -dc < "$1" | awk -F'\t' -v col="$2" -v test="$3" '
     NR==1 { for (i=1;i<=NF;i++) if ($i==col) k=i
@@ -864,542 +668,94 @@ tsvwhere () {
             print; next }
     { v=$k+0 } test=="pos" ? v>0 : v==0'
 }
+```
 
-# Distribution of unmatched junctions, query space then genomic space.
+(`gzip -dc` is used rather than `zcat` because macOS `zcat` rejects plain
+`.gz` names.) Examples on a `compare` output:
+
+```bash
+CMP=results/AvsB.compare.tsv.gz
+
+# Column number → name
+gzip -dc < "$CMP" | head -1 | tr '\t' '\n' | nl
+
+# Distribution of unmatched junctions, query space then genomic space
 tsvcut "$CMP" N_Unmatched_Junctions         | tail -n +2 | sort | uniq -c
 tsvcut "$CMP" Genomic_N_Unmatched_Junctions | tail -n +2 | sort | uniq -c
 
-# Reads whose QUERY-space junction sets disagree: count, then inspect.
-tsvwhere "$CMP" N_Unmatched_Junctions pos | wc -l
+# Reads whose query-space junction sets disagree: count, then the junctions themselves
+tsvwhere "$CMP" N_Unmatched_Junctions pos | tail -n +2 | wc -l
 tsvwhere "$CMP" N_Unmatched_Junctions pos \
-  | awk -F'\t' 'NR==1{for(i=1;i<=NF;i++)h[$i]=i; print "Read_Name\tJuncCount_A\tJuncCount_B\tN_Matched_Junctions\tN_Junctions_OnlyA\tN_Junctions_OnlyB"; next}
-                {print $h["Read_Name"]"\t"$h["JuncCount_A"]"\t"$h["JuncCount_B"]"\t"$h["N_Matched_Junctions"]"\t"$h["N_Junctions_OnlyA"]"\t"$h["N_Junctions_OnlyB"]}' \
+  | awk -F'\t' 'NR==1{for(i=1;i<=NF;i++)h[$i]=i}
+                {print $h["Read_Name"]"\t"$h["JuncCount_A"]"\t"$h["JuncCount_B"]"\t"$h["Junctions_OnlyA"]"\t"$h["Junctions_OnlyB"]}' \
   | column -t -s $'\t' | less -S
 
-# Same, but the actual non-overlapping junction tuples rather than counts.
-tsvwhere "$CMP" N_Unmatched_Junctions pos \
-  | awk -F'\t' 'NR==1{for(i=1;i<=NF;i++)h[$i]=i; print "Read_Name\tJunctions_OnlyA\tJunctions_OnlyB"; next}
-                {print $h["Read_Name"]"\t"$h["Junctions_OnlyA"]"\t"$h["Junctions_OnlyB"]}' \
-  | column -t -s $'\t' | less -S
-
-# Reads whose GENOMIC-space junction sets disagree.
-tsvwhere "$CMP" Genomic_N_Unmatched_Junctions pos | wc -l
-tsvwhere "$CMP" Genomic_N_Unmatched_Junctions pos \
-  | awk -F'\t' 'NR==1{for(i=1;i<=NF;i++)h[$i]=i; print "Read_Name\tTargetChr_A\tTargetChr_B\tGenomic_N_Matched_Junctions\tGenomic_N_Junctions_OnlyA\tGenomic_N_Junctions_OnlyB"; next}
-                {print $h["Read_Name"]"\t"$h["TargetChr_A"]"\t"$h["TargetChr_B"]"\t"$h["Genomic_N_Matched_Junctions"]"\t"$h["Genomic_N_Junctions_OnlyA"]"\t"$h["Genomic_N_Junctions_OnlyB"]}' \
-  | column -t -s $'\t' | less -S
-
-# Verify column counts (expect 36, 36, 100)
-gzip -dc < /tmp/Splice.alninfo.tsv.gz             | awk -F'\t' '{print NF}' | sort | uniq -c
-gzip -dc < /tmp/Splice.readinfo.tsv.gz            | awk -F'\t' '{print NF}' | sort | uniq -c
-gzip -dc < /tmp/Splice_vs_SpliceHQ.compare.tsv.gz | awk -F'\t' '{print NF}' | sort | uniq -c
+# Check column counts (alninfo 36, readinfo 36, comparison table 100)
+gzip -dc < "$CMP" | awk -F'\t' '{print NF}' | sort | uniq -c
 ```
-
----
-
-## Summary statistics (`toolkit summary`)
-
-`compare` tallies aggregate summary statistics over the per-read comparison as the
-rows stream out (constant memory) and writes them to
-`{prefix}.compare[.junctions].summary.tsv` (2 columns: `Category`, `Count`) plus a
-stderr block. The **same** statistics can be computed from an existing comparison
-table with the standalone command:
-
-```bash
-maligno toolkit summary -i AvsB.compare.tsv.gz -o AvsB.compare.summary.tsv
-# -i: a compare / toolkit merge-readinfo table (.gz, .parquet, or - ok); -o: optional (else stderr only)
-```
-
-`toolkit summary` requires the fixed `TargetChr_A` / `TargetChr_B` columns, and
-reads the set names from `Label_A` / `Label_B`. Every column is resolved **by name**, so
-column order does not matter. It sees only matched rows, so the `present_only_in_*_by_id`
-counts are always 0 there; the built-in `compare` tally fills those from the read-ID merge.
-
-### Classification (per matched read)
-
-Computed from each side's **representative (best) alignment** — the row already
-selected for the readinfo/compare output — using these columns: `TargetChr`,
-`Strand`, `cs`, `Query_Start`, `Query_End`, `Target_Start`, `Target_End`,
-`junctions`, `genomic_junctions`.
-
-- **Mapping status** (`TargetChr == "*"` or empty ⇒ unmapped): `aligned_both`,
-  `aligned_only_A`, `aligned_only_B`, `aligned_neither`.
-- **Query-coordinate identical** — both sides mapped, same query span
-  (`Query_Start`/`Query_End`, which PAF reports in forward-read coordinates), and
-  the same alignment relative to the read via **either**:
-  - *same strand*: `Strand_A == Strand_B` and `cs_A == cs_B`, or
-  - *reverse-complement*: `Strand_A != Strand_B` and `cs_A == cs_revcomp(cs_B)` —
-    an inverted/opposite-strand alignment of the same query-to-reference
-    correspondence (e.g. a locus inverted between two assemblies). `cs_revcomp`
-    reverses the cs op order and complements each op length-preservingly
-    (`:N`→`:N`; `=ACGT`→`=`+revcomp; `*xy`→complemented bases; `+`/`-`→revcomp of
-    the sequence; intron `~gt…ag`→`~ct…ac`).
-
-  Both `cs_A == cs_B` and `cs_A == cs_revcomp(cs_B)` are evaluated **motif-blind**:
-  each cs string is first passed through `cs_strip_splice_motifs`, which replaces
-  every intron's 2-letter donor/acceptor motif with a fixed `nn`/`nn` placeholder
-  while keeping the intron length and every other op (matches, substitutions,
-  indels) unchanged. This absorbs a real-world aligner-output limitation — e.g.
-  STAR reports `~nn<len>nn` where minimap2 reports the true motif (`~ct<len>ac`)
-  for the identical intron — so it no longer, by itself, makes two otherwise
-  identical alignments count as different.
-
-  Reported as `query_identical`, split into `query_identical_same_strand` and
-  `query_identical_revcomp`; `query_not_identical = aligned_both -
-  query_identical_same_strand - query_identical_revcomp`.
-
-  **`aligned_neither` also counts as `query_identical`**: neither aligner
-  mapping a read at all is itself agreement between the two sets, not a
-  disagreement to lump in with genuine `aligned_both` mismatches. It's not
-  part of either the same-strand or reverse-complement sub-bucket (both stay
-  a strictly "both mapped" concept), so `query_identical =
-  query_identical_same_strand + query_identical_revcomp + aligned_neither`.
-  `query_not_identical` is unaffected by this — it's computed from the two
-  both-mapped sub-counters directly, not from `query_identical`'s grown
-  total, so it still means exactly "both mapped, but not identical."
-- **Reference-space classification** — independent of query span, and a strict,
-  literal comparison: no reverse-complement accommodation, so a real strand
-  difference always counts as a different position. Two axes, both motif-blind
-  on `cs`:
-  - **position**: identical `TargetChr` + `Strand` + `Target_Start` (a matching
-    start plus matching `cs` implies a matching `Target_End` too, since the `cs`
-    tag's own operations determine the alignment's length — no need to check it
-    separately).
-  - **alignment**: identical `cs`.
-
-  The four combinations are reported as `ref_same_position_same_aln` (reference-
-  identical), `ref_same_position_diff_aln`, `ref_diff_position_same_aln`
-  (relocated), and `ref_diff_position_diff_aln`.
-- **Junction-set identity** — a looser, complementary pair of axes (both `None`/
-  not-counted unless both sides are mapped), using `junction_set_stats` /
-  `genomic_junction_set_stats` (`src/junction.rs`) on the deduplicated junction
-  *sets*, ignoring everything else (mismatches, indels, soft-clips):
-  - **query-space**: the `junctions` sets match exactly → `query_junctions_identical`
-    (complement: `query_junctions_not_identical`).
-  - **genomic-coordinate**, gated on the reference-space **position** axis above
-    (each side's `genomic_junctions` pairs reattached to its own `TargetChr` before
-    comparing, so cross-chromosome matches are impossible): among same-position
-    reads, whether the sets also match → `ref_same_position_same_junctions`
-    (complement: `ref_same_position_diff_junctions`).
-
-### Summary TSV schema
-
-| Category | Meaning |
-|----------|---------|
-| `label_A` / `label_B` | which dataset each side is (the `--label-a` / `--label-b` values). String values, not counts — provenance rows so the summary is self-describing |
-| `reads_compared` | matched reads written to the comparison table |
-| `aligned_both` | representative alignment mapped in both sets |
-| `aligned_only_A` / `aligned_only_B` | mapped in one set, `"*"` in the other |
-| `aligned_neither` | unmapped (`"*"`) in both |
-| `query_identical` | query-coordinate identical (see above) — includes `aligned_neither` |
-| `query_identical_same_strand` | …via the same-strand branch (both mapped only) |
-| `query_identical_revcomp` | …via the reverse-complement branch (both mapped only) |
-| `query_not_identical` | both mapped but not query-identical |
-| `query_junctions_identical` | both mapped, **query-space** splice-junction sets match (`junction_set_stats`) — a looser criterion than `query_identical` (ignores mismatches/indels/soft-clips) |
-| `query_junctions_not_identical` | both mapped but query-space junction sets differ |
-| `ref_same_position_same_aln` | same `TargetChr`/`Strand`/`Target_Start` **and** same `cs` (motif-blind) — reference-identical |
-| `ref_same_position_diff_aln` | same position, different `cs` |
-| `ref_diff_position_same_aln` | same `cs`, different position — relocated |
-| `ref_diff_position_diff_aln` | both position and `cs` differ |
-| `ref_same_position_same_junctions` | among same-position reads, **genomic-coordinate** junction sets also match (`genomic_junction_set_stats`) |
-| `ref_same_position_diff_junctions` | among same-position reads, genomic-coordinate junction sets differ |
-| `present_only_in_A_by_id` / `present_only_in_B_by_id` | read present in only one set's PAF (built-in `compare` only; 0 unless `--allow-id-mismatch`) |
-
----
-
-## Differing reads & regions (`toolkit find-aln-diff`)
-
-`toolkit find-aln-diff` (renamed from `find-query-diff`; moved under
-`toolkit` in v0.23.0) reads a `compare` / `toolkit
-merge-readinfo` comparison table and reports every read whose alignment
-differs between A and B, in query space or reference space (`--space`), plus
-merged genomic regions showing where those differing reads cluster.
-
-**`compare` runs this by default, at its default settings.** `compare` drives
-this command's core (`find_query_diff::AlnDiffAccumulator`) inline, in its own
-single merge pass, fixed at `--space query --compare-by all` — so
-`{prefix}.query_diff_reads.tsv.gz` and `{prefix}.query_diff_regions.{A,B}.bed.gz`
-already exist after a `compare` run, with no extra command and no re-read of the
-comparison table (`--skip-find-aln-diff` opts out). Run `toolkit
-find-aln-diff` standalone for the other `--space`/`--compare-by` combinations,
-or to regenerate these outputs from an existing comparison table without
-re-running `compare` — with matching settings it reproduces the fused files
-byte-for-byte.
-
-**Usage:**
-
-```bash
-maligno toolkit find-aln-diff -i AvsB.compare.tsv.gz --outdir results/ --prefix AvsB \
-  [--space query|reference] [--no-gzip] [--compare-by all|junctions] [--emit-identical-reads]
-# -i: a compare / toolkit merge-readinfo table (.gz, .parquet, or - ok)
-```
-
-The fixed `TargetChr_A` / `TargetChr_B` columns are required (same as
-`toolkit summary`), and set names come from the `Label_A` / `Label_B`
-columns.
-
-### `--space` — which coordinate space defines a difference
-
-| Value | "Identical" means |
-|-------|-------------------|
-| `query` (default) | `query_identical` (the exact same `classify()` used by `toolkit summary` — a reverse-complement match still counts as identical) |
-| `reference` | `ref_same_position_same_aln` (the reference-space classification above): same `TargetChr`/`Strand`/`Target_Start`, and same alignment content per `--compare-by` below. Strict and literal — no reverse-complement accommodation. |
-
-`--space` picks the output filename stem (`query_diff`/`query_identical` vs.
-`reference_diff`/`reference_identical`), so a `query`-space and
-`reference`-space run at the same `--outdir`/`--prefix` never clobber each
-other.
-
-### `--compare-by` — what defines a difference, within the active `--space`
-
-For reads mapped in **both** sets, `--compare-by` chooses the identity test; the
-map-status handling (only-A / only-B / neither) is unchanged either way, and its
-category names (`diff_aln_only_A` / `diff_aln_only_B`) are the same in both spaces.
-
-| Value | Query space (`--space query`) | Reference space (`--space reference`) |
-|-------|-------------------------------|----------------------------------------|
-| `all` (default) | the full `cs` tag matches, motif-blind; reverse-complement counts as identical | same `TargetChr`/`Strand`/`Target_Start` **and** same `cs`, motif-blind (`ref_class.same_position() && ref_class.same_aln()`) |
-| `junctions` | the **query-space** splice-junction set matches (`junction_set_stats` on `junctions_A`/`junctions_B`) | same `TargetChr`/`Strand`/`Target_Start` **and** same **genomic-coordinate** junction set (`genomic_junction_set_stats` on `genomic_junctions_A`/`genomic_junctions_B`, chrom reattached) |
-
-Under `--compare-by junctions` (either space), any mismatch/indel/soft-clip
-difference that doesn't move a splice junction no longer counts — a
-differently-reported intron motif at the same position/length (e.g. STAR's `nn`
-placeholder vs. minimap2's true motif) doesn't count as a difference under
-`all` either, motif-blind in both spaces.
-
-In `junctions` mode every output filename gains a `.junctions` segment (e.g.
-`{prefix}.query_diff_reads.junctions.tsv.gz`) so it never clobbers an `all` run at the
-same `--outdir`/`--prefix`. Both modes write leading `space<TAB><query|reference>`
-and `compare_by<TAB><all|junctions>` rows in the summary TSV so the file is
-self-describing.
-
-### Categories
-
-The `outcome`/`category` values written to `{prefix}.query_diff_reads.tsv[.gz]`
-(and, under `--emit-identical-reads`, the identical-reads file) — row/category
-names follow `--space`:
-
-| Category (`--space query`) | Category (`--space reference`) | Meaning |
-|----------|----------|------------|
-| `diff_aln_to_both` | `reference_diff` | mapped in both sets, not identical under the active space/compare-by |
-| `diff_aln_only_A` / `diff_aln_only_B` | *(same names)* | mapped in one set only |
-| `query_identical_same_strand` / `query_identical_revcomp` / `query_identical_junctions` (`--emit-identical-reads` only) | `reference_identical` (`--emit-identical-reads` only) | identical under the active space/compare-by (excluded from `{stem}_reads`; only written to the opt-in identical-reads file) |
-| `neither_mapped` (`--emit-identical-reads` only, `--space query --compare-by all` only) | *(none — never `query_identical` in reference space; see below)* | neither set mapped the read at all — `query_identical` by definition (both aligners agreeing it's unmapped), excluded from `{stem}_reads` just like the other identical categories; all 8 classification booleans are `0` |
-
-`neither_mapped` reads only ever reach the identical-reads file under
-`--space query --compare-by all` (the mode where `query_identical` is read
-directly off `classify()`'s output). Under `--space reference` or
-`--compare-by junctions`, the effective identity flag is instead re-derived
-from `ref_class`/`query_junctions_identical`, which stay `None` for a read
-neither side mapped — so in those modes a `neither_mapped` read is simply
-absent from both the diff-reads and identical-reads files, same as before
-this category existed.
-
-Unlike prior versions, **the on-disk summary TSV (`{stem}_summary.tsv`) no
-longer carries mode-relabeled totals** (`query_different_total`,
-`diff_aln_to_both`, `query_identical_total`, …) — it writes the same
-mode-independent `CompareSummary` schema `compare`/`toolkit summary`
-do (see [Summary TSV schema](#summary-tsv-schema)), with `space`/`compare_by`
-provenance rows prepended. The number of rows actually written to
-`{stem}_reads.tsv[.gz]` (this run's differing-read count, under the active
-mode) is reported only in the stderr headline, not as a summary-file row —
-compute it from the mode-appropriate pair of summary rows when needed, e.g.
-`query_not_identical + aligned_only_A + aligned_only_B` for the default
-`--space query --compare-by all`, or `query_junctions_not_identical + …` for
-`--compare-by junctions`.
-
-### Outputs
-
-Filenames use the `query_diff`/`query_identical` stem under `--space query`
-(default) or `reference_diff`/`reference_identical` under `--space reference`;
-the table below uses the query-space names. `[.gz]` is present by default —
-`--no-gzip` omits it (covers both per-read tables and both region tables).
-
-| File | Contents |
-|------|----------|
-| `{prefix}.query_diff_reads.tsv[.gz]` | one row per differing read: `Read_Name`, `outcome` (the canonical category name above), plus 8 classification booleans (see below) |
-| `{prefix}.query_diff_regions.A.bed[.gz]` | merged loci over reads with an A placement (both-mapped-and-differing + `diff_aln_only_A`) |
-| `{prefix}.query_diff_regions.B.bed[.gz]` | merged loci over reads with a B placement (both-mapped-and-differing + `diff_aln_only_B`) |
-| `{prefix}.query_diff_summary.tsv` | the same mode-independent `CompareSummary` schema as `compare.summary.tsv` / `toolkit summary` (+ stderr), with `space`/`compare_by` provenance rows prepended; never gzipped |
-| `{prefix}.query_identical_reads.tsv[.gz]` | *(opt-in, `--emit-identical-reads`)* one row per identical read: `Read_Name`, `category` (`query_identical_same_strand` / `query_identical_revcomp` / `query_identical_junctions` under `--space query`; `reference_identical` under `--space reference`), plus the same 8 classification booleans — the complement of the diff-reads file. Off by default; **not** produced by `compare`'s built-in fused output. |
-
-The first three rows above (the reads table and both region tables) are exactly
-what `compare` writes by default at `--space query --compare-by all` (see
-[Primary: on-rails `compare`](#primary-on-rails-compare) above); `compare` does
-not additionally write a `{prefix}.query_diff_summary.tsv` of its own — its
-`{prefix}.compare.summary.tsv` already carries the same schema.
-
-Under `--compare-by junctions` every filename above gains a `.junctions` segment
-(e.g. `{prefix}.query_diff_reads.junctions.tsv.gz`).
-
-#### Classification booleans
-
-Both per-read tables above carry the same 8 boolean columns (`1`/`0`) after
-`outcome`/`category`, computed the same way **regardless of the active
-`--space`/`--compare-by`** — so one run shows, e.g., a read that's
-query-different but reference-identical, without a second run in the other
-`--space`. `false`/`0` for a read where the axis doesn't apply (e.g. all 8 are
-`0` for a read mapped on only one side).
-
-| Column | `1` when |
-|---|---|
-| `query_identical_same_strand` | `query_identical` and reached via the same-strand branch |
-| `query_identical_revcomp` | `query_identical` and reached via the reverse-complement branch |
-| `query_junctions_identical` | both mapped and the **query-space** junction sets match (`junction_set_stats`) — computed unconditionally, not just under `--compare-by junctions` |
-| `ref_same_position_same_aln` | `RefClass::SamePositionSameAln` (reference-identical) |
-| `ref_same_position_diff_aln` | `RefClass::SamePositionDiffAln` |
-| `ref_diff_position_same_aln` | `RefClass::DiffPositionSameAln` (relocated) |
-| `ref_diff_position_diff_aln` | `RefClass::DiffPositionDiffAln` |
-| `ref_same_position_same_junctions` | both mapped, same position, and the **genomic-coordinate** junction sets match (`genomic_junction_set_stats`) — computed unconditionally |
-
-For a both-mapped read, exactly one of the four `ref_*` columns is `1` (they
-partition `RefClass`); all four are `0` for a read mapped on only one side.
-
-Region-table columns: `#chrom  start  end  n_diff_aln_total  n_diff_aln_to_both  n_diff_aln_only_<A\|B>  n_diff_aln_both_junctions_differ  n_diff_aln_both_junctions_same  n_diff_aln_plus_strand  n_diff_aln_minus_strand`
-— `n_diff_aln_total = n_diff_aln_to_both + n_diff_aln_only_*`;
-`n_diff_aln_plus_strand + n_diff_aln_minus_strand <= n_diff_aln_total`.
-`n_diff_aln_both_junctions_differ`/`n_diff_aln_both_junctions_same` split
-`n_diff_aln_to_both` by whether the pair's **query-space** splice junctions
-match (`query_junctions_identical` above), independent of
-`--space`/`--compare-by`, so `n_diff_aln_to_both =
-n_diff_aln_both_junctions_differ + n_diff_aln_both_junctions_same`. Loci are
-formed by a generic sort + single-sweep merge (`src/interval_merge.rs`),
-equivalent to `bedtools merge -c -o count`, verified against a real
-`bedtools` oracle at both small (~11.6K reads) and genome scale (~986K reads,
-31.5K differing) — exact match on `(chrom, start, end, n_diff_aln_total)` in
-both cases.
-
-**A read may appear on only one side.** A `diff_aln_only_B` read has no A
-coordinate and is absent from the A region table (but still counted and listed in
-the read TSV); symmetric for `diff_aln_only_A` and the B table. Bad
-intervals (unparseable or `end <= start`) are skipped and counted internally
-rather than aborting the run.
-
----
-
-## Per-read junction reconstruction (`toolkit query-junction-diff`)
-
-`toolkit query-junction-diff` (added in v0.26.0, extended to its
-current two-pass design and Parquet-only input in v0.28.0; source under
-`src/query_junction_diff/`) reads an existing `compare` / `toolkit
-merge-readinfo` comparison table (Parquet) and reconstructs, per read and per side
-(A/B), each splice junction's query-space coordinate paired with its
-genomic-space coordinate — then reports which junctions are unsupported by
-the other side. Standalone only; `compare` does not run this by default. The
-"query" in the name reflects that read selection is anchored at the
-**query** coordinate space (`N_Junctions_OnlyA`/`N_Junctions_OnlyB`) — the
-paired genomic coordinates are the reconstruction, not an independent
-selection criterion.
-
-**Why it re-derives junctions from `cs` instead of trusting the comparison
-table's own `junctions`/`genomic_junctions` columns**: in
-`AlnInfo::from_paf` (`src/record.rs`), a `-`-strand alignment's `junctions`
-column is flipped and sorted into ascending query order, but its paired
-`genomic_junctions` column (built from the same cs-walk data) is never
-reordered to match. Every individual value in both stored columns is
-correct — only the positional correspondence between the two lists breaks
-for `-`-strand alignments. This has never affected any existing output, since
-nothing else in the crate reads the two columns index-paired — every other
-consumer treats each as an independent, order-insensitive set.
-`query-junction-diff` is the first consumer that needs the pairing, so it
-re-parses each side's `cs` tag itself (`reconstruct.rs`) and sorts the query
-and genomic vectors together with one shared, stable permutation,
-guaranteeing correct pairing without changing `record.rs` or any existing
-table's schema.
-
-**Usage:**
-
-```bash
-maligno toolkit query-junction-diff -i AvsB.compare.parquet --outdir results/ --prefix AvsB
-# -i: Parquet only (.parquet) — no TSV/stdin support and no --input-format choice,
-#     because this command re-reads the same file for its second pass (see below)
-# per-read and unmatched-junction outputs are always gzipped (no --no-gzip option here)
-```
-
-**Two-pass design.** Pass 1 (above) reconstructs junctions only for the
-"differing" subset and identifies which junctions are unsupported by the
-other side. Pass 2 re-scans the *entire* comparison table a second time,
-narrowly column-projected to just `TargetChr_A/B`, `genomic_junctions_A/B`,
-`Strand_A/B`, and tallies how many reads *total* carry each already-flagged
-junction on that side — into the new `n_reads_with_junction_total` column
-(see Outputs below). This needs no `cs`-tag reconstruction at
-all: it's a pure genomic-space set-membership test (does this exact `(chrom,
-start, end, strand)` appear in this read's `genomic_junctions` set), so it's
-unaffected by the `-`-strand query↔genomic pairing issue pass 1 exists to
-solve — that issue only matters when you need a junction's *query* position,
-which pass 2 never asks for.
-
-### Read selection
-
-A read gets full junction reconstruction ("differing") iff:
-
-```
-mapped_a = TargetChr_A not empty/"*"      (mapped_b symmetric)
-differing =
-    (mapped_a && mapped_b)   => NOT (N_Junctions_OnlyA == 0 && N_Junctions_OnlyB == 0)
-    (mapped_a && !mapped_b)  => JuncCount_A > 0
-    (!mapped_a && mapped_b)  => JuncCount_B > 0
-    (!mapped_a && !mapped_b) => false
-```
-
-i.e. both-mapped reads whose query-space junction sets differ, plus
-only-one-side-mapped reads whose mapped side has at least one splice junction
-(a junction with nothing to compare against is, by definition, unsupported).
-Excluded: unmapped-on-both-sides reads, both-mapped reads with identical
-query junctions, and only-one-side reads with zero junctions on that side —
-every excluded row is still tallied in the summary.
-
-### Outputs
-
-| File | Contents |
-|------|----------|
-| `{prefix}.query_junction_diff.summary.tsv` | parse-time funnel counts (never gzipped) — see [spec](output-tables/query-junction-diff-summary.md) |
-| `{prefix}.query_junction_diff.per_read_per_junc_info.tsv.gz` | one row per reconstructed junction, per side, per differing read (always gzipped, no `--no-gzip` option) — see [spec](output-tables/per-read-query-junction-diff.md) |
-| `{prefix}.query_junction_diff.unmatched_junctions.A.tsv.gz` | distinct genomic junctions called in A, unsupported in B, with a per-locus read count *and* a whole-table total-occurrence count (always gzipped) — see [spec](output-tables/query-junction-diff-unmatched.md) |
-| `{prefix}.query_junction_diff.unmatched_junctions.B.tsv.gz` | same, for junctions called in B unsupported in A |
-
-`junction_index` (in the per-read table) is 1-based and computed
-independently per side — it is a display/sort key along the read's own
-5'→3' order, not a matching key across sides.
-
-### Source layout
-
-Unlike most `toolkit` commands (one file each under `src/`), this
-command's implementation is split across a small directory,
-`src/query_junction_diff/`, mirroring the existing `src/sam2paf/` precedent
-(a directory module with `mod.rs` plus concern-split submodules):
-
-| File | Contents |
-|------|----------|
-| `mod.rs` | CLI args, column resolution, the streaming row loop, output-file orchestration |
-| `reconstruct.rs` | `JunctionRecord`, the `cs`-tag reconstruction + stable-permutation pairing, cross-matching |
-| `summary.rs` | The parse-time funnel-count accumulator |
-| `rollup.rs` | The per-side unmatched-junction rollup accumulator and writer |
-
----
-
-Same row set and order as the corresponding input unmatched file (already
-deterministically sorted); `n_reads_query_junctions_different` is carried
-through unchanged, `n_reads_with_junction_total` is the new tally.
-`n_reads_with_junction_total >= n_reads_query_junctions_different` always
-holds when the inputs correspond to the same `query-junction-diff` run.
 
 ---
 
 ## Troubleshooting
 
-### "`merge-readinfo` matched far fewer reads than I expected" — sort-order diagnostic
+### `merge-readinfo` compared fewer reads than expected
 
-`toolkit merge-readinfo` uses a streaming merge-join keyed on
-`(Read_Name, Read_Len)`. The algorithm runs in O(1) memory and O(N+M) time,
-but it **assumes both readinfo files are sorted in the same byte-lexicographic
-order**. (The primary `compare` reads PAFs directly and instead requires both
-PAFs to list reads in the *same order* — see its `--ignore-row-mismatch`.) By default a read-name mismatch is a hard error (non-zero exit) so you
-notice immediately; passing `--ignore-row-mismatch` reverts to skip-and-count,
-where unmatched reads are dropped and tallied in the end-of-run stderr summary.
+`toolkit merge-readinfo` assumes both readinfo files are sorted by `Read_Name`
+in the **same byte order**. By default an out-of-order read is an error. With
+`--allow-id-mismatch`, though, unsorted input silently lowers `reads_compared`.
+Common causes are sorting without `LC_ALL=C`, or combining files from several
+sources. (`compare` sorts its inputs itself and isn't affected.)
 
-The `toolkit paf2tables` alninfo output is pure streaming and **preserves input order** —
-sortedness must be supplied by you upstream of the pipeline (or recovered
-afterward, see Sorting requirement above). The `--readinfo` collapse emits a
-one-time WARNING on stderr if it detects a byte-lex decrease in its input's
-`Query_Name` column, flagging the common foot-gun (a name-sorted-but-not-byte-lex
-aligner output like STAR's, or a shuffled multi-threaded aligner output).
-
-This diagnostic still bites you if you re-sorted a file
-externally (e.g. with a non-`LC_ALL=C` locale) or assembled the inputs from
-multiple sources.
-
-To check, compute the expected match count via a set intersection of the
-`(Read_Name, Read_Len)` keys. If the merge-join's `matched` count matches
-this number, you're fine — any low overlap is a property of the input data.
-If it's lower, the inputs aren't sorted consistently.
-
-**Inline one-liner** (works on plain or `.gz` readinfo TSVs):
+To check, count the read names the two files share. If it equals
+`reads_compared`, the sort is fine and the low overlap is real.
 
 ```bash
-# Expected match count = full-key set intersection
 LC_ALL=C comm -12 \
-  <(zcat -f a.readinfo.tsv.gz | tail -n +2 | awk -F'\t' '{print $1"\t"$2}' | LC_ALL=C sort -u) \
-  <(zcat -f b.readinfo.tsv.gz | tail -n +2 | awk -F'\t' '{print $1"\t"$2}' | LC_ALL=C sort -u) \
+  <(gzip -dcf a.readinfo.tsv.gz | tail -n +2 | cut -f1 | LC_ALL=C sort -u) \
+  <(gzip -dcf b.readinfo.tsv.gz | tail -n +2 | cut -f1 | LC_ALL=C sort -u) \
   | wc -l
 ```
 
-**Or use the bundled diagnostic script** at
-[`scripts/check-readinfo-overlap.sh`](../scripts/check-readinfo-overlap.sh) — same
-calculation plus a Name-only intersection (to spot reads that share names but
-differ in `Read_Len`, e.g. due to soft-clip differences), and a printable
-report:
+[`scripts/check-readinfo-overlap.sh`](../scripts/check-readinfo-overlap.sh)
+runs the same check and prints a report:
 
 ```bash
 ./scripts/check-readinfo-overlap.sh a.readinfo.tsv.gz b.readinfo.tsv.gz
 ```
 
-Example output:
+### `compare` stops with "read-ID sets differ"
 
-```
-Sort/overlap diagnostic
-  A: a.readinfo.tsv.gz
-  B: b.readinfo.tsv.gz
+The two inputs don't contain the same reads. For example, an aligner run
+without unmapped-read output (STAR without `--outSAMunmapped Within`) omits
+reads that didn't align, and those differ between references. Either
+regenerate the alignments with unmapped reads included, or pass
+`--allow-id-mismatch` to compare the shared reads. With
+`--allow-id-mismatch`, reads present on one side only are counted in the
+summary but get no row.
 
-  rows in A (unique full-key):     466392
-  rows in B (unique full-key):     496164
-  intersection by (Name, Len):     1023
-  intersection by Name only:       1023
+### `sam2paf` / `compare` stops with a missing-`cs` error
 
-  ⇒ `merge-readinfo`'s 'matched' count should equal 1023. If maligno's reported
-    matched count is lower than that, the two readinfo files are not sorted
-    in the same byte-lexicographic order. Re-sort each with:
-
-        LC_ALL=C sort -t$'\t' -k1,1 -k2,2n input.readinfo.tsv > sorted.tsv
-        # (keep the header separately)
-
-    or pre-sort the PAF once (`LC_ALL=C sort -t$'\t' -k1,1`) and rerun
-    `toolkit paf2tables --readinfo` — both readinfo files then share byte-lex order.
-```
-
-If `intersection by Name only` is larger than `intersection by (Name, Len)`,
-some reads share names but have different `Read_Len` between the two files
-(usually an upstream soft-clip / qlen difference). Those rows can't match
-in the comparison regardless of sort order.
+A mapped record has neither a `cs` tag nor a usable `MD` tag. See
+[`sam2paf`](#sam2paf) and the README's section on preprocessing STAR BAMs.
 
 ---
 
-## Source layout
+## Build
 
-```
-src/
-├── main.rs                 — CLI dispatcher (clap subcommands)
-├── aln_input.rs            — PAF/SAM/BAM detection (htslib) + BAM → SAM text → sam2paf stream (compare, sam2paf)
-├── compare.rs              — PRIMARY `compare` command (on-rails: sort → verify read-IDs → tables → compare → fused find-aln-diff core)
-├── external_sort.rs        — in-process PAF external sort (ext-sort) + O(1) read-ID set check
-├── paf2tables.rs           — PAF → alninfo and/or readinfo (one pass)
-├── comparison_row.rs       — comparison-table schema: column lists, ComparisonRow/AlignmentRow/AlignmentDiff, TSV writers
-├── parquet_out.rs          — Parquet writer + OutputFormat; Arrow schema derived from comparison_row's column lists
-├── compare_streaming.rs    — `toolkit merge-readinfo` command + the merge-join machinery (ReadKey/ReadInfoReader)
-├── compare_summary.rs      — shared classify()/ReadClass/CompareSummary (used by compare, toolkit summary, find-aln-diff) + `toolkit summary` command
-├── find_query_diff.rs      — `find-aln-diff` command + AlnDiffAccumulator (the per-row diff/region core, shared with compare's fused output)
-├── interval_merge.rs       — generic sort+sweep interval merge (bedtools merge -c -o count equivalent)
-├── table_input.rs          — TSV/Parquet dispatch for reading an existing comparison table (find-aln-diff, toolkit summary)
-├── readinfo.rs             — collapse library (collapse_group/ReadInfoRow/AlnRow); utils-readinfo CLI unregistered but code kept
-├── paf_groups.rs           — shared PAF → per-read group reader, with optional alninfo tee
-├── record.rs               — AlnInfo struct + TSV serialisation
-├── paf.rs                  — PAF record parser
-├── cs_parser.rs            — cs-tag parser (PAF → stats + genomic junctions)
-├── cigar_junctions.rs      — CIGAR-based intron extractor (utility, not yet wired in)
-├── io_utils.rs             — open_input / open_output (gzip transparent)
-├── junction.rs             — junction parsers + set-overlap stats (junction_set_stats/genomic_junction_set_stats, used by classify() and comparison_row.rs)
-├── query_junction_diff/
-│   ├── mod.rs              — query-junction-diff CLI args, column resolution, streaming row loop, output orchestration
-│   ├── reconstruct.rs      — JunctionRecord, cs-tag reconstruction + stable-permutation pairing, cross-matching
-│   ├── summary.rs          — parse-time funnel-count accumulator
-│   └── rollup.rs           — per-side unmatched-junction rollup accumulator and writer
-└── sam2paf/
-    ├── mod.rs              — sam2paf CLI args + run()
-    ├── convert.rs          — SAM → PAF conversion logic (+ fatal missing-cs guard)
-    ├── cigar.rs            — CIGAR string parser
-    ├── md.rs               — MD-tag iterator
-    └── cs_generator.rs     — cs-tag generator (MD + CIGAR → cs string)
+```bash
+# Native (macOS / Linux)
+cargo build --release
+# → target/release/maligno
 
-scripts/
-└── check-readinfo-overlap.sh   — sort-order / overlap diagnostic for compare inputs
+# Static Linux binary for HPC (no runtime dependencies).
+# Requires the musl cross toolchain: brew install FiloSottile/musl-cross/musl-cross
+# and: rustup target add x86_64-unknown-linux-musl
+CC_x86_64_unknown_linux_musl=x86_64-linux-musl-gcc \
+AR_x86_64_unknown_linux_musl=x86_64-linux-musl-ar \
+cargo build --release --target x86_64-unknown-linux-musl
+# → target/x86_64-unknown-linux-musl/release/maligno
 ```
+
+The linker for the musl targets is set in `.cargo/config.toml`. The `CC_*` /
+`AR_*` variables are also needed because maligno compiles a bundled htslib (C)
+for SAM/BAM input.

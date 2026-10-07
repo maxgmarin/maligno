@@ -62,7 +62,8 @@ pub const READINFO_HEADER: &str = "Read_Name\tRead_Len\t\
 
 // ── ReadInfo row ─────────────────────────────────────────────────────────────
 
-/// Per-read summary row, produced by the `readinfo` subcommand.
+/// Per-read summary row: one row of the readinfo table (`toolkit paf2tables
+/// --readinfo`, `compare --emit-readinfo`).
 /// Fields are typed for use in the `compare` subcommand; `raw_fields` carries
 /// all non-key columns pre-formatted for TSV pass-through.
 #[allow(dead_code)]
@@ -381,7 +382,7 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
 }
 
 // ── CLI args ─────────────────────────────────────────────────────────────────
-// utils-readinfo subcommand is unregistered from main.rs; kept here for possible reuse.
+// Standalone alninfo → readinfo CLI; not registered in main.rs. Kept for possible reuse.
 
 #[derive(clap::Args, Debug)]
 #[allow(dead_code)]
@@ -460,10 +461,10 @@ pub fn run(args: &ReadInfoArgs) -> Result<()> {
                          \t(head -1 in.alninfo.tsv; tail -n +2 in.alninfo.tsv \
                          | LC_ALL=C sort -t$'\\t' -k1,1) > sorted.alninfo.tsv\n\
                          \n\
-                         or sort the PAF before paf2alninfo:\n\
+                         or sort the PAF before toolkit paf2tables:\n\
                          \n\
                          \tLC_ALL=C sort -t$'\\t' -k1,1 in.paf | maligno \
-                         paf2alninfo -i - -o ...\n"
+                         toolkit paf2tables -i - --readinfo ...\n"
                     );
                     warned_unsorted = true;
                 }

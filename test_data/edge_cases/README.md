@@ -4,34 +4,7 @@ A 16-read PAF pair that exercises every branch of `compare`'s per-read
 classifier. It exists because the main `test_data/` chr22 pair, despite having
 11,578 reads, reaches **only one** of the four mapping-status branches.
 
-## Why this fixture is needed
-
-Measured on `test_data/*.AlnToHG38.PriAln.paf.gz`:
-
-```
-aligned_both     11578
-aligned_only_A       0
-aligned_only_B       0
-aligned_neither      0
-```
-
-Zero unmapped reads, zero one-sided reads, zero rows where `TargetChr_*` is
-`*`, and **zero empty-string cells**. So the entire unmapped code path — empty
-`cs`, `junctions` rendered as `()`, `NaN` identity, zeroed counters — was
-untested. That matters most for the planned `ComparisonRow` refactor: today the
-per-side columns are emitted as raw pass-through strings, and parsing them into
-typed fields then re-serializing would silently normalize an empty cell to `0`.
-Nothing in the repo would have caught it.
-
-## Provenance — every record is real
-
-No row is hand-written. All records were extracted verbatim from the
-507,365-transcript GENCODE v49 PriChr comparison
-(`minimap2 -x splice` vs `-x splice:hq`, aligned to GRCh38), which is the same
-software and parameters that produced the chr22 pair. `read_categories.tsv`
-records which read was chosen for which reason.
-
-Two derived variants, both pure subsetting — no invented content:
+## Files
 
 | File pair | How it was made | Reaches |
 |---|---|---|
@@ -39,8 +12,7 @@ Two derived variants, both pure subsetting — no invented content:
 | `edge_cases_idmismatch.{Splice,SpliceHQ}.paf.gz` | one *different* read deleted from each side | `present_only_in_{A,B}_by_id`, and the default read-ID-set error |
 
 `aligned_only_A` needs no extra data: run `compare` with the two files swapped
-(the fixture is deliberately asymmetric). `scripts/schema-stability-manifest.sh`
-does exactly that as its `edge_swapped` scenario.
+(the fixture is deliberately asymmetric).
 
 ## Coverage
 
@@ -49,7 +21,7 @@ does exactly that as its `edge_swapped` scenario.
 | `aligned_both` | ✅ | ✅ 13 |
 | `aligned_only_B` | ❌ | ✅ 1 (`ENST00000578854.1`) |
 | `aligned_only_A` | ❌ | ✅ 1 (swap the sides) |
-| `aligned_neither` (counts as `query_identical` — see below) | ❌ | ✅ 2 |
+| `aligned_neither` (counts as `query_identical`) | ❌ | ✅ 2 |
 | `query_identical_same_strand` | ✅ | ✅ 6 |
 | `query_identical_revcomp` | ❌ | ✅ 1 (`ENST00000619436.1`) |
 | `query_not_identical` | ✅ | ✅ 6 |
@@ -63,110 +35,33 @@ does exactly that as its `edge_swapped` scenario.
 | read-ID-set mismatch **error** | ❌ | ✅ (idmismatch variant, default flags) |
 | empty-string cells (`cs` of an unmapped read) | ❌ | ✅ |
 | `*` target, `()` junctions, `NaN` identity | ❌ | ✅ |
-| integral floats rendered `N.0` (see below) | ✅ | ✅ |
+| integral floats rendered `N.0` | ✅ | ✅ |
 | single-exon / multi-junction / minus-strand reads | ✅ | ✅ 2 each |
-
-`ENST00000619436.1` is the one revcomp case in all 507,365 transcripts: the same
-transcript aligned to chrY on `+` by `splice` and on `−` by `splice:hq`, at
-different loci, with cs tags that are exact reverse complements. It's the one
-read separating `query_identical` (9: 6 same-strand + 1 revcomp + 2
-`aligned_neither`, both of which count as `query_identical` too — neither
-aligner mapping a read at all is agreement, not disagreement) from the
-reference-space classification, which has no reverse-complement accommodation
-and no `aligned_neither` inclusion (`ref_class` stays `None` for unmapped
-reads): this read's opposite strands make it `ref_diff_position_diff_aln`,
-alongside the fixture's 6 `ref_same_position_same_aln` and 6
-`ref_same_position_diff_aln` reads (`6 + 6 + 0 + 1 = 13 = aligned_both`, the
-`aligned_neither` reads outside this sum entirely since `RefClass` is a
-strictly "both mapped" axis).
 
 ### Still not covered
 
-- **`ref_diff_position_same_aln`** ("relocated": identical `cs` but a different
-  `TargetChr`/`Strand`/`Target_Start`) — no read in either the chr22 pair or
-  this fixture exercises it. Would need a pair of records with matching
-  alignment content aligned to two different loci (e.g. a duplicated region on
-  two contigs, or two different reference assemblies).
 - **Multiple alignments per read** (`Num_Aln > 1`). Both this fixture and the
   chr22 pair are primary-alignment-only, one row per read, so
   `readinfo.rs::collapse_group`'s tie-breaking (ms → AS → MQ) is never
   exercised. Would need a non-`PriAln` source.
-- **Float formatting** is *covered* but is worth calling out as the main
-  refactor hazard: `io_utils::fmt_float` appends `.0` to integral values and
-  Rust's default `{}` for `f64` does not. On the chr22 table `QueryAlnCov_Diff`
-  is integral in 11,573 of 11,578 rows, so a generic `serde` serializer would
-  rewrite ~99% of rows across eight columns unless `f64` goes through
-  `fmt_float`.
 
 ## Use
 
+Run `compare` on each scenario from the repo root:
+
 ```bash
-./scripts/schema-stability-manifest.sh ./target/release/maligno /tmp/w > after.txt
-diff test_data/schema_manifest.v0.27.0.txt after.txt && echo "OUTPUT UNCHANGED"
+EC=test_data/edge_cases
+
+# Most branches
+maligno compare -a $EC/edge_cases.Splice.paf.gz -b $EC/edge_cases.SpliceHQ.paf.gz \
+  --label-a Splice --label-b SpliceHQ --outdir /tmp/edge --prefix edge
+
+# aligned_only_A: the same pair with the sides swapped
+maligno compare -a $EC/edge_cases.SpliceHQ.paf.gz -b $EC/edge_cases.Splice.paf.gz \
+  --label-a SpliceHQ --label-b Splice --outdir /tmp/edge_swapped --prefix edge
+
+# present_only_in_{A,B}_by_id (without --allow-id-mismatch this must error)
+maligno compare --allow-id-mismatch \
+  -a $EC/edge_cases_idmismatch.Splice.paf.gz -b $EC/edge_cases_idmismatch.SpliceHQ.paf.gz \
+  --label-a Splice --label-b SpliceHQ --outdir /tmp/edge_idmismatch --prefix edge
 ```
-
-`test_data/schema_manifest.v0.27.0.txt` is the committed baseline: 30 SHA-256
-fingerprints over the decompressed outputs of six scenarios. The filename carries
-a version on purpose — an output change must rename it, which makes regenerating
-the baseline a deliberate act rather than an invisible overwrite.
-
-Its history is a good illustration of what the gate is for:
-
-- **v0.14.0** (column regroup) moved exactly 4 of 45 fingerprints — the four
-  `compare.tsv` files — and left every summary and region output identical, which
-  is what a naming-and-ordering-only change should look like.
-- **v0.14.1** (typed `ComparisonRow`) moved **nothing**: 46 of 46 identical, as a
-  pure refactor must.
-- **v0.15.0** (unmapped soft-clip fix) moved exactly the 15 `alninfo`/`readinfo`/
-  `compare` fingerprints of the three edge scenarios and **not one chr22
-  fingerprint** — because chr22 contains no unmapped reads, so only this fixture
-  could see the change. Every summary and `find-query-diff` output stayed
-  identical too, confirming the classifier never reads soft-clip.
-- **v0.16.0** (Parquet output) moved **nothing** and *added* 4 lines — one
-  `compare.parquet` per scenario that runs `compare`, since the default
-  `--format both` now writes it. All 46 pre-existing fingerprints stayed
-  identical, which is the claim "the TSV path is untouched" being measured
-  rather than asserted.
-
-- **v0.17.0** (`compare` no longer runs `find-query-diff`) moved **nothing** and
-  *removed* 16 lines — the four `query_diff_*` outputs from each of the four
-  `compare` scenarios. Every surviving fingerprint stayed identical, and running
-  `find-query-diff` by hand reproduced all 16 removed files byte-for-byte, which is
-  how "the outputs were relocated, not altered" was checked rather than assumed.
-
-> **A `parquet` dependency bump will move those 4 lines.** The footer records
-> `created_by: parquet-rs version <x>`, so the file bytes change even when the
-> data does not. The dependency is pinned exactly in `Cargo.toml` so this only
-> happens deliberately — but when it does, expect exactly the 4 `.parquet`
-> fingerprints to differ and nothing else.
-
-- **v0.27.0** (`aligned_neither` reads now count as `query_identical`) moved
-  exactly the `compare.summary.tsv` fingerprint of every scenario containing
-  this fixture's 2 `aligned_neither` reads (`edge`, `edge_swapped`,
-  `edge_idmismatch`), plus the two `find-aln-diff`-derived summary outputs
-  that share the same schema (`fqd_junctions/run.query_diff_summary.junctions.tsv`,
-  `summary/run.summary.tsv`) — 5 fingerprints total, isolated by diffing
-  against a manifest generated from the pre-change binary (not the committed
-  v0.17.0 file directly; see below). The chr22 scenario (0 `aligned_neither`
-  reads) and every `alninfo`/`readinfo`/`query_diff_reads`/region-BED
-  fingerprint were unaffected, confirming the change is scoped to
-  `query_identical`'s definition as intended.
-  >
-  > **Note on this jump specifically:** the committed `v0.17.0` baseline had
-  > drifted from `main`'s actual output well before this change (it still
-  > listed removed `alninfo`/`readinfo` files and was missing
-  > `query_diff_reads.tsv`/region-BED fingerprints that `main` has produced
-  > for some time) — several versions' worth of legitimate, unrelated output
-  > changes between `v0.17.0` and `v0.26.1` were apparently never
-  > checkpointed here. `v0.27.0` is a full fresh regeneration from current
-  > `main` plus this change, not an incremental diff from `v0.17.0`, so it
-  > also silently absorbs that backlog. The 5-fingerprint scoping claim above
-  > was verified by diffing two manifests generated from this session's own
-  > pre-change and post-change binaries, not from the stale `v0.17.0` file.
-
-## Regenerating
-
-`make-edge-case-fixture.sh` rebuilds the pair from the full GENCODE comparison.
-It needs that dataset present and is **not** part of the normal test loop — the
-committed `.paf.gz` files are the artifact; the script only records how they
-were derived.

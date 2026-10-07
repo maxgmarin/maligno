@@ -81,5 +81,3 @@ aggregated over the *whole* group.
     so `tpS` is always `0` unless you pass `--sam-records all`;
     `--sam-records primary` (`-P`) also drops supplementary records, so `tpP <= 1`.
     For minimap2 PAF, secondaries appear only if minimap2 emitted them.
-- Column count bumped 33 → 34 when `tp_tag` was added (v0.25.0), and 34 → 36 when
-  `Num_Aln_tpP`/`Num_Aln_tpS` were appended (v0.32.0).

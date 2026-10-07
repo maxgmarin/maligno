@@ -10,9 +10,8 @@
 //!   --alninfo+--readinfo → do both in one pass (tee alninfo while collapsing)
 //! ```
 //!
-//! This module owns the shared streaming logic; the legacy `paf2alninfo` and
-//! `paf2readinfo` subcommands are thin deprecated aliases that delegate here, so
-//! all three produce byte-identical output.
+//! This module owns the shared streaming logic; `compare --emit-alninfo` /
+//! `--emit-readinfo` produce byte-identical tables through the same code path.
 //!
 //! ## Grouping requirement
 //!
@@ -43,7 +42,7 @@ use crate::record::AlnInfo;
 ))]
 pub struct Paf2TablesArgs {
     /// Input PAF file. Use '-' for stdin; '.gz' is auto-decompressed.
-    #[arg(short = 'i', long = "input", value_name = "in.paf")]
+    #[arg(short = 'i', long = "input", value_name = "in.paf[.gz]")]
     input: String,
 
     /// Write the per-alignment info table (36 cols) here. '.gz' for gzip.
@@ -135,7 +134,7 @@ pub(crate) fn stream_alninfo<R: BufRead, W: Write>(reader: &mut R, w: &mut W) ->
 /// Stream a PAF into the "readinfo" table by grouping contiguous `Query_Name`
 /// runs and collapsing each to its best alignment. If `alninfo_out` is `Some`,
 /// every alignment's alninfo row is tee'd to it in the same pass (byte-identical
-/// to `paf2alninfo`). With `strict_grouping`, errors if a `Query_Name` reappears
+/// to the `--alninfo`-only output). With `strict_grouping`, errors if a `Query_Name` reappears
 /// non-contiguously.
 pub(crate) fn stream_readinfo<W: Write + ?Sized>(
     reader: Box<dyn BufRead>,

@@ -8,16 +8,16 @@
 //!
 //! ```text
 //! PAF line ─parse_line─▶ PafRecord ─AlnInfo::from_paf─▶ AlnInfo
-//!          ─write_row(&mut Vec<u8>)─▶ alninfo line bytes   (identical to paf2alninfo)
+//!          ─write_row(&mut Vec<u8>)─▶ alninfo line bytes   (identical to the alninfo table)
 //!          ─parse_aln_row─▶ AlnRow                          (identical to readinfo input)
 //! ```
 //!
-//! Because the bytes crossing the boundary are byte-for-byte what `paf2alninfo`
-//! would have written to disk, downstream `collapse_group` produces output
-//! identical to the discrete `paf2alninfo | readinfo` pipeline — without ever
-//! materializing the intermediate alninfo file.
+//! Because the bytes crossing the boundary are byte-for-byte the alninfo table's
+//! rows, downstream `collapse_group` produces the same readinfo output as
+//! collapsing a written alninfo file would — without ever materializing the
+//! intermediate alninfo file.
 //!
-//! Used by the `paf2tables`, `paf2readinfo`, and `pafcompare` subcommands.
+//! Used by `toolkit paf2tables` and `compare`.
 
 use std::io::{BufRead, Write};
 
@@ -61,10 +61,10 @@ impl<R: BufRead> PafGroups<R> {
 
     /// Read the next PAF data line and convert it to an `AlnRow`.
     /// Returns `Ok(None)` at EOF. Malformed lines emit a WARNING and are skipped
-    /// (same behavior as `paf2alninfo`).
+    /// (same behavior as the alninfo-only output).
     ///
     /// If `alninfo_out` is `Some`, the exact alninfo TSV bytes for this row (the
-    /// same bytes `paf2alninfo` would write) are tee'd to it before the row is
+    /// same bytes the alninfo table contains) are tee'd to it before the row is
     /// parsed. Every physical PAF line is read by exactly one `next_row` call,
     /// so each alignment is tee'd exactly once, in input order.
     fn next_row(&mut self, alninfo_out: &mut Option<&mut dyn Write>) -> Result<Option<AlnRow>> {

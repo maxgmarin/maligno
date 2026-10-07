@@ -5,19 +5,15 @@
 //! the single place to look when asking "what columns does `compare` emit, in what
 //! order, and how is each one computed?".
 //!
-//! Why it exists: until v0.14.1 the row was assembled and serialized in one
-//! ~145-line function that pulled values out of a `HashMap<&str, &str>`, parsed
-//! them inline, computed 30 metrics as flat locals, and wrote straight to the
-//! output. The A side, the B side and the diff block never existed as values, so
-//! the diff logic could not be tested without running the whole pipeline, and the
-//! per-side parse block had to be written twice — once per side, mirror-imaged.
+//! Splitting the row into typed parts lets the diff logic be tested on its own,
+//! and means the per-side parsing is written once and used for both sides.
 //!
 //! The split here is deliberate, and it is about what each layer is *for*:
 //!
 //! - [`AlignmentMetrics`] — the 11 values per side that the comparison math needs,
 //!   parsed once. No lifetime, `Copy`; this is what [`AlignmentDiff::compute`] is
 //!   tested against.
-//! - [`AlignmentRow`] — one side's 31 columns exactly as read (`&str`), plus the
+//! - [`AlignmentRow`] — one side's 33 columns exactly as read (`&str`), plus the
 //!   parsed view. The raw strings are what the TSV writer emits.
 //! - [`AlignmentDiff`] — the computed A-vs-B block, owned.
 //!
@@ -44,8 +40,7 @@ use crate::junction::{
 /// The per-side data columns, each emitted once suffixed `_A` and once `_B`.
 ///
 /// These are read out of the readinfo table **by name**, so this order is free to
-/// differ from `readinfo.rs`'s `READINFO_HEADER`. Before v0.14.0 it was that header
-/// verbatim; it is now grouped by topic — locus, alignment selection,
+/// differ from `readinfo.rs`'s `READINFO_HEADER`. It is grouped by topic — locus, alignment selection,
 /// identity/coverage, junction counts, cs-derived event counts, and the three long
 /// strings last — so the 100-column table is readable via
 /// `head -1 | tr '\t' '\n' | nl`. **This divergence from `READINFO_HEADER` is
@@ -184,8 +179,7 @@ const I_GENOMIC_JUNCTIONS: usize = col_idx("genomic_junctions");
 
 /// `num / den`, or `NaN` when the denominator is zero.
 ///
-/// The zero test is on the **integer**, before the cast, which is what the
-/// pre-v0.14.1 `safe_ratio_i64` did. That matters: `5.0 / 0.0` is `inf` in IEEE
+/// The zero test is on the **integer**, before the cast. That matters: `5.0 / 0.0` is `inf` in IEEE
 /// arithmetic, so a bare float division would render `inf` for every read whose
 /// denominator side scored 0, where this renders `NaN`.
 fn ratio_i64(num: i64, den: i64) -> f64 {
@@ -209,8 +203,8 @@ fn ratio_u64(num: u64, den: u64) -> f64 {
 
 /// The values a side contributes to the comparison math, parsed once.
 ///
-/// Defaults match the pre-v0.14.1 inline `.parse().unwrap_or(..)` calls exactly:
-/// `0` for the integer fields, `f64::NAN` for the two float fields.
+/// Unparseable values default to `0` for the integer fields and `f64::NAN` for
+/// the two float fields.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AlignmentMetrics {
     pub(crate) as_max: i64,
@@ -223,7 +217,7 @@ pub(crate) struct AlignmentMetrics {
     pub(crate) n_sub_bases: u64,
     pub(crate) n_sc_start: u64,
     pub(crate) n_sc_end: u64,
-    /// `usize`, as before v0.14.1 — feeds `Junc_Dist_V2`.
+    /// `usize`; feeds `Junc_Dist_V2`.
     pub(crate) junc_count: usize,
 }
 
@@ -283,7 +277,7 @@ impl<'r> AlignmentRow<'r> {
 
 /// The A-vs-B metrics. Field order matches [`comparison_col_names`].
 ///
-/// Sign conventions, preserved verbatim from the pre-v0.14.1 emitter: every
+/// Sign conventions: every
 /// `*_diff` is **B − A**, every ratio is **B / A** (so the denominator is the A
 /// side, and A is what the zero-guard tests) — except `junc_dist_v2`, whose inner
 /// subtraction is **A − B**. `unsigned_abs()` makes that last one numerically
@@ -332,8 +326,8 @@ impl AlignmentDiff {
         let (n_matched, n_only_a, n_only_b) = junction_set_stats(&juncs_a, &juncs_b);
         let (j_only_a_vec, j_only_b_vec) = junction_set_diffs(&juncs_a, &juncs_b);
 
-        // Genomic-space junction sets. The chrom is reattached to every pair (it was
-        // dropped from the stored tuples in v0.2.3) so that junctions on different
+        // Genomic-space junction sets. The chrom is reattached to every pair (the
+        // stored tuples don't include it) so that junctions on different
         // contigs cannot match; `format_genomic_junction_tuple` drops it again on the
         // way out. Do not unify those two behaviours.
         let chrom_a = a.target_chr().to_string();
@@ -478,12 +472,12 @@ impl<'r> ComparisonRow<'r> {
     /// Write the row. Field order here is checked against the header by
     /// `header_and_row_field_counts_agree`.
     ///
-    /// Escaping matches the pre-v0.14.1 emitter exactly: the 62 per-side fields and
+    /// Escaping: the 66 per-side fields and
     /// the 4 object-list fields are escaped; `Read_Name` and the two labels are
     /// **not** (labels are validated by `validate_set_label` instead). Note the
     /// per-side values were already escaped once when the readinfo row was written,
     /// so this is a second pass over them — `escape_tsv_field` is not idempotent,
-    /// and that double escaping is preserved behaviour.
+    /// and that double escaping is intentional; changing it would change the TSV output.
     pub(crate) fn write_tsv_row<W: Write>(&self, out: &mut W) -> std::io::Result<()> {
         let d = &self.diff;
         write!(

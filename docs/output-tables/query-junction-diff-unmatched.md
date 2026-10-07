@@ -8,17 +8,12 @@ comparison table, carry that same junction on this side. Written by
 `toolkit query-junction-diff`, one file per side (mirrors the
 `query_diff_regions.{A,B}.bed.gz` per-side-file convention).
 
-This command runs in two passes. Pass 1 builds this table's first 5 columns
-exactly as before: a rollup over
-[`query_junction_diff.per_read_per_junc_info.tsv.gz`](per-read-query-junction-diff.md)'s
-`matched_in_genomic == false` rows for that side, grouped by `(chrom,
-genomic_start, genomic_end, strand)` (the A file covers junctions called in A
-unsupported by B; the B file, junctions called in B unsupported by A). Pass 2
-re-scans the entire comparison table a second time — narrowly
-column-projected, no `cs`-tag reconstruction — and tallies how many reads in
-total carry each junction pass 1 already flagged. `--input` must be Parquet
-specifically so this second pass is cheap and doesn't need to re-read
-`stdin`.
+Columns 1–5 roll up the `matched_in_genomic == false` rows of
+[`query_junction_diff.per_read_per_junc_info.tsv.gz`](per-read-query-junction-diff.md)
+for that side, grouped by `(chrom, genomic_start, genomic_end, strand)`. The A
+file covers junctions called in A but unsupported by B, and the B file the
+reverse. Column 6 counts how many reads in the whole comparison table carry the
+same junction on this side.
 
 6 columns.
 

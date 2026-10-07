@@ -1,4 +1,5 @@
-//! The primary `compare` command: an on-rails pipeline that takes two PAFs and
+//! The primary `compare` command: an on-rails pipeline that takes two alignment
+//! files (PAF, SAM or BAM) and
 //! produces, in one invocation, the per-read comparison table plus (optionally)
 //! the per-set alninfo + readinfo tables.
 //!
@@ -28,8 +29,11 @@
 //! command.
 //!
 //! Precondition (documented, not enforced): a `Query_Name` uniquely identifies a
-//! single read/sequence — so sorting by name alone (no `Read_Len` secondary key)
-//! is sufficient for the downstream `(Read_Name, Read_Len)` merge-join.
+//! single read/sequence, so reads are sorted and matched by name alone.
+//!
+//! The lock-step merge ([`run_merge`]) is shared with `toolkit merge-readinfo`:
+//! both commands feed it through the [`ReadSource`] interface (PAFs here,
+//! readinfo TSVs there), so the two produce the same alignment comparison table.
 
 use std::collections::HashMap;
 use std::fs;
@@ -97,13 +101,13 @@ impl SamRecords {
 pub struct CompareArgs {
     /// Alignments for dataset A: PAF ('.gz' auto-decompressed), SAM or BAM
     /// (format auto-detected; CRAM is not supported).
-    #[arg(short = 'a', long = "aln-a", alias = "paf-a", value_name = "a.paf|a.sam|a.bam",
+    #[arg(short = 'a', long = "aln-a", value_name = "a.paf[.gz]|a.sam|a.bam",
           value_parser = require_aln_path)]
     aln_a: String,
 
     /// Alignments for dataset B: PAF ('.gz' auto-decompressed), SAM or BAM
     /// (format auto-detected; CRAM is not supported).
-    #[arg(short = 'b', long = "aln-b", alias = "paf-b", value_name = "b.paf|b.sam|b.bam",
+    #[arg(short = 'b', long = "aln-b", value_name = "b.paf[.gz]|b.sam|b.bam",
           value_parser = require_aln_path)]
     aln_b: String,
 
@@ -112,12 +116,12 @@ pub struct CompareArgs {
     #[arg(long = "sam-records", value_enum, value_name = "WHICH")]
     sam_records: Option<SamRecords>,
 
-    /// Name for dataset A, recorded in the comparison table's `Label_A` column.
+    /// Name for dataset A, recorded in the alignment comparison table's `Label_A` column.
     #[arg(long = "label-a", value_name = "LABEL", default_value = "SetA",
           value_parser = validate_set_label)]
     label_a: String,
 
-    /// Name for dataset B, recorded in the comparison table's `Label_B` column.
+    /// Name for dataset B, recorded in the alignment comparison table's `Label_B` column.
     #[arg(long = "label-b", value_name = "LABEL", default_value = "SetB",
           value_parser = validate_set_label)]
     label_b: String,
@@ -130,16 +134,16 @@ pub struct CompareArgs {
     #[arg(short = 'p', long = "prefix", value_name = "NAME")]
     prefix: String,
 
-    /// Output format for the comparison table.
+    /// Output format for the alignment comparison table.
     #[arg(long = "format", value_enum, default_value_t = OutputFormat::Both)]
     format: OutputFormat,
 
-    /// Compare the shared intersection of aligned sequences instead of erroring when the two PAFs do
+    /// Compare the shared intersection of aligned sequences instead of erroring when the two inputs do
     /// not carry the exact same "Query_Name" set.
     #[arg(long = "allow-id-mismatch")]
     allow_id_mismatch: bool,
 
-    /// Skip the internal sort: assume both PAFs already contain the same reads,
+    /// Skip the internal sort: assume both inputs already contain the same reads,
     /// grouped by "Query_Name" and in the same relative order.
     /// Not combinable with --allow-id-mismatch or --keep-sorted-paf.
     #[arg(long = "presorted", conflicts_with_all = ["allow_id_mismatch", "keep_sorted_paf"])]
@@ -157,11 +161,11 @@ pub struct CompareArgs {
     #[arg(long = "sort-mem", value_name = "SIZE", default_value = "1G")]
     sort_mem: String,
 
-    /// Temp directory for temp out of memory sort files (default: --outdir).
+    /// Directory for the sort's temporary spill files (default: --outdir).
     #[arg(long = "sort-tmp-dir", value_name = "DIR")]
     tmp_dir: Option<String>,
 
-    /// Number of sort threads (default: 1).
+    /// Number of sort threads.
     #[arg(long = "sort-threads", value_name = "N", default_value_t = 1)]
     sort_threads: usize,
 
@@ -282,7 +286,7 @@ pub fn run(args: &CompareArgs) -> Result<()> {
             .with_context(|| format!("sorting input B ({})", args.aln_b))?;
 
         // ── Step 2: read-ID set-equality check (O(1) memory), before any output ─
-        eprintln!("[INFO] verifying the two PAFs share the same read-ID set...");
+        eprintln!("[INFO] verifying the two inputs share the same read-ID set...");
         let chk = read_id_set_check(&a_sorted, &b_sorted, 5)?;
         eprintln!(
             "  shared: {}   only in {}: {}   only in {}: {}",
@@ -295,7 +299,7 @@ pub fn run(args: &CompareArgs) -> Result<()> {
                     let _ = fs::remove_file(&b_sorted);
                 }
                 bail!(
-                    "read-ID sets differ between the two PAFs: {shared} shared, \
+                    "read-ID sets differ between the two inputs: {shared} shared, \
                      {oa} only in {la}, {ob} only in {lb}. \
                      Re-run with --allow-id-mismatch to compare the shared intersection.",
                     shared = chk.shared,
@@ -428,6 +432,49 @@ fn pull<R: BufRead>(
     }
 }
 
+// ── Read sources for the shared merge ───────────────────────────────────────
+
+/// One read's readinfo row, as produced by either input path.
+pub(crate) struct SourceRead {
+    pub(crate) name: String,
+    pub(crate) len: u64,
+    /// The readinfo row, tab-separated, in [`ReadSource::columns`] order.
+    pub(crate) line: String,
+}
+
+/// Yields one readinfo row per read, in read-name order. `compare` reads PAFs
+/// through [`PafReadSource`]; `toolkit merge-readinfo` reads readinfo TSVs.
+pub(crate) trait ReadSource {
+    /// Column names for each [`SourceRead::line`].
+    fn columns(&self) -> Vec<String>;
+    /// The next read, or `None` at end of input.
+    fn next_read(&mut self) -> Result<Option<SourceRead>>;
+}
+
+/// `compare`'s source: groups a sorted PAF by read, collapses each group, and
+/// tees the per-set alninfo / readinfo side tables (`io::sink()` when suppressed).
+struct PafReadSource<'w, R: BufRead> {
+    groups: PafGroups<R>,
+    alninfo: &'w mut Box<dyn Write>,
+    readinfo: &'w mut Box<dyn Write>,
+}
+
+impl<R: BufRead> ReadSource for PafReadSource<'_, R> {
+    fn columns(&self) -> Vec<String> {
+        READINFO_HEADER.split('\t').map(String::from).collect()
+    }
+
+    fn next_read(&mut self) -> Result<Option<SourceRead>> {
+        match pull(&mut self.groups, &mut *self.alninfo, &mut *self.readinfo)? {
+            None => Ok(None),
+            Some(ri) => {
+                let line = readinfo_line(&ri)?;
+                Ok(Some(SourceRead { name: ri.read_name, len: ri.read_len, line }))
+            }
+        }
+    }
+}
+
 /// The fused pass: lock-step over the two sorted PAFs. Writes the comparison
 /// table to `compare_out`, and (when the corresponding path is `Some`) the
 /// per-set alninfo / readinfo tables. When `diff_acc` is `Some`, also drives
@@ -491,29 +538,32 @@ fn compare_sorted_pafs(
     AlnInfo::write_header(al_a.as_mut())?;
     AlnInfo::write_header(al_b.as_mut())?;
 
-    let mut groups_a = PafGroups::new(a_sorted, /* warn_unsorted = */ false);
-    let mut groups_b = PafGroups::new(b_sorted, false);
-
-    let header_cols: Vec<&str> = READINFO_HEADER.split('\t').collect();
-
-    // The lock-step merge runs in a helper that borrows each `Box<dyn Write>` only
-    // for the call (the v0.9.0 pattern), so the writers are free to flush after.
-    let counts = run_merge(
-        &mut groups_a,
-        &mut groups_b,
-        &mut out,
-        &mut al_a,
-        &mut ri_a,
-        &mut al_b,
-        &mut ri_b,
-        &header_cols,
-        parquet.as_mut(),
-        allow_id_mismatch,
-        label_a,
-        label_b,
-        summary,
-        &mut diff_acc,
-    )?;
+    // The sources borrow the side-table writers only for this block, so the
+    // writers are free to flush after.
+    let counts = {
+        let mut src_a = PafReadSource {
+            groups: PafGroups::new(a_sorted, /* warn_unsorted = */ false),
+            alninfo: &mut al_a,
+            readinfo: &mut ri_a,
+        };
+        let mut src_b = PafReadSource {
+            groups: PafGroups::new(b_sorted, false),
+            alninfo: &mut al_b,
+            readinfo: &mut ri_b,
+        };
+        run_merge(
+            &mut src_a,
+            &mut src_b,
+            &mut out,
+            parquet.as_mut(),
+            allow_id_mismatch,
+            "",
+            label_a,
+            label_b,
+            summary,
+            &mut diff_acc,
+        )?
+    };
 
     eprintln!("[INFO] alignment comparison complete for all reads.");
 
@@ -534,28 +584,29 @@ fn compare_sorted_pafs(
     Ok((counts, diff_stats))
 }
 
-/// The lock-step merge of two sorted PAFs. Each `Box<dyn Write>` is borrowed only
-/// for the call duration (the owning boxes live in the caller), so they're free
-/// to flush afterward. Suppressed side outputs are `io::sink()` boxes.
+/// The lock-step merge of two read-name-sorted sources, shared by `compare` and
+/// `toolkit merge-readinfo`. Reads are matched on read name; each matched pair is
+/// classified, tallied into `summary`, fed to `diff_acc` when present, and written
+/// to `out` (an `io::sink()` box when the TSV is not wanted) and `parquet`.
+/// `mismatch_hint` is appended to the read-ID mismatch errors.
+/// Returns (matched, a_only, b_only).
 #[allow(clippy::too_many_arguments)]
-fn run_merge<R: BufRead>(
-    groups_a: &mut PafGroups<R>,
-    groups_b: &mut PafGroups<R>,
+pub(crate) fn run_merge<SA: ReadSource, SB: ReadSource>(
+    src_a: &mut SA,
+    src_b: &mut SB,
     out: &mut Box<dyn Write>,
-    al_a: &mut Box<dyn Write>,
-    ri_a: &mut Box<dyn Write>,
-    al_b: &mut Box<dyn Write>,
-    ri_b: &mut Box<dyn Write>,
-    header_cols: &[&str],
     mut parquet: Option<&mut ComparisonParquetWriter<fs::File>>,
     allow_id_mismatch: bool,
+    mismatch_hint: &str,
     label_a: &str,
     label_b: &str,
     summary: &mut CompareSummary,
     diff_acc: &mut Option<AlnDiffAccumulator>,
 ) -> Result<(u64, u64, u64)> {
-    let mut pending_a = pull(groups_a, al_a, ri_a)?;
-    let mut pending_b = pull(groups_b, al_b, ri_b)?;
+    let cols_a = src_a.columns();
+    let cols_b = src_b.columns();
+    let mut pending_a = src_a.next_read()?;
+    let mut pending_b = src_b.next_read()?;
     let mut n_matched: u64 = 0;
     let mut n_a_only: u64 = 0;
     let mut n_b_only: u64 = 0;
@@ -567,14 +618,14 @@ fn run_merge<R: BufRead>(
             (Some(ra), None) => {
                 if !allow_id_mismatch {
                     bail!(
-                        "PAF A has more reads than PAF B (B exhausted after {n_matched} \
-                         matched; next unmatched A read is {:?}).",
-                        ra.read_name
+                        "Input A has more reads than input B (B exhausted after {n_matched} \
+                         matched; next unmatched A read is {:?}).{mismatch_hint}",
+                        ra.name
                     );
                 }
                 n_a_only += 1; // ra was already pulled (tables written)
                 summary.note_a_only_id();
-                while pull(groups_a, al_a, ri_a)?.is_some() {
+                while src_a.next_read()?.is_some() {
                     n_a_only += 1;
                     summary.note_a_only_id();
                 }
@@ -583,14 +634,14 @@ fn run_merge<R: BufRead>(
             (None, Some(rb)) => {
                 if !allow_id_mismatch {
                     bail!(
-                        "PAF B has more reads than PAF A (A exhausted after {n_matched} \
-                         matched; next unmatched B read is {:?}).",
-                        rb.read_name
+                        "Input B has more reads than input A (A exhausted after {n_matched} \
+                         matched; next unmatched B read is {:?}).{mismatch_hint}",
+                        rb.name
                     );
                 }
                 n_b_only += 1;
                 summary.note_b_only_id();
-                while pull(groups_b, al_b, ri_b)?.is_some() {
+                while src_b.next_read()?.is_some() {
                     n_b_only += 1;
                     summary.note_b_only_id();
                 }
@@ -598,13 +649,11 @@ fn run_merge<R: BufRead>(
             }
 
             (Some(ra), Some(rb)) => {
-                if ra.read_name == rb.read_name {
-                    let line_a = readinfo_line(&ra)?;
-                    let line_b = readinfo_line(&rb)?;
+                if ra.name == rb.name {
                     let map_a: HashMap<&str, &str> =
-                        header_cols.iter().copied().zip(line_a.split('\t')).collect();
+                        cols_a.iter().map(String::as_str).zip(ra.line.split('\t')).collect();
                     let map_b: HashMap<&str, &str> =
-                        header_cols.iter().copied().zip(line_b.split('\t')).collect();
+                        cols_b.iter().map(String::as_str).zip(rb.line.split('\t')).collect();
 
                     // One pair of accessor closures, shared by the summary classifier,
                     // the row emitter, and (when active) the fused find-aln-diff core
@@ -614,13 +663,13 @@ fn run_merge<R: BufRead>(
                     let base = classify(&get_a, &get_b);
                     summary.observe(&base);
                     if let Some(acc) = diff_acc.as_mut() {
-                        acc.observe_row(&ra.read_name, get_a, get_b, &base)?;
+                        acc.observe_row(&ra.name, get_a, get_b, &base)?;
                     }
 
                     // One construction, both writers — so the TSV and the Parquet
                     // can never disagree about a row.
                     let row = ComparisonRow::build(
-                        &ra.read_name, ra.read_len, label_a, label_b, get_a, get_b,
+                        &ra.name, ra.len, label_a, label_b, get_a, get_b,
                     );
                     row.write_tsv_row(out)?;
                     if let Some(pq) = parquet.as_deref_mut() {
@@ -631,25 +680,25 @@ fn run_merge<R: BufRead>(
                     if n_matched % 100_000 == 0 {
                         eprintln!("[INFO]   compared {n_matched} reads...");
                     }
-                    pending_a = pull(groups_a, al_a, ri_a)?;
-                    pending_b = pull(groups_b, al_b, ri_b)?;
+                    pending_a = src_a.next_read()?;
+                    pending_b = src_b.next_read()?;
                 } else if !allow_id_mismatch {
                     bail!(
-                        "read-name mismatch at read #{}: A has {:?} but B has {:?}.",
+                        "read-name mismatch at read #{}: A has {:?} but B has {:?}.{mismatch_hint}",
                         n_matched + 1,
-                        ra.read_name,
-                        rb.read_name
+                        ra.name,
+                        rb.name
                     );
-                } else if ra.read_name < rb.read_name {
+                } else if ra.name < rb.name {
                     n_a_only += 1;
                     summary.note_a_only_id();
                     pending_b = Some(rb); // keep B; advance A
-                    pending_a = pull(groups_a, al_a, ri_a)?;
+                    pending_a = src_a.next_read()?;
                 } else {
                     n_b_only += 1;
                     summary.note_b_only_id();
                     pending_a = Some(ra); // keep A; advance B
-                    pending_b = pull(groups_b, al_b, ri_b)?;
+                    pending_b = src_b.next_read()?;
                 }
             }
         }

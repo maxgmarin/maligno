@@ -99,10 +99,9 @@ pub enum DiffSpace {
 /// space, and the genomic regions where they cluster.
 #[derive(clap::Args, Debug)]
 pub struct FindAlnDiffArgs {
-    /// Comparison table from `compare` / `toolkit merge-readinfo`:
-    /// TSV (`.gz` ok; `-` = stdin) or Parquet (`--format parquet` / `-o
-    /// x.parquet`). See `--input-format`.
-    #[arg(short = 'i', long = "input", value_name = "compare.tsv|compare.parquet")]
+    /// Alignment comparison table (.parquet or .tsv[.gz]; `-` reads TSV from stdin).
+    /// See `--input-format`.
+    #[arg(short = 'i', long = "input", value_name = "compare.parquet|compare.tsv[.gz]")]
     input: String,
 
     /// Input serialization. `auto` (default) selects Parquet for a

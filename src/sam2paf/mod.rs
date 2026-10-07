@@ -4,8 +4,10 @@
 //! paftools.MGM.js. Reads a SAM or BAM file (or SAM on stdin) and writes PAF records to
 //! stdout. Output is byte-for-byte compatible with paftools.js sam2paf.
 //!
-//! This is a utility subcommand intended for use *before* the main pipeline:
-//!   SAM ──sam2paf──▶ PAF ──paf2alninfo──▶ alninfo ──readinfo──▶ readinfo ──compare──▶ compare
+//! A standalone utility; `compare` also runs this converter internally on SAM/BAM
+//! inputs:
+//!   SAM/BAM ──sam2paf──▶ PAF ──compare──▶ comparison table
+//!   SAM/BAM ──sam2paf──▶ PAF ──toolkit paf2tables──▶ alninfo / readinfo
 
 mod cigar;
 pub(crate) mod convert;
