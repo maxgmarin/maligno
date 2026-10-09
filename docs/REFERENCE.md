@@ -63,7 +63,8 @@ Either way, the comparison table can then be analysed further with
 `toolkit summary`, `toolkit find-aln-diff` and `toolkit query-junction-diff`.
 
 **Input and output conventions.** Inputs and outputs ending in `.gz` are
-read and written as gzip. Most commands accept `-` for stdin/stdout. The
+read and written as gzip; `.gz` inputs may be single-member gzip or
+multi-member (bgzip, pigz). Most commands accept `-` for stdin/stdout. The
 exceptions are `compare`'s `-a`/`-b` (real file paths only), Parquet inputs
 (real file paths only), and `toolkit query-junction-diff` (Parquet only).
 
