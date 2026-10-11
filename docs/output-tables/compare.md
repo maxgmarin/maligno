@@ -1,6 +1,6 @@
 # `compare` table
 
-`{prefix}.compare.tsv.gz` and/or `{prefix}.compare.parquet` — one row per
+`{prefix}.compare.parquet` (default) and/or `{prefix}.compare.tsv.gz` — one row per
 read, 100 columns: both sides' representative-alignment stats plus a computed
 A-vs-B comparison block. This is the **primary output** of `compare` (and of
 `toolkit merge-readinfo`, which produces the identical table from

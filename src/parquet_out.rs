@@ -1,6 +1,6 @@
 //! Parquet output for the comparison table.
 //!
-//! Selected by `compare --format tsv|parquet|both` (default `both`), and by
+//! Selected by `compare --format tsv|parquet|both` (default `parquet`), and by
 //! `toolkit merge-readinfo -o x.parquet`, which picks Parquet from
 //! the extension.
 //!
@@ -374,18 +374,20 @@ impl<W: Write + Send> ComparisonParquetWriter<W> {
 /// `error: invalid value 'xml' for '--format <FORMAT>' [possible values: tsv,
 /// parquet, both]`.
 ///
-/// The default is `both` for backward compatibility: existing scripts expect
-/// the gzipped TSV. `find-aln-diff` and `toolkit summary` can read
-/// either format (`--input-format`), so a Parquet-only run works standalone
-/// with both of them.
+/// The `#[default]` variant (`parquet`) is the single source of truth for the
+/// CLI default: `compare`'s `--format` uses a bare `default_value_t`, which
+/// takes `OutputFormat::default()`. `find-aln-diff`, `toolkit summary` and
+/// `toolkit query-junction-diff` all read Parquet, so a Parquet-only run works
+/// standalone with each of them; pass `--format tsv` (or `both`) for the
+/// gzipped TSV.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub(crate) enum OutputFormat {
     /// Gzipped TSV only.
     Tsv,
     /// Parquet only.
+    #[default]
     Parquet,
     /// Both TSV and Parquet.
-    #[default]
     Both,
 }
 
@@ -782,9 +784,8 @@ mod tests {
         assert!(OutputFormat::Parquet.writes_parquet());
         assert!(OutputFormat::Both.writes_tsv());
         assert!(OutputFormat::Both.writes_parquet());
-        // `both` is the default for backward compatibility; see the enum's doc
-        // comment.
-        assert_eq!(OutputFormat::default(), OutputFormat::Both);
+        // `parquet` is the default; `compare --format` takes it from here.
+        assert_eq!(OutputFormat::default(), OutputFormat::Parquet);
     }
 
     #[test]

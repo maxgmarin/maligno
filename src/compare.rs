@@ -1,6 +1,6 @@
 //! The primary `compare` command: an on-rails pipeline that takes two alignment
 //! files (PAF, SAM or BAM) and
-//! produces, in one invocation, the per-read comparison table plus (optionally)
+//! produces the per-read alignment comparison table plus (optionally)
 //! the per-set alninfo + readinfo tables.
 //!
 //! It owns its preconditions rather than trusting the user:
@@ -99,29 +99,26 @@ impl SamRecords {
 
 #[derive(clap::Args, Debug)]
 pub struct CompareArgs {
-    /// Alignments for dataset A: PAF ('.gz' auto-decompressed), SAM or BAM
-    /// (format auto-detected; CRAM is not supported).
+    /// Alignments for dataset A
     #[arg(short = 'a', long = "aln-a", value_name = "a.paf[.gz]|a.sam|a.bam",
           value_parser = require_aln_path)]
     aln_a: String,
 
-    /// Alignments for dataset B: PAF ('.gz' auto-decompressed), SAM or BAM
-    /// (format auto-detected; CRAM is not supported).
+    /// Alignments for dataset B
     #[arg(short = 'b', long = "aln-b", value_name = "b.paf[.gz]|b.sam|b.bam",
           value_parser = require_aln_path)]
     aln_b: String,
 
-    /// SAM/BAM inputs only: which records to convert to PAF [default: primary-supp].
-    /// Unmapped reads are always kept.
-    #[arg(long = "sam-records", value_enum, value_name = "WHICH")]
-    sam_records: Option<SamRecords>,
-
-    /// Name for dataset A, recorded in the alignment comparison table's `Label_A` column.
+    /// Name for dataset A
+    /// 
+    /// recorded in the alignment comparison table's `Label_A` column.
     #[arg(long = "label-a", value_name = "LABEL", default_value = "SetA",
           value_parser = validate_set_label)]
     label_a: String,
 
-    /// Name for dataset B, recorded in the alignment comparison table's `Label_B` column.
+    /// Name for dataset B
+    /// 
+    /// recorded in the alignment comparison table's `Label_B` column.
     #[arg(long = "label-b", value_name = "LABEL", default_value = "SetB",
           value_parser = validate_set_label)]
     label_b: String,
@@ -135,16 +132,16 @@ pub struct CompareArgs {
     prefix: String,
 
     /// Output format for the alignment comparison table.
-    #[arg(long = "format", value_enum, default_value_t = OutputFormat::Both)]
+    #[arg(long = "format", value_enum, default_value_t)]
     format: OutputFormat,
 
     /// Compare the shared intersection of aligned sequences instead of erroring when the two inputs do
-    /// not carry the exact same "Query_Name" set.
+    /// not have the same sequences.
     #[arg(long = "allow-id-mismatch")]
     allow_id_mismatch: bool,
 
-    /// Skip the internal sort: assume both inputs already contain the same reads,
-    /// grouped by "Query_Name" and in the same relative order.
+    /// Skip the internal sort: assume both inputs already contain the same sequence IDs in the same relative order.
+    /// 
     /// Not combinable with --allow-id-mismatch or --keep-sorted-paf.
     #[arg(long = "presorted", conflicts_with_all = ["allow_id_mismatch", "keep_sorted_paf"])]
     presorted: bool,
@@ -173,6 +170,10 @@ pub struct CompareArgs {
     #[arg(long = "keep-sorted-paf")]
     keep_sorted_paf: bool,
 
+    /// If SAM/BAM inputs are provided, determines which SAM records to convert to PAF [default: primary-supp].
+    #[arg(long = "sam-records-to-convert", value_enum, value_name = "WHICH")]
+    sam_records: Option<SamRecords>,
+
     /// Skip the differing-reads + genomic region tables that `compare` writes
     /// by default.
     #[arg(long = "skip-find-aln-diff")]
@@ -181,8 +182,7 @@ pub struct CompareArgs {
 
 pub fn run(args: &CompareArgs) -> Result<()> {
     // ── Step 0: setup ─────────────────────────────────────────────────────────
-    // Distinct labels are required: they name the per-set output files, so equal
-    // labels would silently overwrite A's alninfo/readinfo with B's.
+    // Distinct labels are required for sets A and B
     if args.label_a == args.label_b {
         bail!(
             "--label-a and --label-b are both '{}' — they must differ (they name \

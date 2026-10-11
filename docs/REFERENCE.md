@@ -40,7 +40,7 @@ There are two ways to produce the comparison table, and both give the
 they carry the same reads, and writes a results directory.
 
 ```
-  A.paf|sam|bam ─┐                                  {prefix}.compare.tsv.gz / .parquet
+  A.paf|sam|bam ─┐                                  {prefix}.compare.parquet (and/or .tsv.gz)
                  ├─ compare (sort → verify → compare) ─▶  {prefix}.compare.summary.tsv
   B.paf|sam|bam ─┘                                  {prefix}.query_diff_reads.tsv.gz
                                                     {prefix}.query_diff_regions.{A,B}.bed.gz
@@ -134,16 +134,17 @@ Written to `--outdir`, named by `--prefix`:
 
 | File | Written | Spec |
 |---|---|---|
-| `{prefix}.compare.tsv.gz` | by default (`--format tsv` or `both`) | [compare.md](output-tables/compare.md) |
 | `{prefix}.compare.parquet` | by default (`--format parquet` or `both`) | [compare.md](output-tables/compare.md) |
+| `{prefix}.compare.tsv.gz` | with `--format tsv` or `both` | [compare.md](output-tables/compare.md) |
 | `{prefix}.compare.summary.tsv` | always | [compare-summary.md](output-tables/compare-summary.md) |
 | `{prefix}.query_diff_reads.tsv.gz` | by default | [query-diff-reads.md](output-tables/query-diff-reads.md) |
 | `{prefix}.query_diff_regions.A.bed.gz`, `.B.bed.gz` | by default | [query-diff-regions.md](output-tables/query-diff-regions.md) |
 | `{prefix}.{label_a}.alninfo.tsv.gz`, `{prefix}.{label_b}.alninfo.tsv.gz` | with `--emit-alninfo` | [alninfo.md](output-tables/alninfo.md) |
 | `{prefix}.{label_a}.readinfo.tsv.gz`, `{prefix}.{label_b}.readinfo.tsv.gz` | with `--emit-readinfo` | [readinfo.md](output-tables/readinfo.md) |
 
-- `--format tsv|parquet|both` (default `both`) chooses the comparison table's
-  serialization.
+- `--format parquet|tsv|both` (default `parquet`) chooses the comparison table's
+  serialization. Pass `--format tsv` or `both` for the gzipped TSV, e.g. for
+  the shell recipes in [Working with the output tables](#working-with-the-output-tables).
 - The differing-reads and region tables are `toolkit find-aln-diff`'s output
   at its default settings (`--space query --compare-by all`). They are
   byte-identical to running that command on the comparison table.
@@ -192,7 +193,7 @@ occasionally resolve differently (a few reads per million in testing).
 | `--sam-records` | SAM/BAM only: `primary-supp` (default), `primary`, or `all` |
 | `--label-a`, `--label-b` | set names (default `SetA` / `SetB`) |
 | `-o`/`--outdir`, `-p`/`--prefix` | output directory and filename prefix |
-| `--format` | comparison table as `tsv`, `parquet`, or `both` (default) |
+| `--format` | comparison table as `parquet` (default), `tsv`, or `both` |
 | `--allow-id-mismatch` | compare the shared reads instead of erroring when the read-name sets differ |
 | `--presorted` | skip the sort; inputs must already be in the same read order |
 | `--emit-alninfo`, `--emit-readinfo` | also write the per-set alninfo / readinfo tables |
@@ -620,10 +621,10 @@ side's own `TargetChr`, so junctions on different contigs never match.
 
 ## TSV and Parquet
 
-The comparison table can be written as gzipped TSV, Parquet, or both, with the
-same 100 columns, names and order (`pd.read_parquet` is a drop-in for
-`pd.read_csv`). Parquet is much faster to read when you only need a few
-columns. `toolkit summary` and `toolkit find-aln-diff` read either form;
+The comparison table can be written as Parquet (`compare`'s default), gzipped
+TSV, or both, with the same 100 columns, names and order (`pd.read_parquet` is
+a drop-in for `pd.read_csv`). Parquet is much faster to read when you only need
+a few columns. `toolkit summary` and `toolkit find-aln-diff` read either form;
 `toolkit query-junction-diff` reads Parquet only.
 
 **Nulls in Parquet mean "undefined", nothing else.** A Parquet null appears
@@ -645,6 +646,9 @@ This only matters for read names or labels containing those characters.
 ---
 
 ## Working with the output tables
+
+These recipes read the gzipped TSV comparison table, so run `compare` with
+`--format tsv` or `--format both`.
 
 **Select columns by name, not number.** Column positions can change when
 columns are added, so look them up from the header. Two small shell helpers:

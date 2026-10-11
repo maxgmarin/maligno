@@ -60,7 +60,6 @@ This will write a results directory with the alignment comparison table and
 the differing reads and the genomic regions where they cluster :
 
 ```
-test_data/test_results/Splice_vs_SpliceHQ.compare.tsv.gz
 test_data/test_results/Splice_vs_SpliceHQ.compare.parquet
 test_data/test_results/Splice_vs_SpliceHQ.compare.summary.tsv
 test_data/test_results/Splice_vs_SpliceHQ.query_diff_reads.tsv.gz
@@ -97,7 +96,7 @@ It then runs the whole pipeline in four main steps:
    chosen by alignment score: `ms` tag, then `AS` tag, then alignment `MQ`.
 4. **Compare the representative alignment across sets A and B**. The selected
    alignments for each read are systematically compared and the results are
-   written to a final `compare.tsv` that keeps track of each alignment's info
+   written to a final comparison table (Parquet by default) that keeps track of each alignment's info
    and the differences between them.
 
 #### Options
@@ -114,7 +113,7 @@ It then runs the whole pipeline in four main steps:
 | `--sort-tmp-dir` | directory for the sort's temporary files (default: `--outdir`) |
 | `--presorted` | skip the sorting step; assumes the inputs already hold the same reads in the same order (for SAM/BAM: name-sort both with `samtools sort -n`; coordinate-sorted BAMs are rejected). Sorting differently than maligno can cause small differences in the selected representative alignment |
 | `--allow-id-mismatch` | compare the shared intersection instead of erroring when read-ID sets differ |
-| `--format` | which serialization(s) of the comparison table: `tsv`, `parquet`, or `both` (default) |
+| `--format` | which serialization(s) of the comparison table: `parquet` (default), `tsv` (gzipped), or `both` |
 | `--emit-alninfo`, `--emit-readinfo` | write those per-set tables (off by default) |
 | `--keep-sorted-paf` | keep the intermediate sorted PAFs |
 | `--skip-find-aln-diff` | don't also emit `find-aln-diff`'s default-mode output (differing reads + region tables) |
@@ -130,8 +129,8 @@ A `compare` run can write the following files in the user defined output directo
 |------|------|----------|
 | `{prefix}.{label}.alninfo.tsv.gz` | 36 | **per-alignment** table: one row per PAF alignment (every alignment, per set); opt-in via `--emit-alninfo` |
 | `{prefix}.{label}.readinfo.tsv.gz` | 36 | **per-read** table: the chosen best alignment for each read (per set); opt-in via `--emit-readinfo` |
-| `{prefix}.compare.tsv.gz` | 100 | the **comparison** table (unless `--format parquet`) |
-| `{prefix}.compare.parquet` | 100 | the same table as Parquet (unless `--format tsv`) |
+| `{prefix}.compare.parquet` | 100 | the **comparison** table (unless `--format tsv`) |
+| `{prefix}.compare.tsv.gz` | 100 | the same table as gzipped TSV (only with `--format tsv` or `both`) |
 | `{prefix}.compare.summary.tsv` | 2 | **aggregate summary statistics** (see below) |
 | `{prefix}.query_diff_reads.tsv.gz` | 10 | table of all reads with difference in alignment between set A and B  |
 | `{prefix}.query_diff_regions.{A,B}.bed.gz` | 10 | genomic regions where differing reads cluster, per set |
@@ -167,12 +166,14 @@ If run from the repo root, the outputs will go to `test_data/test_results/`:
 ```bash
 # Full comparison (sort → verify read-IDs → comparison table), plus the
 # opt-in per-set alninfo/readinfo tables (--emit-alninfo/--emit-readinfo) so
-# this walkthrough can sanity-check all three table shapes below.
+# this walkthrough can sanity-check all three table shapes below. The
+# comparison table is Parquet-only by default; --format both also writes the
+# gzipped TSV that the zcat/awk checks below read.
 maligno compare \
   -a test_data/Splice.AlnToHG38.PriAln.paf.gz   --label-a Splice \
   -b test_data/SpliceHQ.AlnToHG38.PriAln.paf.gz --label-b SpliceHQ \
   -o test_data/test_results/ --prefix Splice_vs_SpliceHQ \
-  --emit-alninfo --emit-readinfo
+  --emit-alninfo --emit-readinfo --format both
 
 # Inspect a comparison header (column number → name).
 zcat < test_data/test_results/Splice_vs_SpliceHQ.compare.tsv.gz | head -1 | tr '\t' '\n' | nl
@@ -208,7 +209,7 @@ The full manual lives in **[`docs/REFERENCE.md`](docs/REFERENCE.md)**:
 ## Extra details for the output tables
 
 
-#### The alignment comparison table (`{prefix}.compare.tsv.gz` or `{prefix}.compare.parquet`)
+#### The alignment comparison table (`{prefix}.compare.parquet` or `{prefix}.compare.tsv.gz`)
 
 One row per read, 100 columns: the representative alignment's stats for set A and
 for set B (suffixed `_A` / `_B`), plus a block of columns comparing how those two
@@ -246,7 +247,7 @@ To get the same summary from an existing comparison table, use
 **`toolkit summary`**:
 
 ```bash
-maligno toolkit summary -i AvsB.compare.tsv.gz -o AvsB.compare.summary.tsv
+maligno toolkit summary -i AvsB.compare.parquet -o AvsB.compare.summary.tsv
 ```
 
 Full definitions are in the [reference](docs/REFERENCE.md#classification).
