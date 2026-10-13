@@ -104,7 +104,7 @@ It then runs the whole pipeline in four main steps:
 | Flag | Purpose |
 |------|---------|
 | `-a`/`--aln-a`, `-b`/`--aln-b` | input alignments for set A / B: PAF (`.paf[.gz]`), SAM or BAM |
-| `--sam-records` | SAM/BAM inputs only: `primary-supp` (default, = `sam2paf -p`), `primary` (= `-P`), or `all`; unmapped reads are always kept. This also decides which alignment types the `Num_Aln_tpP`/`Num_Aln_tpS` counts can see (the default drops secondaries, so `Num_Aln_tpS` is `0`) |
+| `--sam-records-to-convert` | SAM/BAM inputs only: `primary-supp` (default, = `sam2paf -p`), `primary` (= `-P`), or `all`; unmapped reads are always kept. This also decides which alignment types the `Num_Aln_tpP`/`Num_Aln_tpS` counts can see (the default drops secondaries, so `Num_Aln_tpS` is `0`) |
 | `--label-a`, `--label-b` | names for each set, used in filenames and recorded in the comparison table's `Label_A` / `Label_B` columns |
 | `-o`, `--outdir` | output directory |
 | `-p`, `--prefix` | filename prefix for all outputs |

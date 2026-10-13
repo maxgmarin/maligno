@@ -244,7 +244,7 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         }
     }
     if fmt_a.is_paf() && fmt_b.is_paf() && args.sam_records.is_some() {
-        eprintln!("  WARNING: --sam-records has no effect: both inputs are PAF.");
+        eprintln!("  WARNING: --sam-records-to-convert has no effect: both inputs are PAF.");
     }
 
     // Inputs fed to the compare pass: the freshly sorted temp files by default,

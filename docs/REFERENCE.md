@@ -93,10 +93,10 @@ can differ (e.g. BAM vs PAF). CRAM is not supported. Any BAM sort order works.
 
 SAM/BAM inputs are converted to PAF on the fly with the same code as
 `maligno sam2paf -U` (no intermediate file is written), so results are identical
-to converting first. Unmapped reads are always kept. `--sam-records` picks
-which records are converted:
+to converting first. Unmapped reads are always kept. `--sam-records-to-convert`
+picks which records are converted:
 
-| `--sam-records` | Records kept | Equivalent |
+| `--sam-records-to-convert` | Records kept | Equivalent |
 |---|---|---|
 | `primary-supp` (default) | primary + supplementary; skip secondary | `sam2paf -p -U` |
 | `primary` | primary only | `sam2paf -P -U` |
@@ -190,7 +190,7 @@ occasionally resolve differently (a few reads per million in testing).
 | Flag | Purpose |
 |---|---|
 | `-a`/`--aln-a`, `-b`/`--aln-b` | input alignments for set A / B (PAF, SAM or BAM) |
-| `--sam-records` | SAM/BAM only: `primary-supp` (default), `primary`, or `all` |
+| `--sam-records-to-convert` | SAM/BAM only: `primary-supp` (default), `primary`, or `all` |
 | `--label-a`, `--label-b` | set names (default `SetA` / `SetB`) |
 | `-o`/`--outdir`, `-p`/`--prefix` | output directory and filename prefix |
 | `--format` | comparison table as `parquet` (default), `tsv`, or `both` |

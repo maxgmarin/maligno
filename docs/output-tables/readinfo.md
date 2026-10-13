@@ -77,7 +77,8 @@ aggregated over the *whole* group.
   - The representative alignment, `Num_Aln` and `Num_Aln_MaxScore` don't depend
     on these counts.
   - **Counts reflect the input as filtered.** On SAM/BAM input, `compare`'s
-    default `--sam-records primary-supp` (`sam2paf -p`) drops secondary records,
-    so `tpS` is always `0` unless you pass `--sam-records all`;
-    `--sam-records primary` (`-P`) also drops supplementary records, so `tpP <= 1`.
+    default `--sam-records-to-convert primary-supp` (`sam2paf -p`) drops
+    secondary records, so `tpS` is always `0` unless you pass
+    `--sam-records-to-convert all`; `--sam-records-to-convert primary` (`-P`)
+    also drops supplementary records, so `tpP <= 1`.
     For minimap2 PAF, secondaries appear only if minimap2 emitted them.
