@@ -36,8 +36,9 @@
 //! still tallied in the summary).
 //!
 //! Outputs (to `--outdir`, `--prefix`-named):
-//!   1. `{prefix}.query_junction_diff.summary.tsv`                    — parse-time
-//!      funnel counts (always uncompressed).
+//!   1. `{prefix}.query_junction_diff.summary.tsv`                    — read-selection
+//!      funnel counts, then distinct-junction counts per side (unique, shared,
+//!      only-A/only-B, unmatched) from pass 2 (always uncompressed).
 //!   2. `{prefix}.query_junction_diff.per_read_per_junc_info.tsv.gz` — one row per
 //!      reconstructed junction per side per differing read (always gzipped).
 //!   3. `{prefix}.query_junction_diff.unmatched_junctions.A.tsv.gz`  — distinct
@@ -56,7 +57,8 @@
 //! never needs to know a junction's query position. This is why `--input`
 //! must be Parquet: pass 2 re-reads the same file, which needs a real,
 //! seekable, column-project-able source (not `stdin`, and much cheaper than
-//! a second full TSV parse).
+//! a second full TSV parse). The same pass also collects every distinct
+//! junction per side (`UniqueJunctions`) for the summary — no extra read.
 
 mod reconstruct;
 mod rollup;
@@ -71,10 +73,14 @@ use anyhow::{bail, Context, Result};
 
 use crate::compare_summary::{labels_from_row, require_ab_schema};
 use crate::io_utils::open_output;
+use crate::junction::parse_genomic_junction_str;
 use crate::table_input::{open_table, InputFormat};
 
 use reconstruct::{build_junction_records, build_side_junctions, side_position_sets, write_per_read_row};
-use rollup::{accumulate_side_total, accumulate_unmatched, write_unmatched_table, TotalsAcc, UnmatchedAcc};
+use rollup::{
+    accumulate_side_total, accumulate_unmatched, unique_junction_counts, write_unmatched_table, TotalsAcc,
+    UniqueJunctions, UnmatchedAcc,
+};
 use summary::Summary;
 
 /// A `TargetChr` value indicates an unmapped read when it is empty or `"*"`
@@ -240,13 +246,16 @@ pub fn run(args: &QueryJunctionDiffArgs) -> Result<()> {
     }
     per_read_w.flush()?;
 
-    // ── Pass 2: total occurrence counts ─────────────────────────────────────
+    // ── Pass 2: total occurrence counts + distinct junctions ────────────────
     // Seed the "junctions of interest" from pass 1's own unmatched rollups —
     // no need to write/re-read anything, they're already in memory. Then
     // re-scan the whole table once more, narrowly column-projected, tallying
-    // how many reads *total* carry each already-flagged junction.
+    // how many reads *total* carry each already-flagged junction, and
+    // collecting every distinct junction per side for the summary.
     let mut totals_a: TotalsAcc = unmatched_acc_a.keys().map(|k| (k.clone(), 0u64)).collect();
     let mut totals_b: TotalsAcc = unmatched_acc_b.keys().map(|k| (k.clone(), 0u64)).collect();
+    let mut unique_a = UniqueJunctions::default();
+    let mut unique_b = UniqueJunctions::default();
 
     const TOTALS_WANTED: [&str; 6] =
         ["TargetChr_A", "TargetChr_B", "genomic_junctions_A", "genomic_junctions_B", "Strand_A", "Strand_B"];
@@ -271,21 +280,37 @@ pub fn run(args: &QueryJunctionDiffArgs) -> Result<()> {
     while let Some(fields) = totals_source.next_row()? {
         let get = |i: usize| -> &str { fields.get(i).map(String::as_str).unwrap_or("") };
 
-        let strand_a = get(strand_a_idx).chars().next().unwrap_or('.');
-        accumulate_side_total(get(chrom_a_idx), strand_a, get(gj_a_idx), &mut totals_a);
+        let chrom_a = get(chrom_a_idx);
+        if is_mapped(chrom_a) {
+            let strand_a = get(strand_a_idx).chars().next().unwrap_or('.');
+            let juncs_a = parse_genomic_junction_str(get(gj_a_idx));
+            accumulate_side_total(chrom_a, strand_a, &juncs_a, &mut totals_a);
+            unique_a.observe(chrom_a, strand_a, &juncs_a);
+        }
 
-        let strand_b = get(strand_b_idx).chars().next().unwrap_or('.');
-        accumulate_side_total(get(chrom_b_idx), strand_b, get(gj_b_idx), &mut totals_b);
+        let chrom_b = get(chrom_b_idx);
+        if is_mapped(chrom_b) {
+            let strand_b = get(strand_b_idx).chars().next().unwrap_or('.');
+            let juncs_b = parse_genomic_junction_str(get(gj_b_idx));
+            accumulate_side_total(chrom_b, strand_b, &juncs_b, &mut totals_b);
+            unique_b.observe(chrom_b, strand_b, &juncs_b);
+        }
     }
 
     write_unmatched_table(&unmatched_a_out, &unmatched_acc_a, &totals_a)?;
     write_unmatched_table(&unmatched_b_out, &unmatched_acc_b, &totals_b)?;
+    let unique = unique_junction_counts(&unique_a, &unique_b);
+    summary.set_junction_counts(&unique, unmatched_acc_a.len() as u64, unmatched_acc_b.len() as u64);
     summary.write_tsv(&summary_out, &label_a, &label_b)?;
 
     eprintln!(
         "Query junction diff (A={label_a}, B={label_b}): {} of {} reads had differing query junctions",
         summary.n_query_junctions_different(),
         summary.n_total()
+    );
+    eprintln!(
+        "  unique junctions: A={}, B={} ({} shared, {} only in A, {} only in B)",
+        unique.n_a, unique.n_b, unique.n_shared, unique.n_only_a, unique.n_only_b
     );
     eprintln!("Outputs in {}:", args.outdir);
     eprintln!("  {summary_out}");

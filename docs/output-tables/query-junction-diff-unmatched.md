@@ -41,6 +41,10 @@ same junction on this side.
   whose total is much larger than its unmatched count is common and
   well-supported elsewhere; a junction whose total equals its unmatched count
   never shows up anywhere else in the dataset.
+- For scale, the number of rows in each file and the total number of distinct
+  junctions per side are in
+  [`query_junction_diff.summary.tsv`](query-junction-diff-summary.md)
+  (`n_unmatched_junctions_{A,B}` and `n_unique_junctions_{A,B}`).
 - Side is fixed by the filename, not a column — "A unsupported by B" and "B
   unsupported by A" at the same coordinates are different, non-interchangeable
   events, so they are never merged into one row.

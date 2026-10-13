@@ -2,6 +2,10 @@
 //! report each exact `(chrom, start, end, strand)` locus unsupported by the
 //! other side, plus (pass 2, see `mod.rs`) how many reads *total*, across the
 //! whole comparison table, carry that same junction on this side.
+//!
+//! Pass 2 also collects every distinct junction seen on each side
+//! (`UniqueJunctions`), for the summary's unique / shared / only-A / only-B
+//! junction counts.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
@@ -9,7 +13,6 @@ use std::io::Write;
 use anyhow::Result;
 
 use crate::io_utils::open_output;
-use crate::junction::parse_genomic_junction_str;
 
 use super::reconstruct::JunctionRecord;
 
@@ -37,23 +40,87 @@ pub(super) fn accumulate_unmatched(acc: &mut UnmatchedAcc, records: &[JunctionRe
     }
 }
 
-/// Pass 2: for one comparison-table row's one side, parse its
-/// genomic-junctions column, reattach `chrom` (dropped at serialization —
-/// see `parse_genomic_junction_str`'s doc comment), pair each junction with
-/// this row's own (whole-read) `strand`, and increment the running total for
-/// any junction that's a key in `totals` (i.e. one of the junctions already
-/// flagged by pass 1's `UnmatchedAcc`). Junctions not already in `totals` are
-/// ignored — this only ever counts occurrences of already-flagged junctions,
-/// never discovers new ones. Needs no `cs`-tag reconstruction: pure genomic
-/// set membership, unaffected by the `-`-strand query↔genomic pairing issue
-/// `reconstruct.rs` exists to solve, since this never needs a query position.
-pub(super) fn accumulate_side_total(chrom: &str, strand: char, genomic_junctions_str: &str, totals: &mut TotalsAcc) {
-    for (start, end) in parse_genomic_junction_str(genomic_junctions_str) {
+/// Pass 2: for one comparison-table row's one side, take its parsed
+/// genomic junctions (from `parse_genomic_junction_str`), reattach `chrom`
+/// (dropped at serialization — see that function's doc comment), pair each
+/// junction with this row's own (whole-read) `strand`, and increment the
+/// running total for any junction that's a key in `totals` (i.e. one of the
+/// junctions already flagged by pass 1's `UnmatchedAcc`). Junctions not
+/// already in `totals` are ignored — this only ever counts occurrences of
+/// already-flagged junctions, never discovers new ones. Needs no `cs`-tag
+/// reconstruction: pure genomic set membership, unaffected by the `-`-strand
+/// query↔genomic pairing issue `reconstruct.rs` exists to solve, since this
+/// never needs a query position.
+pub(super) fn accumulate_side_total(chrom: &str, strand: char, junctions: &[(u64, u64)], totals: &mut TotalsAcc) {
+    for &(start, end) in junctions {
         let key = (chrom.to_string(), start, end, strand);
         if let Some(count) = totals.get_mut(&key) {
             *count += 1;
         }
     }
+}
+
+/// Every distinct `(chrom, start, end, strand)` genomic junction seen on one
+/// side, across every row of the comparison table — same key as the
+/// unmatched tables (`strand` is the alignment's strand), so the counts line
+/// up with those files.
+///
+/// Two-level (chrom → set of `(start, end, strand)`) rather than one set keyed
+/// on the full tuple: the chrom string is looked up once per row instead of
+/// allocated once per junction, and each entry stays a fixed-size 24 bytes.
+/// Memory scales with the number of *distinct* junctions, not reads.
+#[derive(Default)]
+pub(super) struct UniqueJunctions(HashMap<String, HashSet<(u64, u64, char)>>);
+
+impl UniqueJunctions {
+    /// Add one row's one side: its chrom, alignment strand, and parsed
+    /// genomic junctions.
+    pub(super) fn observe(&mut self, chrom: &str, strand: char, junctions: &[(u64, u64)]) {
+        if junctions.is_empty() {
+            return;
+        }
+        if !self.0.contains_key(chrom) {
+            self.0.insert(chrom.to_string(), HashSet::new());
+        }
+        let set = self.0.get_mut(chrom).expect("inserted above");
+        for &(start, end) in junctions {
+            set.insert((start, end, strand));
+        }
+    }
+
+    pub(super) fn len(&self) -> u64 {
+        self.0.values().map(|s| s.len() as u64).sum()
+    }
+
+    /// How many of this side's distinct junctions also appear in `other`.
+    fn n_shared_with(&self, other: &UniqueJunctions) -> u64 {
+        let mut n = 0;
+        for (chrom, set) in &self.0 {
+            if let Some(other_set) = other.0.get(chrom) {
+                // Walk the smaller set, probe the larger.
+                let (small, large) = if set.len() <= other_set.len() { (set, other_set) } else { (other_set, set) };
+                n += small.iter().filter(|k| large.contains(k)).count() as u64;
+            }
+        }
+        n
+    }
+}
+
+/// Distinct-junction counts for the summary: per side, and split into shared
+/// vs only-one-side across the whole table.
+pub(super) struct UniqueJunctionCounts {
+    pub n_a: u64,
+    pub n_b: u64,
+    pub n_shared: u64,
+    pub n_only_a: u64,
+    pub n_only_b: u64,
+}
+
+pub(super) fn unique_junction_counts(a: &UniqueJunctions, b: &UniqueJunctions) -> UniqueJunctionCounts {
+    let n_a = a.len();
+    let n_b = b.len();
+    let n_shared = a.n_shared_with(b);
+    UniqueJunctionCounts { n_a, n_b, n_shared, n_only_a: n_a - n_shared, n_only_b: n_b - n_shared }
 }
 
 /// Write the unmatched-junction table with both counts: `acc`'s
@@ -89,10 +156,10 @@ mod tests {
         let mut totals: TotalsAcc = HashMap::new();
         totals.insert(("chr1".to_string(), 100, 250, '+'), 0);
 
-        accumulate_side_total("chr1", '+', "((100, 250),)", &mut totals);
+        accumulate_side_total("chr1", '+', &[(100, 250)], &mut totals);
         assert_eq!(totals[&("chr1".to_string(), 100, 250, '+')], 1);
 
-        accumulate_side_total("chr1", '+', "((100, 250),)", &mut totals);
+        accumulate_side_total("chr1", '+', &[(100, 250)], &mut totals);
         assert_eq!(totals[&("chr1".to_string(), 100, 250, '+')], 2);
     }
 
@@ -101,7 +168,7 @@ mod tests {
         let mut totals: TotalsAcc = HashMap::new();
         totals.insert(("chr1".to_string(), 100, 250, '+'), 0);
 
-        accumulate_side_total("chr1", '+', "((400, 800),)", &mut totals);
+        accumulate_side_total("chr1", '+', &[(400, 800)], &mut totals);
         assert_eq!(totals[&("chr1".to_string(), 100, 250, '+')], 0);
     }
 
@@ -110,7 +177,7 @@ mod tests {
         let mut totals: TotalsAcc = HashMap::new();
         totals.insert(("chr1".to_string(), 100, 250, '+'), 0);
 
-        accumulate_side_total("chr1", '-', "((100, 250),)", &mut totals);
+        accumulate_side_total("chr1", '-', &[(100, 250)], &mut totals);
         assert_eq!(totals[&("chr1".to_string(), 100, 250, '+')], 0);
     }
 
@@ -119,8 +186,42 @@ mod tests {
         let mut totals: TotalsAcc = HashMap::new();
         totals.insert(("chr1".to_string(), 100, 250, '+'), 0);
 
-        accumulate_side_total("chr2", '+', "((100, 250),)", &mut totals);
+        accumulate_side_total("chr2", '+', &[(100, 250)], &mut totals);
         assert_eq!(totals[&("chr1".to_string(), 100, 250, '+')], 0);
+    }
+
+    #[test]
+    fn unique_junctions_dedupes_across_rows() {
+        let mut u = UniqueJunctions::default();
+        u.observe("chr1", '+', &[(100, 250), (400, 800)]);
+        u.observe("chr1", '+', &[(100, 250)]);
+        u.observe("chr1", '+', &[]);
+        assert_eq!(u.len(), 2);
+    }
+
+    #[test]
+    fn unique_junctions_keys_on_chrom_and_strand() {
+        let mut u = UniqueJunctions::default();
+        u.observe("chr1", '+', &[(100, 250)]);
+        u.observe("chr1", '-', &[(100, 250)]);
+        u.observe("chr2", '+', &[(100, 250)]);
+        assert_eq!(u.len(), 3);
+    }
+
+    #[test]
+    fn unique_junction_counts_splits_shared_and_only() {
+        let mut a = UniqueJunctions::default();
+        a.observe("chr1", '+', &[(100, 250), (400, 800)]);
+        a.observe("chr2", '-', &[(10, 20)]);
+        let mut b = UniqueJunctions::default();
+        b.observe("chr1", '+', &[(100, 250), (900, 950)]);
+        b.observe("chr1", '-', &[(400, 800)]); // same coords, other strand: not shared
+        b.observe("chr3", '+', &[(5, 6)]);
+
+        let c = unique_junction_counts(&a, &b);
+        assert_eq!((c.n_a, c.n_b), (3, 4));
+        assert_eq!(c.n_shared, 1);
+        assert_eq!((c.n_only_a, c.n_only_b), (2, 3));
     }
 
     #[test]

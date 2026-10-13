@@ -489,7 +489,7 @@ definition. Every other read is still counted in the summary.
 
 | File | Contents |
 |---|---|
-| `{prefix}.query_junction_diff.summary.tsv` | counts of reads at each selection step; see [query-junction-diff-summary.md](output-tables/query-junction-diff-summary.md) |
+| `{prefix}.query_junction_diff.summary.tsv` | counts of reads at each selection step, then distinct junctions per side (unique, shared, only in A or B, unmatched); see [query-junction-diff-summary.md](output-tables/query-junction-diff-summary.md) |
 | `{prefix}.query_junction_diff.per_read_per_junc_info.tsv.gz` | one row per reconstructed junction, per side, per differing read; see [per-read-query-junction-diff.md](output-tables/per-read-query-junction-diff.md) |
 | `{prefix}.query_junction_diff.unmatched_junctions.A.tsv.gz` | distinct junctions found in A but unsupported in B, with the number of differing reads carrying each one and the number of reads in the whole table carrying it; see [query-junction-diff-unmatched.md](output-tables/query-junction-diff-unmatched.md) |
 | `{prefix}.query_junction_diff.unmatched_junctions.B.tsv.gz` | the same, for B unsupported in A |

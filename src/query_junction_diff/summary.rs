@@ -1,9 +1,12 @@
-//! Parse-time funnel counts for `query-junction-diff` — every row read from
-//! the input table lands in exactly one bucket.
+//! Summary counts for `query-junction-diff`: the read-selection funnel (every
+//! row read from the input table lands in exactly one bucket), then pass 2's
+//! distinct-junction counts.
 
 use anyhow::Result;
 
 use crate::io_utils::open_output;
+
+use super::rollup::UniqueJunctionCounts;
 
 #[derive(Default)]
 pub(super) struct Summary {
@@ -14,6 +17,13 @@ pub(super) struct Summary {
     n_query_junctions_different_aligned_both: u64,
     n_query_junctions_different_aligned_only_a: u64,
     n_query_junctions_different_aligned_only_b: u64,
+    n_unique_junctions_a: u64,
+    n_unique_junctions_b: u64,
+    n_unique_junctions_shared: u64,
+    n_unique_junctions_only_a: u64,
+    n_unique_junctions_only_b: u64,
+    n_unmatched_junctions_a: u64,
+    n_unmatched_junctions_b: u64,
 }
 
 impl Summary {
@@ -64,6 +74,18 @@ impl Summary {
         }
     }
 
+    /// Record pass 2's distinct-junction counts and the row counts of the two
+    /// unmatched-junction tables.
+    pub(super) fn set_junction_counts(&mut self, unique: &UniqueJunctionCounts, n_unmatched_a: u64, n_unmatched_b: u64) {
+        self.n_unique_junctions_a = unique.n_a;
+        self.n_unique_junctions_b = unique.n_b;
+        self.n_unique_junctions_shared = unique.n_shared;
+        self.n_unique_junctions_only_a = unique.n_only_a;
+        self.n_unique_junctions_only_b = unique.n_only_b;
+        self.n_unmatched_junctions_a = n_unmatched_a;
+        self.n_unmatched_junctions_b = n_unmatched_b;
+    }
+
     pub(super) fn n_query_junctions_different(&self) -> u64 {
         self.n_query_junctions_different_aligned_both
             + self.n_query_junctions_different_aligned_only_a
@@ -96,6 +118,13 @@ impl Summary {
                 "n_query_junctions_different_aligned_only_B".to_string(),
                 self.n_query_junctions_different_aligned_only_b,
             ),
+            ("n_unique_junctions_A".to_string(), self.n_unique_junctions_a),
+            ("n_unique_junctions_B".to_string(), self.n_unique_junctions_b),
+            ("n_unique_junctions_shared".to_string(), self.n_unique_junctions_shared),
+            ("n_unique_junctions_only_A".to_string(), self.n_unique_junctions_only_a),
+            ("n_unique_junctions_only_B".to_string(), self.n_unique_junctions_only_b),
+            ("n_unmatched_junctions_A".to_string(), self.n_unmatched_junctions_a),
+            ("n_unmatched_junctions_B".to_string(), self.n_unmatched_junctions_b),
         ]
     }
 
