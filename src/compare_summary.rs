@@ -516,7 +516,7 @@ pub(crate) fn labels_from_row(col_index: &HashMap<&str, usize>, fields: &[&str])
 
 pub fn run(args: &CompareSummaryArgs) -> Result<()> {
     // For a Parquet input, project down to just the 20 columns this command
-    // reads (of the comparison table's 100) — Parquet skips decoding the rest,
+    // reads (of the comparison table's 99) — Parquet skips decoding the rest,
     // which is where its per-column storage actually pays off.
     let wanted = wanted_columns(&[LABEL_A, LABEL_B], &CLASSIFY_SIDE_COLS);
     let wanted_refs: Vec<&str> = wanted.iter().map(String::as_str).collect();

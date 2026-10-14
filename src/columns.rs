@@ -270,7 +270,6 @@ pub(crate) const N_UNMATCHED_JUNCTIONS: Col = col("N_Unmatched_Junctions", U64);
 pub(crate) const N_JUNCTIONS_ONLY_A: Col = col("N_Junctions_OnlyA", U64);
 pub(crate) const N_JUNCTIONS_ONLY_B: Col = col("N_Junctions_OnlyB", U64);
 pub(crate) const JUNCTION_DISTANCE: Col = col("Junction_Distance", U64);
-pub(crate) const JUNC_DIST_V2: Col = col("Junc_Dist_V2", U64);
 pub(crate) const GENOMIC_N_MATCHED_JUNCTIONS: Col = col("Genomic_N_Matched_Junctions", U64);
 pub(crate) const GENOMIC_N_UNMATCHED_JUNCTIONS: Col = col("Genomic_N_Unmatched_Junctions", U64);
 pub(crate) const GENOMIC_N_JUNCTIONS_ONLY_A: Col = col("Genomic_N_Junctions_OnlyA", U64);
@@ -286,7 +285,7 @@ pub(crate) const GENOMIC_JUNCTIONS_ONLY_B: Col = col("Genomic_Junctions_OnlyB", 
 ///
 /// `AlignmentDiff::values()` and `write_tsv_row` both emit in this order; the
 /// Parquet round-trip test in `parquet_out.rs` checks them against each other.
-pub(crate) const COMPARE_DIFF_COLS: [Col; 30] = [
+pub(crate) const COMPARE_DIFF_COLS: [Col; 29] = [
     // Orientation & identity.
     STRAND_MATCH,
     SEQID_DIFF,
@@ -312,7 +311,6 @@ pub(crate) const COMPARE_DIFF_COLS: [Col; 30] = [
     N_JUNCTIONS_ONLY_A,
     N_JUNCTIONS_ONLY_B,
     JUNCTION_DISTANCE,
-    JUNC_DIST_V2,
     // Genomic-space junction set comparison.
     GENOMIC_N_MATCHED_JUNCTIONS,
     GENOMIC_N_UNMATCHED_JUNCTIONS,
@@ -474,7 +472,7 @@ mod tests {
     fn compare_header_is_keys_then_a_then_b_then_diff() {
         let h = compare_header();
         assert_eq!(h.len(), N_COMPARE_COLS);
-        assert_eq!(h.len(), 100);
+        assert_eq!(h.len(), 99);
         assert_eq!(h[4], sided(TARGET_CHR, SIDE_A));
         assert_eq!(h[4 + COMPARE_SIDE_COLS.len()], sided(TARGET_CHR, SIDE_B));
     }

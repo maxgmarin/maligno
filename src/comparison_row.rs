@@ -29,8 +29,7 @@
 use std::io::Write;
 
 use crate::columns::{
-    compare_header, index_of, AS_MAX, COMPARE_SIDE_COLS, GENOMIC_JUNCTIONS, JUNCTIONS, JUNC_COUNT,
-    MS_MAX, N_DELETION_BASES, N_INSERTION_BASES, N_SOFTCLIPPED_BASES_END,
+    compare_header, index_of, AS_MAX, COMPARE_SIDE_COLS, GENOMIC_JUNCTIONS, JUNCTIONS, MS_MAX, N_DELETION_BASES, N_INSERTION_BASES, N_SOFTCLIPPED_BASES_END,
     N_SOFTCLIPPED_BASES_START, N_SUBSTITUTION_BASES, QUERY_ALN_COV_MAX, QUERY_ALN_LEN_MAX,
     SEQID_MAX, STRAND, TARGET_CHR,
 };
@@ -84,18 +83,16 @@ fn ratio_u64(num: u64, den: u64) -> f64 {
 /// the two float fields.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AlignmentMetrics {
-    pub(crate) as_max: i64,
-    pub(crate) ms_max: i64,
-    pub(crate) seqid_max: f64,
-    pub(crate) query_aln_cov_max: f64,
-    pub(crate) query_aln_len_max: u64,
+    pub(crate) aln_score: i64,
+    pub(crate) ms: i64,
+    pub(crate) seqid: f64,
+    pub(crate) query_aln_cov: f64,
+    pub(crate) query_aln_len: u64,
     pub(crate) n_ins_bases: u64,
     pub(crate) n_del_bases: u64,
     pub(crate) n_sub_bases: u64,
     pub(crate) n_sc_start: u64,
     pub(crate) n_sc_end: u64,
-    /// `usize`; feeds `Junc_Dist_V2`.
-    pub(crate) junc_count: usize,
 }
 
 /// One side of the comparison: the raw transport columns plus the parsed view.
@@ -115,17 +112,16 @@ impl<'r> AlignmentRow<'r> {
     pub(crate) fn from_accessor(get: impl Fn(&str) -> &'r str) -> Self {
         let raw = std::array::from_fn(|i| get(COMPARE_SIDE_COLS[i].name));
         let metrics = AlignmentMetrics {
-            as_max: get(AS_MAX.name).parse().unwrap_or(0),
-            ms_max: get(MS_MAX.name).parse().unwrap_or(0),
-            seqid_max: get(SEQID_MAX.name).parse().unwrap_or(f64::NAN),
-            query_aln_cov_max: get(QUERY_ALN_COV_MAX.name).parse().unwrap_or(f64::NAN),
-            query_aln_len_max: get(QUERY_ALN_LEN_MAX.name).parse().unwrap_or(0),
+            aln_score: get(AS_MAX.name).parse().unwrap_or(0),
+            ms: get(MS_MAX.name).parse().unwrap_or(0),
+            seqid: get(SEQID_MAX.name).parse().unwrap_or(f64::NAN),
+            query_aln_cov: get(QUERY_ALN_COV_MAX.name).parse().unwrap_or(f64::NAN),
+            query_aln_len: get(QUERY_ALN_LEN_MAX.name).parse().unwrap_or(0),
             n_ins_bases: get(N_INSERTION_BASES.name).parse().unwrap_or(0),
             n_del_bases: get(N_DELETION_BASES.name).parse().unwrap_or(0),
             n_sub_bases: get(N_SUBSTITUTION_BASES.name).parse().unwrap_or(0),
             n_sc_start: get(N_SOFTCLIPPED_BASES_START.name).parse().unwrap_or(0),
             n_sc_end: get(N_SOFTCLIPPED_BASES_END.name).parse().unwrap_or(0),
-            junc_count: get(JUNC_COUNT.name).parse().unwrap_or(0),
         };
         Self { raw, metrics }
     }
@@ -156,9 +152,7 @@ impl<'r> AlignmentRow<'r> {
 ///
 /// Sign conventions: every
 /// `*_diff` is **B − A**, every ratio is **B / A** (so the denominator is the A
-/// side, and A is what the zero-guard tests) — except `junc_dist_v2`, whose inner
-/// subtraction is **A − B**. `unsigned_abs()` makes that last one numerically
-/// moot, but it is left as it was rather than silently normalized.
+/// side, and A is what the zero-guard tests).
 #[derive(Debug, Clone)]
 pub(crate) struct AlignmentDiff {
     pub(crate) strand_match: bool,
@@ -182,7 +176,6 @@ pub(crate) struct AlignmentDiff {
     pub(crate) n_junctions_only_a: u64,
     pub(crate) n_junctions_only_b: u64,
     pub(crate) junction_distance: u64,
-    pub(crate) junc_dist_v2: u64,
     pub(crate) genomic_n_matched_junctions: u64,
     pub(crate) genomic_n_unmatched_junctions: u64,
     pub(crate) genomic_n_junctions_only_a: u64,
@@ -222,13 +215,13 @@ impl AlignmentDiff {
 
         Self {
             strand_match: a.strand() == b.strand(),
-            seqid_diff: mb.seqid_max - ma.seqid_max,
-            query_aln_cov_diff: mb.query_aln_cov_max - ma.query_aln_cov_max,
-            query_aln_len_diff: mb.query_aln_len_max as i64 - ma.query_aln_len_max as i64,
-            as_diff: mb.as_max - ma.as_max,
-            ms_diff: mb.ms_max - ma.ms_max,
-            as_ratio: ratio_i64(mb.as_max, ma.as_max),
-            ms_ratio: ratio_i64(mb.ms_max, ma.ms_max),
+            seqid_diff: mb.seqid - ma.seqid,
+            query_aln_cov_diff: mb.query_aln_cov - ma.query_aln_cov,
+            query_aln_len_diff: mb.query_aln_len as i64 - ma.query_aln_len as i64,
+            as_diff: mb.aln_score - ma.aln_score,
+            ms_diff: mb.ms - ma.ms,
+            as_ratio: ratio_i64(mb.aln_score, ma.aln_score),
+            ms_ratio: ratio_i64(mb.ms, ma.ms),
             n_sub_bases_diff: mb.n_sub_bases as i64 - ma.n_sub_bases as i64,
             n_sub_bases_ratio: ratio_u64(mb.n_sub_bases, ma.n_sub_bases),
             n_ins_bases_diff: mb.n_ins_bases as i64 - ma.n_ins_bases as i64,
@@ -242,8 +235,6 @@ impl AlignmentDiff {
             n_junctions_only_a: n_only_a,
             n_junctions_only_b: n_only_b,
             junction_distance: junction_distance(&juncs_a, &juncs_b),
-            // NOTE: A − B here, unlike every other diff. Preserved as-is.
-            junc_dist_v2: 50 * (ma.junc_count as i64 - mb.junc_count as i64).unsigned_abs(),
             genomic_n_matched_junctions: g_matched,
             genomic_n_unmatched_junctions: g_only_a + g_only_b,
             genomic_n_junctions_only_a: g_only_a,
@@ -273,7 +264,7 @@ pub(crate) enum DiffValue<'a> {
 }
 
 impl AlignmentDiff {
-    /// The 30 comparison values in `COMPARE_DIFF_COLS` order.
+    /// The 29 comparison values in `COMPARE_DIFF_COLS` order.
     pub(crate) fn values(&self) -> Vec<DiffValue<'_>> {
         use DiffValue::*;
         vec![
@@ -302,7 +293,6 @@ impl AlignmentDiff {
             U64(self.n_junctions_only_a),
             U64(self.n_junctions_only_b),
             U64(self.junction_distance),
-            U64(self.junc_dist_v2),
             // Genomic-space junction set comparison.
             U64(self.genomic_n_matched_junctions),
             U64(self.genomic_n_unmatched_junctions),
@@ -397,13 +387,12 @@ impl<'r> ComparisonRow<'r> {
         // Query-space junction set comparison.
         write!(
             out,
-            "\t{}\t{}\t{}\t{}\t{}\t{}",
+            "\t{}\t{}\t{}\t{}\t{}",
             d.n_matched_junctions,
             d.n_unmatched_junctions,
             d.n_junctions_only_a,
             d.n_junctions_only_b,
             d.junction_distance,
-            d.junc_dist_v2,
         )?;
         // Genomic-space junction set comparison.
         write!(
@@ -468,7 +457,7 @@ mod tests {
         AlignmentDiff::compute(&side(a), &side(b))
     }
 
-    /// Render one full row and split it into its 100 fields.
+    /// Render one full row and split it into its 99 fields.
     fn render(a: &[(&str, &'static str)], b: &[(&str, &'static str)]) -> Vec<String> {
         let mut buf: Vec<u8> = Vec::new();
         ComparisonRow::build("read1", 100, "SetA", "SetB", |c| lookup(a, c), |c| lookup(b, c))
@@ -487,7 +476,7 @@ mod tests {
         s.trim_end_matches('\n').split('\t').map(String::from).collect()
     }
 
-    /// Index of an output column in the 100-column header.
+    /// Index of an output column in the 99-column header.
     fn col(name: &str) -> usize {
         header_fields()
             .iter()
@@ -501,7 +490,7 @@ mod tests {
     fn header_and_row_field_counts_agree() {
         let h = header_fields();
         let r = render(&[], &[]);
-        assert_eq!(h.len(), 100, "header should have 100 columns");
+        assert_eq!(h.len(), 99, "header should have 99 columns");
         assert_eq!(
             r.len(),
             h.len(),
@@ -511,7 +500,7 @@ mod tests {
         );
         assert_eq!(
             4 + 2 * COMPARE_SIDE_COLS.len() + COMPARE_DIFF_COLS.len(),
-            100
+            99
         );
     }
 
@@ -524,7 +513,7 @@ mod tests {
         assert_eq!(h[37], "TargetChr_B");
         assert_eq!(h[69], "cs_B");
         assert_eq!(h[70], "Strand_Match");
-        assert_eq!(h[99], "Genomic_Junctions_OnlyB");
+        assert_eq!(h[98], "Genomic_Junctions_OnlyB");
         // The alignment-type counts sit directly after Num_Aln on each side.
         for side in ["A", "B"] {
             let n = col(&format!("Num_Aln_{side}"));
@@ -550,7 +539,7 @@ mod tests {
         let a = [("cs", "a\tb")];
         let r = render(&a, &[]);
         assert_eq!(r[col("cs_A")], "a\\tb");
-        assert_eq!(r.len(), 100, "an embedded tab must not add a field");
+        assert_eq!(r.len(), 99, "an embedded tab must not add a field");
     }
 
     #[test]
@@ -661,20 +650,6 @@ mod tests {
         assert!((d.query_aln_cov_diff + 0.3).abs() < 1e-12);
     }
 
-    #[test]
-    fn junc_dist_v2_uses_the_absolute_count_difference() {
-        // Its inner subtraction is A - B, unlike every other diff; unsigned_abs()
-        // makes the result symmetric, which is what this pins.
-        let fwd = diff_of(&[("JuncCount", "2")], &[("JuncCount", "5")]);
-        let rev = diff_of(&[("JuncCount", "5")], &[("JuncCount", "2")]);
-        assert_eq!(fwd.junc_dist_v2, 150);
-        assert_eq!(rev.junc_dist_v2, 150);
-        assert_eq!(
-            diff_of(&[("JuncCount", "3")], &[("JuncCount", "3")]).junc_dist_v2,
-            0
-        );
-    }
-
     // ── strand ───────────────────────────────────────────────────────────────
 
     #[test]
@@ -699,17 +674,16 @@ mod tests {
     #[test]
     fn missing_columns_parse_to_the_documented_defaults() {
         let m = side(&[]).metrics;
-        assert_eq!(m.as_max, 0);
-        assert_eq!(m.ms_max, 0);
-        assert_eq!(m.query_aln_len_max, 0);
+        assert_eq!(m.aln_score, 0);
+        assert_eq!(m.ms, 0);
+        assert_eq!(m.query_aln_len, 0);
         assert_eq!(m.n_ins_bases, 0);
         assert_eq!(m.n_del_bases, 0);
         assert_eq!(m.n_sub_bases, 0);
         assert_eq!(m.n_sc_start, 0);
         assert_eq!(m.n_sc_end, 0);
-        assert_eq!(m.junc_count, 0);
-        assert!(m.seqid_max.is_nan(), "seqid_Max defaults to NaN, not 0");
-        assert!(m.query_aln_cov_max.is_nan());
+        assert!(m.seqid.is_nan(), "seqid_Max defaults to NaN, not 0");
+        assert!(m.query_aln_cov.is_nan());
     }
 
     #[test]

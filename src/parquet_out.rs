@@ -7,8 +7,8 @@
 //! Why it exists: the comparison table is written once and re-read many times —
 //! by the notebooks, and by `find-aln-diff` re-run standalone with
 //! `--compare-by junctions`. Parquet stores each column separately, so a reader
-//! touching a few of the 100 columns never pays for the rest. The cost being
-//! avoided is **splitting every row into 100 fields**, not decompression, which
+//! touching a few of the 99 columns never pays for the rest. The cost being
+//! avoided is **splitting every row into 99 fields**, not decompression, which
 //! is cheap.
 //!
 //! Reading a few columns from Parquet is several times faster than from the
@@ -22,7 +22,7 @@
 //! the same lists that drive the TSV header, so the two cannot drift. This module
 //! adds only the nullability rules and the Arrow type for each `ColType`.
 //!
-//! Layout is **flat** — 100 top-level columns named exactly as the TSV header —
+//! Layout is **flat** — 99 top-level columns named exactly as the TSV header —
 //! rather than nested `aln_a`/`aln_b`/`diff` structs, because the consumers are
 //! pandas/polars/DuckDB, where `read_parquet` should be a drop-in for `read_csv`.
 
@@ -51,7 +51,7 @@ use crate::io_utils::fmt_float;
 
 /// Bumped when the Parquet column set, types or null semantics change. Recorded in
 /// the file footer so a reader can detect a schema it does not understand.
-const SCHEMA_VERSION: &str = "2";
+const SCHEMA_VERSION: &str = "3";
 
 /// Rows buffered before a row group is flushed. Bounds peak memory at
 /// O(row group) rather than O(reads).
@@ -75,7 +75,7 @@ impl ColType {
     }
 }
 
-/// Build the flat 100-column schema, deriving names, order and types from
+/// Build the flat 99-column schema, deriving names, order and types from
 /// `columns.rs`.
 ///
 /// **Nullability** encodes what a null *means*: "undefined", nothing else.
@@ -503,7 +503,7 @@ mod tests {
         let tsv: Vec<&str> = header.trim_end_matches('\n').split('\t').collect();
         let schema = build_schema();
         let arrow: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
-        assert_eq!(arrow.len(), 100);
+        assert_eq!(arrow.len(), crate::columns::N_COMPARE_COLS);
         assert_eq!(arrow, tsv, "Arrow schema and TSV header have drifted apart");
     }
 
@@ -560,7 +560,7 @@ mod tests {
         let escaped = |c: usize| (4..4 + 2 * n_side).contains(&c) || c >= n_cols - 4;
 
         for (r, tsv_row) in tsv.iter().enumerate() {
-            assert_eq!(tsv_row.len(), 100);
+            assert_eq!(tsv_row.len(), crate::columns::N_COMPARE_COLS);
             for c in 0..n_cols {
                 let recovered = cell_to_tsv(&batch, c, r);
                 let expect = if escaped(c) { escape_tsv_field(&recovered) } else { recovered };
@@ -706,10 +706,10 @@ mod tests {
     fn unprojected_reader_yields_every_column_in_schema_order() {
         let path = write_temp_parquet("full");
         let mut r = ParquetRowReader::open(&path, None).unwrap();
-        assert_eq!(r.columns().len(), 100, "no projection: every column present");
+        assert_eq!(r.columns().len(), crate::columns::N_COMPARE_COLS, "no projection: every column present");
         assert_eq!(r.columns(), build_schema().fields().iter().map(|f| f.name().clone()).collect::<Vec<_>>().as_slice());
         let row = r.next_row().unwrap().expect("one row");
-        assert_eq!(row.len(), 100);
+        assert_eq!(row.len(), crate::columns::N_COMPARE_COLS);
         assert!(r.next_row().unwrap().is_none(), "only one row was written");
         let _ = std::fs::remove_file(&path);
     }

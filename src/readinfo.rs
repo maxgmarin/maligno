@@ -60,11 +60,11 @@ pub struct ReadInfoRow {
     pub target_chr: String,
     pub strand: char,
     pub mapq_best: u32,
-    pub as_max: i64,
-    pub ms_max: i64,
-    pub query_aln_cov_max: f64,
-    pub query_aln_len_max: u64,
-    pub seqid_max: f64,
+    pub aln_score: i64,
+    pub ms: i64,
+    pub query_aln_cov: f64,
+    pub query_aln_len: u64,
+    pub seqid: f64,
     pub junctions: String,
     pub num_aln: u64,
     pub num_aln_maxscore: u64,
@@ -114,33 +114,6 @@ impl ReadInfoRow {
     }
 }
 
-// ── Helper: NaN-aware f64 max / min ─────────────────────────────────────────
-
-fn f64_max_ignore_nan(a: f64, b: f64) -> f64 {
-    if a.is_nan() {
-        b
-    } else if b.is_nan() {
-        a
-    } else if a >= b {
-        a
-    } else {
-        b
-    }
-}
-
-#[allow(dead_code)]
-fn f64_min_ignore_nan(a: f64, b: f64) -> f64 {
-    if a.is_nan() {
-        b
-    } else if b.is_nan() {
-        a
-    } else if a <= b {
-        a
-    } else {
-        b
-    }
-}
-
 // ── Alninfo row (lightweight, strings only) ───────────────────────────────────
 
 pub(crate) struct AlnRow {
@@ -180,10 +153,11 @@ pub(crate) fn parse_aln_row(line: &str) -> Option<AlnRow> {
 /// Collapse a group of alignment rows into a single per-read summary.
 ///
 /// Sort order: ms desc → AS desc → MQ desc. The highest-scoring,
-/// highest-confidence alignment becomes the representative; all per-alignment
-/// columns (target, strand, junctions, cs, coordinates, event counts) come
-/// from that single row. Aggregate columns (Num_Aln, Num_Aln_tpP, Num_Aln_tpS,
-/// Num_Aln_MaxScore) are computed over the full group.
+/// highest-confidence alignment becomes the representative; every per-alignment
+/// column (target, strand, scores, identity, coverage, junctions, cs,
+/// coordinates, event counts) comes from that single row. Only the counts
+/// (Num_Aln, Num_Aln_tpP, Num_Aln_tpS, Num_Aln_MaxScore) are computed over the
+/// full group.
 pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
     rows.sort_by(|a, b| {
         b.ms
@@ -226,37 +200,19 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
     let genomic_junctions = bf[COL_GENOMIC_JUNCTIONS].clone();
     let tp_tag: char = bf.get(COL_TP_TAG).and_then(|s| s.chars().next()).unwrap_or('*');
     let junc_count = junction_count_str(&junctions);
+    let aln_score: i64 = best.aln_score;
+    let ms: i64 = best.ms;
+    let query_aln_cov: f64 = bf[COL_QUERY_ALN_COV].parse().unwrap_or(f64::NAN);
+    let query_aln_len: u64 = bf[COL_QUERY_ALN_LEN].parse().unwrap_or(0);
+    let seqid: f64 = bf[COL_SEQID].parse().unwrap_or(f64::NAN);
 
-    // Aggregate stats over all rows in the group.
-    let mut as_max = i64::MIN;
-    let mut ms_max = i64::MIN;
-    let mut query_aln_cov_max: f64 = f64::NAN;
-    let mut query_aln_len_max: u64 = 0;
-    let mut seqid_max: f64 = f64::NAN;
+    // Counts over all rows in the group.
     let mut num_aln: u64 = 0;
     let mut num_aln_tpp: u64 = 0;
     let mut num_aln_tps: u64 = 0;
 
     for row in rows.iter() {
         let rf = &row.fields;
-        let row_as: i64 = rf[COL_AS].parse().unwrap_or(0);
-        let row_ms: i64 = rf[COL_MS].parse().unwrap_or(0);
-        let row_cov: f64 = rf[COL_QUERY_ALN_COV].parse().unwrap_or(f64::NAN);
-        let row_aln_len: u64 = rf[COL_QUERY_ALN_LEN].parse().unwrap_or(0);
-        let row_seqid: f64 = rf[COL_SEQID].parse().unwrap_or(f64::NAN);
-
-        if row_as > as_max {
-            as_max = row_as;
-        }
-        if row_ms > ms_max {
-            ms_max = row_ms;
-        }
-        query_aln_cov_max = f64_max_ignore_nan(query_aln_cov_max, row_cov);
-        if row_aln_len > query_aln_len_max {
-            query_aln_len_max = row_aln_len;
-        }
-        seqid_max = f64_max_ignore_nan(seqid_max, row_seqid);
-
         if row.is_aligned {
             num_aln += 1;
             // Split mapped rows by PAF `tp:A`; a missing tag counts toward neither.
@@ -268,25 +224,17 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
         }
     }
 
-    if as_max == i64::MIN {
-        as_max = 0;
-    }
-    if ms_max == i64::MIN {
-        ms_max = 0;
-    }
-
-    // Count alignments tied at the winning (ms, AS) score — i.e., tied before
-    // the MQ tiebreaker. Num_Aln_MaxScore = 1 means a single unambiguous winner
-    // on ms + AS; > 1 means MQ (and ultimately file order) broke the tie.
-    let as_at_ms_max: i64 = rows
+    // Count aligned rows tied with the best on every selection key (ms, AS,
+    // MQ). Num_Aln_MaxScore = 1 means the representative won outright; > 1
+    // means input order picked it among equals.
+    let top_key = rows
         .iter()
-        .filter(|r| r.is_aligned && r.ms == ms_max)
-        .map(|r| r.aln_score)
-        .max()
-        .unwrap_or(0);
+        .filter(|r| r.is_aligned)
+        .map(|r| (r.ms, r.aln_score, r.mapq))
+        .max();
     let num_aln_maxscore: u64 = rows
         .iter()
-        .filter(|r| r.is_aligned && r.ms == ms_max && r.aln_score == as_at_ms_max)
+        .filter(|r| r.is_aligned && Some((r.ms, r.aln_score, r.mapq)) == top_key)
         .count() as u64;
 
     // Build raw_fields for pass-through (all columns except Read_Name, Read_Len),
@@ -295,11 +243,11 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
         target_chr.clone(),
         strand.to_string(),
         mapq_best.to_string(),
-        as_max.to_string(),
-        ms_max.to_string(),
-        fmt_float(query_aln_cov_max),
-        query_aln_len_max.to_string(),
-        fmt_float(seqid_max),
+        aln_score.to_string(),
+        ms.to_string(),
+        fmt_float(query_aln_cov),
+        query_aln_len.to_string(),
+        fmt_float(seqid),
         junctions.clone(),
         num_aln.to_string(),
         num_aln_maxscore.to_string(),
@@ -334,11 +282,11 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
         target_chr,
         strand,
         mapq_best,
-        as_max,
-        ms_max,
-        query_aln_cov_max,
-        query_aln_len_max,
-        seqid_max,
+        aln_score,
+        ms,
+        query_aln_cov,
+        query_aln_len,
+        seqid,
         junctions,
         num_aln,
         num_aln_maxscore,
@@ -580,7 +528,7 @@ mod tests {
     #[test]
     fn representative_and_existing_aggregates_are_unchanged() {
         // A secondary ties the primary on (ms, AS) and wins on MQ: the representative
-        // is still chosen by ms -> AS -> MQ, regardless of tp.
+        // is still chosen by ms -> AS -> MQ, regardless of tp, and it won outright.
         let mut rows = vec![
             row("chr1", 50, 50, 10, "P"),
             row("chr2", 50, 50, 60, "S"),
@@ -589,8 +537,24 @@ mod tests {
         let ri = collapse_group(&mut rows);
         assert_eq!(ri.target_chr, "chr2");
         assert_eq!(ri.tp_tag, 'S');
-        assert_eq!((ri.num_aln, ri.num_aln_maxscore), (3, 2));
+        assert_eq!((ri.num_aln, ri.num_aln_maxscore), (3, 1));
         assert_eq!((ri.num_aln_tpp, ri.num_aln_tps), (2, 1));
+    }
+
+    #[test]
+    fn tied_count_includes_mapq_and_ignores_unmapped_rows() {
+        // Two alignments tie on ms, AS and MQ; a third ties on ms and AS but has a
+        // lower MQ, so it lost on a selection key and is not counted.
+        let mut rows = vec![
+            row("chr1", 50, 50, 60, "P"),
+            row("chr2", 50, 50, 60, "S"),
+            row("chr3", 50, 50, 10, "S"),
+        ];
+        let ri = collapse_group(&mut rows);
+        assert_eq!((ri.num_aln, ri.num_aln_maxscore), (3, 2));
+        let mut rows = vec![row("chr1", 50, 50, 60, "P"), row("chr2", 50, 50, 10, "S")];
+        assert_eq!(collapse_group(&mut rows).num_aln_maxscore, 1, "MQ breaks the tie");
+        assert_eq!(collapse_group(&mut [row("*", 0, 0, 0, "*")]).num_aln_maxscore, 0);
     }
 
     #[test]
@@ -638,5 +602,39 @@ mod tests {
             let at = index_of(&READINFO_COLS, col) - 2;
             assert_eq!(ri.raw_fields[at], want, "column {:?}", col.name);
         }
+    }
+
+    #[test]
+    fn scores_identity_and_coverage_come_from_the_representative() {
+        // The representative wins on ms. A second alignment scores higher on AS,
+        // identity, coverage and aligned length; none of those may leak into the
+        // readinfo row, which describes the representative alone.
+        let aln = |target: &str, ms: i64, aln_score: i64, seqid: &str, len: &str, cov: &str| {
+            let mut f = vec!["0".to_string(); ALNINFO_COLS.len()];
+            f[COL_QUERY_NAME] = "r1".into();
+            f[COL_QUERY_LEN] = "100".into();
+            f[COL_STRAND] = "+".into();
+            f[COL_TARGET_NAME] = target.into();
+            f[COL_MS] = ms.to_string();
+            f[COL_AS] = aln_score.to_string();
+            f[COL_SEQID] = seqid.into();
+            f[COL_QUERY_ALN_LEN] = len.into();
+            f[COL_QUERY_ALN_COV] = cov.into();
+            f[COL_TP_TAG] = "P".into();
+            parse_aln_row(&f.join("\t")).unwrap()
+        };
+        let ri = collapse_group(&mut [
+            aln("chr2", 40, 90, "0.999", "95", "0.95"),
+            aln("chr1", 50, 60, "0.9", "60", "0.6"),
+        ]);
+        assert_eq!(ri.target_chr, "chr1");
+        assert_eq!((ri.ms, ri.aln_score, ri.query_aln_len), (50, 60, 60));
+        assert_eq!((ri.seqid, ri.query_aln_cov), (0.9, 0.6));
+        let at = |c: Col| ri.raw_fields[index_of(&READINFO_COLS, c) - 2].as_str();
+        assert_eq!(
+            [at(AS_MAX), at(MS_MAX), at(SEQID_MAX), at(QUERY_ALN_COV_MAX), at(QUERY_ALN_LEN_MAX)],
+            ["60", "50", "0.9", "0.6", "60"]
+        );
+        assert_eq!((ri.num_aln, ri.num_aln_maxscore), (2, 1));
     }
 }

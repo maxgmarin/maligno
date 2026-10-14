@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 
 use crate::compare::{run_merge, ReadSource, SourceRead};
 use crate::compare_summary::CompareSummary;
-use crate::columns::{READ_LEN, READ_NAME};
+use crate::columns::{COMPARE_SIDE_COLS, READ_LEN, READ_NAME};
 use crate::comparison_row::write_compare_header;
 use crate::io_utils::{open_input, open_output};
 use crate::parquet_out::{is_parquet_path, ComparisonParquetWriter};
@@ -153,7 +153,8 @@ impl ReadInfoReader {
 // ── Readinfo-TSV read source ────────────────────────────────────────────────
 
 /// A readinfo TSV as a [`ReadSource`]: one row per read, columns taken from the
-/// file's own header, so column order and extra columns don't matter.
+/// file's own header, so column order and extra columns don't matter. Every
+/// column `compare` reads from its own readinfo rows must be present.
 struct TsvReadSource {
     reader: ReadInfoReader,
     idx_name: usize,
@@ -163,12 +164,16 @@ struct TsvReadSource {
 impl TsvReadSource {
     fn open(path: &str, side: &str) -> Result<Self> {
         let reader = ReadInfoReader::new(path)?;
-        let idx_name = reader
-            .get_col_idx(READ_NAME.name)
-            .with_context(|| format!("missing {} in {side}", READ_NAME.name))?;
-        let idx_len = reader
-            .get_col_idx(READ_LEN.name)
-            .with_context(|| format!("missing {} in {side}", READ_LEN.name))?;
+        let require = |name: &str| {
+            reader.get_col_idx(name).with_context(|| {
+                format!("readinfo table {side} ('{path}') is missing column '{name}'")
+            })
+        };
+        let idx_name = require(READ_NAME.name)?;
+        let idx_len = require(READ_LEN.name)?;
+        for col in COMPARE_SIDE_COLS {
+            require(col.name)?;
+        }
         Ok(TsvReadSource { reader, idx_name, idx_len })
     }
 }
@@ -266,15 +271,22 @@ pub fn run(args: &MergeReadinfoArgs) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// Write a small readinfo-style TSV and return its path.
+    /// Write a small readinfo TSV and return its path. Each row gives the first
+    /// three columns (Read_Name, Read_Len, TargetChr); the rest are left empty.
     fn write_tsv(name: &str, rows: &[&str]) -> String {
+        write_tsv_with_header(name, &crate::readinfo::readinfo_header(), rows)
+    }
+
+    fn write_tsv_with_header(name: &str, header: &str, rows: &[&str]) -> String {
         let path = std::env::temp_dir().join(format!(
             "maligno_test_merge_readinfo_{}_{name}.tsv",
             std::process::id()
         ));
-        let mut body = String::from("Read_Name\tRead_Len\tTargetChr\n");
+        let pad = "\t".repeat(header.split('\t').count() - 3);
+        let mut body = format!("{header}\n");
         for r in rows {
             body.push_str(r);
+            body.push_str(&pad);
             body.push('\n');
         }
         std::fs::write(&path, body).unwrap();
@@ -330,5 +342,17 @@ mod tests {
 
         run(&args(&a, &b, &out, true)).unwrap();
         assert_eq!(rows(&out), vec![("r1".into(), "100".into())]);
+    }
+
+    #[test]
+    fn a_readinfo_missing_a_compared_column_is_an_error() {
+        // Same requirement as `compare`, whose own readinfo rows always carry
+        // every column: a missing one must not become a column of empty cells.
+        let header = crate::readinfo::readinfo_header().replace("\tcs\t", "\tcs_old\t");
+        let a = write_tsv_with_header("miss_a", &header, &["r1\t100\tchr1"]);
+        let b = write_tsv("miss_b", &["r1\t100\tchr1"]);
+        let out = write_tsv("miss_out", &[]);
+        let err = run(&args(&a, &b, &out, false)).unwrap_err().to_string();
+        assert!(err.contains("readinfo table A") && err.contains("'cs'"), "unexpected error: {err}");
     }
 }
