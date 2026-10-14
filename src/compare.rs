@@ -52,7 +52,8 @@ use crate::external_sort::{parse_mem, read_id_set_check, sort_lines_to_file};
 use crate::find_query_diff::{AlnDiffAccumulator, AlnDiffStats, CompareBy, DiffSpace};
 use crate::io_utils::open_output;
 use crate::paf_groups::PafGroups;
-use crate::readinfo::{collapse_group, ReadInfoRow, READINFO_HEADER};
+use crate::columns::{header_line, READINFO_COLS};
+use crate::readinfo::{collapse_group, ReadInfoRow};
 use crate::record::AlnInfo;
 
 /// Reject stdin (`-`) for `compare`'s two-file inputs. `compare` always needs two
@@ -461,7 +462,7 @@ struct PafReadSource<'w, R: BufRead> {
 
 impl<R: BufRead> ReadSource for PafReadSource<'_, R> {
     fn columns(&self) -> Vec<String> {
-        READINFO_HEADER.split('\t').map(String::from).collect()
+        READINFO_COLS.iter().map(|c| c.name.to_string()).collect()
     }
 
     fn next_read(&mut self) -> Result<Option<SourceRead>> {
@@ -533,8 +534,9 @@ fn compare_sorted_pafs(
     let mut ri_b = open_or_sink(readinfo_b)?;
     let mut al_a = open_or_sink(alninfo_a)?;
     let mut al_b = open_or_sink(alninfo_b)?;
-    writeln!(ri_a, "{READINFO_HEADER}")?;
-    writeln!(ri_b, "{READINFO_HEADER}")?;
+    let readinfo_header = header_line(&READINFO_COLS);
+    writeln!(ri_a, "{readinfo_header}")?;
+    writeln!(ri_b, "{readinfo_header}")?;
     AlnInfo::write_header(al_a.as_mut())?;
     AlnInfo::write_header(al_b.as_mut())?;
 

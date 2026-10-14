@@ -3,62 +3,48 @@ use std::io::{BufRead, Write};
 
 use anyhow::{bail, Result};
 
+use crate::columns::*;
 use crate::io_utils::{escape_tsv_field, fmt_float, open_input, open_output};
 use crate::junction::junction_count_str;
 
-// ── Column indices in alninfo TSV ────────────────────────────────────────────
-const COL_QUERY_NAME: usize = 0;
-const COL_QUERY_LEN: usize = 1;
-const COL_QUERY_START: usize = 2;
-const COL_QUERY_END: usize = 3;
-const COL_STRAND: usize = 4;
-const COL_MQ: usize = 11;
-const COL_TARGET_NAME: usize = 5;
-const COL_TARGET_START: usize = 7;
-const COL_TARGET_END: usize = 8;
-const COL_MS: usize = 12;
-const COL_AS: usize = 13;
-const COL_CS: usize = 14;
-const COL_N_MATCH_EVENTS: usize = 15;
-const COL_N_MATCH_BASES: usize = 16;
-const COL_N_SUB_EVENTS: usize = 17;
-const COL_N_SUB_BASES: usize = 18;
-const COL_N_INS_EVENTS: usize = 19;
-const COL_N_INS_BASES: usize = 20;
-const COL_N_DEL_EVENTS: usize = 21;
-const COL_N_DEL_BASES: usize = 22;
-const COL_N_SPLICE_EVENTS: usize = 23;
-const COL_N_SPLICE_BASES: usize = 24;
-const COL_N_SC_START: usize = 25;
-const COL_N_SC_END: usize = 26;
-const COL_N_SC_EVENTS: usize = 27;
-const COL_JUNCTIONS: usize = 28;
-const COL_SEQID: usize = 31;
-const COL_QUERY_ALN_LEN: usize = 32;
-const COL_QUERY_ALN_COV: usize = 33;
-const COL_GENOMIC_JUNCTIONS: usize = 34;
-const COL_TP_TAG: usize = 35;
+// ── Column indices in alninfo rows ───────────────────────────────────────────
+// Resolved by name against `ALNINFO_COLS` at compile time.
+const COL_QUERY_NAME: usize = index_of(&ALNINFO_COLS, QUERY_NAME);
+const COL_QUERY_LEN: usize = index_of(&ALNINFO_COLS, QUERY_LEN);
+const COL_QUERY_START: usize = index_of(&ALNINFO_COLS, QUERY_START);
+const COL_QUERY_END: usize = index_of(&ALNINFO_COLS, QUERY_END);
+const COL_STRAND: usize = index_of(&ALNINFO_COLS, STRAND);
+const COL_MQ: usize = index_of(&ALNINFO_COLS, MQ);
+const COL_TARGET_NAME: usize = index_of(&ALNINFO_COLS, TARGET_NAME);
+const COL_TARGET_START: usize = index_of(&ALNINFO_COLS, TARGET_START);
+const COL_TARGET_END: usize = index_of(&ALNINFO_COLS, TARGET_END);
+const COL_MS: usize = index_of(&ALNINFO_COLS, MS);
+const COL_AS: usize = index_of(&ALNINFO_COLS, AS);
+const COL_CS: usize = index_of(&ALNINFO_COLS, CS);
+const COL_N_MATCH_EVENTS: usize = index_of(&ALNINFO_COLS, N_MATCH_EVENTS);
+const COL_N_MATCH_BASES: usize = index_of(&ALNINFO_COLS, N_MATCH_BASES);
+const COL_N_SUB_EVENTS: usize = index_of(&ALNINFO_COLS, N_SUBSTITUTION_EVENTS);
+const COL_N_SUB_BASES: usize = index_of(&ALNINFO_COLS, N_SUBSTITUTION_BASES);
+const COL_N_INS_EVENTS: usize = index_of(&ALNINFO_COLS, N_INSERTION_EVENTS);
+const COL_N_INS_BASES: usize = index_of(&ALNINFO_COLS, N_INSERTION_BASES);
+const COL_N_DEL_EVENTS: usize = index_of(&ALNINFO_COLS, N_DELETION_EVENTS);
+const COL_N_DEL_BASES: usize = index_of(&ALNINFO_COLS, N_DELETION_BASES);
+const COL_N_SPLICE_EVENTS: usize = index_of(&ALNINFO_COLS, N_SPLICE_JUNCTION_EVENTS);
+const COL_N_SPLICE_BASES: usize = index_of(&ALNINFO_COLS, N_SPLICE_JUNCTION_BASES);
+const COL_N_SC_START: usize = index_of(&ALNINFO_COLS, N_SOFTCLIPPED_BASES_START);
+const COL_N_SC_END: usize = index_of(&ALNINFO_COLS, N_SOFTCLIPPED_BASES_END);
+const COL_N_SC_EVENTS: usize = index_of(&ALNINFO_COLS, N_SOFTCLIPPED_EVENTS);
+const COL_JUNCTIONS: usize = index_of(&ALNINFO_COLS, JUNCTIONS);
+const COL_SEQID: usize = index_of(&ALNINFO_COLS, SEQID);
+const COL_QUERY_ALN_LEN: usize = index_of(&ALNINFO_COLS, QUERY_ALN_LEN);
+const COL_QUERY_ALN_COV: usize = index_of(&ALNINFO_COLS, QUERY_ALN_COV);
+const COL_GENOMIC_JUNCTIONS: usize = index_of(&ALNINFO_COLS, GENOMIC_JUNCTIONS);
+const COL_TP_TAG: usize = index_of(&ALNINFO_COLS, TP_TAG);
 
-pub const READINFO_HEADER: &str = "Read_Name\tRead_Len\t\
-    TargetChr\tStrand\tMQ_Best\t\
-    AS_Max\tms_Max\t\
-    Query_Aln_Cov_Max\tQuery_Aln_Len_Max\t\
-    seqid_Max\t\
-    junctions\t\
-    Num_Aln\tNum_Aln_MaxScore\tJuncCount\t\
-    N_Match_Events\tN_Match_Bases\t\
-    N_Substitution_Events\tN_Substitution_Bases\t\
-    N_Insertion_Events\tN_Insertion_Bases\t\
-    N_Deletion_Events\tN_Deletion_Bases\t\
-    N_Splice_Junction_Events\tN_Splice_Junction_Bases\t\
-    N_SoftClipped_Bases_Start\tN_SoftClipped_Bases_End\t\
-    N_SoftClipped_Events\t\
-    cs\t\
-    genomic_junctions\t\
-    Query_Start\tQuery_End\t\
-    Target_Start\tTarget_End\t\
-    tp_tag\t\
-    Num_Aln_tpP\tNum_Aln_tpS";
+/// The readinfo header line (no trailing newline), from `READINFO_COLS`.
+pub fn readinfo_header() -> String {
+    header_line(&READINFO_COLS)
+}
 
 // ── ReadInfo row ─────────────────────────────────────────────────────────────
 
@@ -112,7 +98,8 @@ pub struct ReadInfoRow {
     pub num_aln_tpp: u64,
     /// Mapped alignment rows whose `tp:A` is `S` or `i` (secondary).
     pub num_aln_tps: u64,
-    /// All fields except Read_Name and Read_Len, pre-formatted for pass-through.
+    /// All fields except Read_Name and Read_Len, pre-formatted for pass-through,
+    /// in `READINFO_COLS` order (pinned by `raw_fields_follow_the_readinfo_columns`).
     pub raw_fields: Vec<String>,
 }
 
@@ -302,7 +289,8 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
         .filter(|r| r.is_aligned && r.ms == ms_max && r.aln_score == as_at_ms_max)
         .count() as u64;
 
-    // Build raw_fields for pass-through (all columns except Read_Name, Read_Len)
+    // Build raw_fields for pass-through (all columns except Read_Name, Read_Len),
+    // in READINFO_COLS order.
     let raw_fields: Vec<String> = vec![
         target_chr.clone(),
         strand.to_string(),
@@ -405,7 +393,7 @@ pub fn run(args: &ReadInfoArgs) -> Result<()> {
 
     // Open output
     let mut out = open_output(args.output.as_deref())?;
-    writeln!(out, "{READINFO_HEADER}")?;
+    writeln!(out, "{}", readinfo_header())?;
 
     let mut lines = reader.lines();
 
@@ -413,8 +401,8 @@ pub fn run(args: &ReadInfoArgs) -> Result<()> {
     match lines.next() {
         Some(Ok(h)) => {
             // Validate that it looks like a header
-            if !h.starts_with("Query_Name") {
-                bail!("Expected header starting with 'Query_Name', got: {h}");
+            if !h.starts_with(QUERY_NAME.name) {
+                bail!("Expected header starting with '{}', got: {h}", QUERY_NAME.name);
             }
             // Build col index map for validation (optional)
             let _col_map: HashMap<String, usize> = h
@@ -539,7 +527,8 @@ mod tests {
 
     #[test]
     fn header_ends_with_the_type_counts_and_matches_the_row_width() {
-        let cols: Vec<&str> = READINFO_HEADER.split('\t').collect();
+        let header = readinfo_header();
+        let cols: Vec<&str> = header.split('\t').collect();
         assert_eq!(cols.len(), 36);
         assert_eq!(&cols[33..], &["tp_tag", "Num_Aln_tpP", "Num_Aln_tpS"]);
         let ri = collapse_group(&mut [row("chr1", 50, 50, 60, "P")]);
@@ -602,5 +591,52 @@ mod tests {
         assert_eq!(ri.tp_tag, 'S');
         assert_eq!((ri.num_aln, ri.num_aln_maxscore), (3, 2));
         assert_eq!((ri.num_aln_tpp, ri.num_aln_tps), (2, 1));
+    }
+
+    #[test]
+    fn raw_fields_follow_the_readinfo_columns() {
+        // One alignment whose every field holds a distinct value, so a field
+        // emitted in the wrong position cannot match by accident.
+        let vals: [(Col, &str); 36] = [
+            (QUERY_NAME, "r9"), (QUERY_LEN, "101"), (QUERY_START, "2"), (QUERY_END, "99"),
+            (STRAND, "-"), (TARGET_NAME, "chr9"), (TARGET_LEN, "5000"),
+            (TARGET_START, "200"), (TARGET_END, "1300"), (NUM_RESIDUE_MATCHES, "90"),
+            (ALN_BLOCK_LEN, "95"), (MQ, "42"), (MS, "77"), (AS, "66"), (CS, ":10"),
+            (N_MATCH_EVENTS, "11"), (N_MATCH_BASES, "12"), (N_SUBSTITUTION_EVENTS, "13"),
+            (N_SUBSTITUTION_BASES, "14"), (N_INSERTION_EVENTS, "15"), (N_INSERTION_BASES, "16"),
+            (N_DELETION_EVENTS, "17"), (N_DELETION_BASES, "18"),
+            (N_SPLICE_JUNCTION_EVENTS, "19"), (N_SPLICE_JUNCTION_BASES, "20"),
+            (N_SOFTCLIPPED_BASES_START, "21"), (N_SOFTCLIPPED_BASES_END, "22"),
+            (N_SOFTCLIPPED_EVENTS, "2"), (JUNCTIONS, "(5, 6, 7)"), (SPLICE_JUNCTION_COUNT, "3"),
+            (TARGET_START_1BASED, "201"), (SEQID, "0.5"), (QUERY_ALN_LEN, "97"),
+            (QUERY_ALN_COV, "0.25"), (GENOMIC_JUNCTIONS, "((300, 400),)"), (TP_TAG, "S"),
+        ];
+        let mut f = vec![String::new(); ALNINFO_COLS.len()];
+        for (col, v) in vals {
+            f[index_of(&ALNINFO_COLS, col)] = v.to_string();
+        }
+        let ri = collapse_group(&mut [parse_aln_row(&f.join("\t")).unwrap()]);
+
+        let expected: [(Col, &str); 34] = [
+            (TARGET_CHR, "chr9"), (STRAND, "-"), (MQ_BEST, "42"), (AS_MAX, "66"),
+            (MS_MAX, "77"), (QUERY_ALN_COV_MAX, "0.25"), (QUERY_ALN_LEN_MAX, "97"),
+            (SEQID_MAX, "0.5"), (JUNCTIONS, "(5, 6, 7)"), (NUM_ALN, "1"),
+            (NUM_ALN_MAXSCORE, "1"), (JUNC_COUNT, "3"),
+            (N_MATCH_EVENTS, "11"), (N_MATCH_BASES, "12"), (N_SUBSTITUTION_EVENTS, "13"),
+            (N_SUBSTITUTION_BASES, "14"), (N_INSERTION_EVENTS, "15"), (N_INSERTION_BASES, "16"),
+            (N_DELETION_EVENTS, "17"), (N_DELETION_BASES, "18"),
+            (N_SPLICE_JUNCTION_EVENTS, "19"), (N_SPLICE_JUNCTION_BASES, "20"),
+            (N_SOFTCLIPPED_BASES_START, "21"), (N_SOFTCLIPPED_BASES_END, "22"),
+            (N_SOFTCLIPPED_EVENTS, "2"), (CS, ":10"), (GENOMIC_JUNCTIONS, "((300, 400),)"),
+            (QUERY_START, "2"), (QUERY_END, "99"), (TARGET_START, "200"), (TARGET_END, "1300"),
+            (TP_TAG, "S"), (NUM_ALN_TPP, "0"), (NUM_ALN_TPS, "1"),
+        ];
+        assert_eq!(2 + ri.raw_fields.len(), READINFO_COLS.len());
+        assert_eq!((ri.read_name.as_str(), ri.read_len), ("r9", 101));
+        for (col, want) in expected {
+            // raw_fields omits the two key columns that lead READINFO_COLS.
+            let at = index_of(&READINFO_COLS, col) - 2;
+            assert_eq!(ri.raw_fields[at], want, "column {:?}", col.name);
+        }
     }
 }

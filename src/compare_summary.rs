@@ -43,6 +43,13 @@ use std::io::Write;
 
 use anyhow::{bail, Context, Result};
 
+use crate::columns::{
+    sided, Col, CLASSIFY_SIDE_COLS, CS, GENOMIC_JUNCTIONS, JUNCTIONS, LABEL_A, LABEL_B,
+    QUERY_END, QUERY_IDENTICAL_REVCOMP, QUERY_IDENTICAL_SAME_STRAND, QUERY_JUNCTIONS_IDENTICAL,
+    QUERY_START, REF_DIFF_POSITION_DIFF_ALN, REF_DIFF_POSITION_SAME_ALN,
+    REF_SAME_POSITION_DIFF_ALN, REF_SAME_POSITION_SAME_ALN, REF_SAME_POSITION_SAME_JUNCTIONS,
+    SIDES, SIDE_A, SIDE_B, STRAND, SUMMARY_HEADER, TARGET_CHR, TARGET_START,
+};
 use crate::cs_parser::{cs_revcomp, cs_strip_splice_motifs};
 use crate::io_utils::open_output;
 use crate::junction::{
@@ -124,8 +131,8 @@ where
     FA: Fn(&str) -> &'a str,
     FB: Fn(&str) -> &'a str,
 {
-    let mapped_a = is_mapped(get_a("TargetChr"));
-    let mapped_b = is_mapped(get_b("TargetChr"));
+    let mapped_a = is_mapped(get_a(TARGET_CHR.name));
+    let mapped_b = is_mapped(get_b(TARGET_CHR.name));
 
     let map_status = match (mapped_a, mapped_b) {
         (true, true) => MapStatus::BothMapped,
@@ -147,19 +154,19 @@ where
         // the true motif bases that minimap2 reports for the same splice site —
         // that's a limitation of the aligner's own output, not a real alignment
         // difference, so it must not by itself make two alignments "different".
-        let cs_a = cs_strip_splice_motifs(get_a("cs"));
-        let cs_b = cs_strip_splice_motifs(get_b("cs"));
+        let cs_a = cs_strip_splice_motifs(get_a(CS.name));
+        let cs_b = cs_strip_splice_motifs(get_b(CS.name));
 
         // Query span is in forward-read coordinates in PAF (strand-independent),
         // so it must match in both the same-strand and reverse-complement cases.
-        let same_span = get_a("Query_Start") == get_b("Query_Start")
-            && get_a("Query_End") == get_b("Query_End");
+        let same_span = get_a(QUERY_START.name) == get_b(QUERY_START.name)
+            && get_a(QUERY_END.name) == get_b(QUERY_END.name);
         if same_span {
-            if get_a("Strand") == get_b("Strand") {
+            if get_a(STRAND.name) == get_b(STRAND.name) {
                 if cs_a == cs_b {
                     query_identical = true;
                 }
-            } else if cs_a == cs_strip_splice_motifs(&cs_revcomp(get_b("cs"))) {
+            } else if cs_a == cs_strip_splice_motifs(&cs_revcomp(get_b(CS.name))) {
                 // Opposite strands but the alignment is an exact reverse-complement
                 // (e.g. an inverted locus between two assemblies).
                 query_identical = true;
@@ -172,9 +179,9 @@ where
         // real strand difference always means a different position). A
         // matching start plus matching cs implies a matching end too, since
         // the cs tag's own operations determine the alignment's length.
-        let same_position = get_a("TargetChr") == get_b("TargetChr")
-            && get_a("Strand") == get_b("Strand")
-            && get_a("Target_Start") == get_b("Target_Start");
+        let same_position = get_a(TARGET_CHR.name) == get_b(TARGET_CHR.name)
+            && get_a(STRAND.name) == get_b(STRAND.name)
+            && get_a(TARGET_START.name) == get_b(TARGET_START.name);
         let same_aln = cs_a == cs_b;
         ref_class = Some(match (same_position, same_aln) {
             (true, true) => RefClass::SamePositionSameAln,
@@ -186,21 +193,21 @@ where
         // Query-space splice-junction *set* identity — strand-agnostic (query
         // junctions are stored in plus-strand read coordinates), so no span
         // gate and no reverse-complement handling are needed here.
-        let ja = parse_junction_str(get_a("junctions"));
-        let jb = parse_junction_str(get_b("junctions"));
+        let ja = parse_junction_str(get_a(JUNCTIONS.name));
+        let jb = parse_junction_str(get_b(JUNCTIONS.name));
         let (_, only_a, only_b) = junction_set_stats(&ja, &jb);
         query_junctions_identical = Some(only_a == 0 && only_b == 0);
 
         // Genomic-coordinate junction-set identity, gated on the position axis
         // above. `genomic_junctions` cells carry only `(start, end)` pairs, so
         // each side's `TargetChr` is reattached before comparing.
-        let chrom_a = get_a("TargetChr");
-        let chrom_b = get_b("TargetChr");
-        let ga: Vec<(String, u64, u64)> = parse_genomic_junction_str(get_a("genomic_junctions"))
+        let chrom_a = get_a(TARGET_CHR.name);
+        let chrom_b = get_b(TARGET_CHR.name);
+        let ga: Vec<(String, u64, u64)> = parse_genomic_junction_str(get_a(GENOMIC_JUNCTIONS.name))
             .into_iter()
             .map(|(s, e)| (chrom_a.to_string(), s, e))
             .collect();
-        let gb: Vec<(String, u64, u64)> = parse_genomic_junction_str(get_b("genomic_junctions"))
+        let gb: Vec<(String, u64, u64)> = parse_genomic_junction_str(get_b(GENOMIC_JUNCTIONS.name))
             .into_iter()
             .map(|(s, e)| (chrom_b.to_string(), s, e))
             .collect();
@@ -336,16 +343,16 @@ impl CompareSummary {
             ("aligned_only_B".to_string(), self.aligned_only_b),
             ("aligned_neither".to_string(), self.aligned_neither),
             ("query_identical".to_string(), self.query_identical),
-            ("query_identical_same_strand".to_string(), self.query_identical_same_strand),
-            ("query_identical_revcomp".to_string(), self.query_identical_rc),
+            (QUERY_IDENTICAL_SAME_STRAND.to_string(), self.query_identical_same_strand),
+            (QUERY_IDENTICAL_REVCOMP.to_string(), self.query_identical_rc),
             ("query_not_identical".to_string(), self.query_not_identical()),
-            ("query_junctions_identical".to_string(), self.query_junctions_identical),
+            (QUERY_JUNCTIONS_IDENTICAL.to_string(), self.query_junctions_identical),
             ("query_junctions_not_identical".to_string(), self.query_junctions_not_identical()),
-            ("ref_same_position_same_aln".to_string(), self.ref_same_position_same_aln),
-            ("ref_same_position_diff_aln".to_string(), self.ref_same_position_diff_aln),
-            ("ref_diff_position_same_aln".to_string(), self.ref_diff_position_same_aln),
-            ("ref_diff_position_diff_aln".to_string(), self.ref_diff_position_diff_aln),
-            ("ref_same_position_same_junctions".to_string(), self.ref_same_position_same_junctions),
+            (REF_SAME_POSITION_SAME_ALN.to_string(), self.ref_same_position_same_aln),
+            (REF_SAME_POSITION_DIFF_ALN.to_string(), self.ref_same_position_diff_aln),
+            (REF_DIFF_POSITION_SAME_ALN.to_string(), self.ref_diff_position_same_aln),
+            (REF_DIFF_POSITION_DIFF_ALN.to_string(), self.ref_diff_position_diff_aln),
+            (REF_SAME_POSITION_SAME_JUNCTIONS.to_string(), self.ref_same_position_same_junctions),
             ("ref_same_position_diff_junctions".to_string(), self.ref_same_position_diff_junctions()),
             ("present_only_in_A_by_id".to_string(), self.a_only_by_id),
             ("present_only_in_B_by_id".to_string(), self.b_only_by_id),
@@ -366,7 +373,7 @@ impl CompareSummary {
         extra: &[(&str, &str)],
     ) -> Result<()> {
         let mut w = open_output(Some(path))?;
-        writeln!(w, "Category\tCount")?;
+        writeln!(w, "{}", SUMMARY_HEADER.join("\t"))?;
         writeln!(w, "label_A\t{label_a}")?;
         writeln!(w, "label_B\t{label_b}")?;
         for (k, v) in extra {
@@ -434,15 +441,60 @@ pub struct CompareSummaryArgs {
 /// Confirm a compare-table header uses the fixed `_A` / `_B` side suffixes.
 /// Shared by `toolkit summary`, `find-aln-diff` and `query-junction-diff`.
 pub(crate) fn require_ab_schema(cols: &[&str]) -> Result<()> {
-    let has_a = cols.contains(&"TargetChr_A");
-    let has_b = cols.contains(&"TargetChr_B");
-    if has_a && has_b {
+    let (a, b) = (sided(TARGET_CHR, SIDE_A), sided(TARGET_CHR, SIDE_B));
+    if cols.contains(&a.as_str()) && cols.contains(&b.as_str()) {
         return Ok(());
     }
     bail!(
-        "comparison table is missing the `TargetChr_A` / `TargetChr_B` columns \
+        "comparison table is missing the `{a}` / `{b}` columns \
          — is this a maligno compare table?"
     );
+}
+
+/// Index of a (non-sided) column in a comparison table's header, or the
+/// standard missing-column error.
+pub(crate) fn require_col(col_index: &HashMap<&str, usize>, name: &str) -> Result<usize> {
+    col_index
+        .get(name)
+        .copied()
+        .with_context(|| format!("comparison table is missing column '{name}'"))
+}
+
+/// The columns to project from a comparison table: `keys` as named, then
+/// `side_cols` suffixed for side A and for side B.
+pub(crate) fn wanted_columns(keys: &[Col], side_cols: &[Col]) -> Vec<String> {
+    keys.iter()
+        .map(|c| c.name.to_string())
+        .chain(SIDES.iter().flat_map(|&side| side_cols.iter().map(move |&c| sided(c, side))))
+        .collect()
+}
+
+/// One side's column indices in a comparison table, keyed by **unsuffixed**
+/// column name, so per-side code (`classify`, the interval and junction
+/// builders) reads either side through the same names.
+pub(crate) struct SideIndex(HashMap<&'static str, usize>);
+
+impl SideIndex {
+    /// Resolve every column in `cols` for `side`. A missing column is an error
+    /// here, before any row is read.
+    pub(crate) fn resolve(col_index: &HashMap<&str, usize>, cols: &[Col], side: &str) -> Result<Self> {
+        let mut m = HashMap::new();
+        for &c in cols {
+            m.insert(c.name, require_col(col_index, &sided(c, side))?);
+        }
+        Ok(Self(m))
+    }
+
+    /// The cell for unsuffixed column `name` in `fields` (`""` if the row is
+    /// short). Panics if `name` was not resolved: that is a bug in the caller's
+    /// column list, not bad input, and must not read silently as an empty cell.
+    pub(crate) fn get<'f>(&self, fields: &[&'f str], name: &str) -> &'f str {
+        let i = *self
+            .0
+            .get(name)
+            .unwrap_or_else(|| panic!("column {name:?} was read but never resolved"));
+        fields.get(i).copied().unwrap_or("")
+    }
 }
 
 /// Recover the human-readable set labels from a compare table's first data row
@@ -459,24 +511,14 @@ pub(crate) fn labels_from_row(col_index: &HashMap<&str, usize>, fields: &[&str])
             .unwrap_or(fallback)
             .to_string()
     };
-    (pick("Label_A", "A"), pick("Label_B", "B"))
+    (pick(LABEL_A.name, SIDE_A), pick(LABEL_B.name, SIDE_B))
 }
 
 pub fn run(args: &CompareSummaryArgs) -> Result<()> {
-    // The unsuffixed columns `classify` reads; resolve each side's index up front.
-    const NEEDED: [&str; 9] = [
-        "TargetChr", "Strand", "cs", "Query_Start", "Query_End", "Target_Start", "Target_End",
-        "junctions", "genomic_junctions",
-    ];
-
-    // For a Parquet input, project down to just the 16 columns this command
+    // For a Parquet input, project down to just the 20 columns this command
     // reads (of the comparison table's 100) — Parquet skips decoding the rest,
     // which is where its per-column storage actually pays off.
-    let wanted: Vec<String> = ["Label_A", "Label_B"]
-        .into_iter()
-        .map(String::from)
-        .chain(["A", "B"].iter().flat_map(|side| NEEDED.iter().map(move |b| format!("{b}_{side}"))))
-        .collect();
+    let wanted = wanted_columns(&[LABEL_A, LABEL_B], &CLASSIFY_SIDE_COLS);
     let wanted_refs: Vec<&str> = wanted.iter().map(String::as_str).collect();
     let mut source = open_table(&args.input, args.input_format, Some(&wanted_refs))?;
 
@@ -491,19 +533,9 @@ pub fn run(args: &CompareSummaryArgs) -> Result<()> {
     // Require the fixed `_A` / `_B` side suffixes.
     require_ab_schema(&cols)?;
 
-    let resolve = |side: &str| -> Result<HashMap<&'static str, usize>> {
-        let mut m = HashMap::new();
-        for base in NEEDED {
-            let name = format!("{base}_{side}");
-            let idx = *col_index
-                .get(name.as_str())
-                .with_context(|| format!("comparison table is missing column '{name}'"))?;
-            m.insert(base, idx);
-        }
-        Ok(m)
-    };
-    let idx_a = resolve("A")?;
-    let idx_b = resolve("B")?;
+    // The unsuffixed columns `classify` reads, resolved per side up front.
+    let idx_a = SideIndex::resolve(&col_index, &CLASSIFY_SIDE_COLS, SIDE_A)?;
+    let idx_b = SideIndex::resolve(&col_index, &CLASSIFY_SIDE_COLS, SIDE_B)?;
 
     // The human-readable labels live in each row's `Label_A` / `Label_B`, so they
     // are picked up from the first data row and used for reporting only.
@@ -518,12 +550,8 @@ pub fn run(args: &CompareSummaryArgs) -> Result<()> {
             (label_a, label_b) = labels_from_row(&col_index, &fields);
             seen_row = true;
         }
-        let get_a = |c: &str| -> &str {
-            idx_a.get(c).and_then(|&i| fields.get(i)).copied().unwrap_or("")
-        };
-        let get_b = |c: &str| -> &str {
-            idx_b.get(c).and_then(|&i| fields.get(i)).copied().unwrap_or("")
-        };
+        let get_a = |c: &str| idx_a.get(&fields, c);
+        let get_b = |c: &str| idx_b.get(&fields, c);
         summary.observe(&classify(&get_a, &get_b));
     }
 

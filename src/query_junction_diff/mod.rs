@@ -71,7 +71,14 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
-use crate::compare_summary::{labels_from_row, require_ab_schema};
+use crate::columns::{
+    sided, Col, CS, GENOMIC_JUNCTIONS, JUNC_COUNT, LABEL_A, LABEL_B, N_JUNCTIONS_ONLY_A,
+    N_JUNCTIONS_ONLY_B, QUERY_END, QUERY_START, READ_LEN, READ_NAME, SIDE_A, SIDE_B, STRAND,
+    TARGET_CHR, TARGET_START,
+};
+use crate::compare_summary::{
+    labels_from_row, require_ab_schema, require_col, wanted_columns, SideIndex,
+};
 use crate::io_utils::open_output;
 use crate::junction::parse_genomic_junction_str;
 use crate::table_input::{open_table, InputFormat};
@@ -108,7 +115,8 @@ pub struct QueryJunctionDiffArgs {
     prefix: String,
 }
 
-const NEEDED: [&str; 7] = ["cs", "Strand", "Query_Start", "Query_End", "Target_Start", "TargetChr", "JuncCount"];
+/// The per-side columns pass 1 reads, resolved for each side up front.
+const SIDE_COLS: [Col; 7] = [CS, STRAND, QUERY_START, QUERY_END, TARGET_START, TARGET_CHR, JUNC_COUNT];
 
 pub fn run(args: &QueryJunctionDiffArgs) -> Result<()> {
     if !args.input.ends_with(".parquet") {
@@ -128,11 +136,10 @@ pub fn run(args: &QueryJunctionDiffArgs) -> Result<()> {
     let unmatched_a_out = path(format!("{}.query_junction_diff.unmatched_junctions.A.tsv.gz", args.prefix));
     let unmatched_b_out = path(format!("{}.query_junction_diff.unmatched_junctions.B.tsv.gz", args.prefix));
 
-    let wanted: Vec<String> = ["Read_Name", "Read_Len", "Label_A", "Label_B", "N_Junctions_OnlyA", "N_Junctions_OnlyB"]
-        .into_iter()
-        .map(String::from)
-        .chain(["A", "B"].iter().flat_map(|side| NEEDED.iter().map(move |b| format!("{b}_{side}"))))
-        .collect();
+    let wanted = wanted_columns(
+        &[READ_NAME, READ_LEN, LABEL_A, LABEL_B, N_JUNCTIONS_ONLY_A, N_JUNCTIONS_ONLY_B],
+        &SIDE_COLS,
+    );
     let wanted_refs: Vec<&str> = wanted.iter().map(String::as_str).collect();
     let mut source = open_table(&args.input, InputFormat::Parquet, Some(&wanted_refs))?;
 
@@ -141,25 +148,12 @@ pub fn run(args: &QueryJunctionDiffArgs) -> Result<()> {
     let col_index: HashMap<&str, usize> = cols.iter().copied().enumerate().map(|(i, c)| (c, i)).collect();
     require_ab_schema(&cols)?;
 
-    let read_name_idx = *col_index.get("Read_Name").context("comparison table is missing column 'Read_Name'")?;
-    let read_len_idx = *col_index.get("Read_Len").context("comparison table is missing column 'Read_Len'")?;
-    let n_only_a_idx =
-        *col_index.get("N_Junctions_OnlyA").context("comparison table is missing column 'N_Junctions_OnlyA'")?;
-    let n_only_b_idx =
-        *col_index.get("N_Junctions_OnlyB").context("comparison table is missing column 'N_Junctions_OnlyB'")?;
-
-    let resolve = |side: &str| -> Result<HashMap<&'static str, usize>> {
-        let mut m = HashMap::new();
-        for base in NEEDED {
-            let name = format!("{base}_{side}");
-            let idx =
-                *col_index.get(name.as_str()).with_context(|| format!("comparison table is missing column '{name}'"))?;
-            m.insert(base, idx);
-        }
-        Ok(m)
-    };
-    let idx_a = resolve("A")?;
-    let idx_b = resolve("B")?;
+    let read_name_idx = require_col(&col_index, READ_NAME.name)?;
+    let read_len_idx = require_col(&col_index, READ_LEN.name)?;
+    let n_only_a_idx = require_col(&col_index, N_JUNCTIONS_ONLY_A.name)?;
+    let n_only_b_idx = require_col(&col_index, N_JUNCTIONS_ONLY_B.name)?;
+    let idx_a = SideIndex::resolve(&col_index, &SIDE_COLS, SIDE_A)?;
+    let idx_b = SideIndex::resolve(&col_index, &SIDE_COLS, SIDE_B)?;
 
     let mut label_a = "A".to_string();
     let mut label_b = "B".to_string();
@@ -169,8 +163,9 @@ pub fn run(args: &QueryJunctionDiffArgs) -> Result<()> {
     let mut per_read_w = open_output(Some(&per_read_out))?;
     writeln!(
         per_read_w,
-        "Read_Name\tside\tjunction_index\tstrand\tquery_pos\tchrom\tgenomic_start\tgenomic_end\t\
-         matched_in_query\tmatched_in_genomic\tother_side_aligned"
+        "{}\tside\tjunction_index\tstrand\tquery_pos\tchrom\tgenomic_start\tgenomic_end\t\
+         matched_in_query\tmatched_in_genomic\tother_side_aligned",
+        READ_NAME.name
     )?;
     let mut unmatched_acc_a: UnmatchedAcc = HashMap::new();
     let mut unmatched_acc_b: UnmatchedAcc = HashMap::new();
@@ -181,17 +176,17 @@ pub fn run(args: &QueryJunctionDiffArgs) -> Result<()> {
             (label_a, label_b) = labels_from_row(&col_index, &fields);
             seen_row = true;
         }
-        let get_a = |c: &str| -> &str { idx_a.get(c).and_then(|&i| fields.get(i)).copied().unwrap_or("") };
-        let get_b = |c: &str| -> &str { idx_b.get(c).and_then(|&i| fields.get(i)).copied().unwrap_or("") };
+        let get_a = |c: &str| idx_a.get(&fields, c);
+        let get_b = |c: &str| idx_b.get(&fields, c);
         let read_name = fields.get(read_name_idx).copied().unwrap_or("");
         let read_len: u64 = fields.get(read_len_idx).copied().unwrap_or("0").parse().unwrap_or(0);
         let n_only_a: u64 = fields.get(n_only_a_idx).copied().unwrap_or("0").parse().unwrap_or(0);
         let n_only_b: u64 = fields.get(n_only_b_idx).copied().unwrap_or("0").parse().unwrap_or(0);
 
-        let mapped_a = is_mapped(get_a("TargetChr"));
-        let mapped_b = is_mapped(get_b("TargetChr"));
-        let junc_count_a: u64 = get_a("JuncCount").parse().unwrap_or(0);
-        let junc_count_b: u64 = get_b("JuncCount").parse().unwrap_or(0);
+        let mapped_a = is_mapped(get_a(TARGET_CHR.name));
+        let mapped_b = is_mapped(get_b(TARGET_CHR.name));
+        let junc_count_a: u64 = get_a(JUNC_COUNT.name).parse().unwrap_or(0);
+        let junc_count_b: u64 = get_b(JUNC_COUNT.name).parse().unwrap_or(0);
 
         let differing =
             summary.observe_row(mapped_a, mapped_b, n_only_a, n_only_b, junc_count_a, junc_count_b);
@@ -201,12 +196,12 @@ pub fn run(args: &QueryJunctionDiffArgs) -> Result<()> {
 
         let pairs_a = if mapped_a {
             build_side_junctions(
-                get_a("cs"),
-                get_a("Strand").chars().next().unwrap_or('.'),
-                get_a("Query_Start").parse().unwrap_or(0),
-                get_a("Query_End").parse().unwrap_or(0),
-                get_a("Target_Start").parse().unwrap_or(0),
-                get_a("TargetChr"),
+                get_a(CS.name),
+                get_a(STRAND.name).chars().next().unwrap_or('.'),
+                get_a(QUERY_START.name).parse().unwrap_or(0),
+                get_a(QUERY_END.name).parse().unwrap_or(0),
+                get_a(TARGET_START.name).parse().unwrap_or(0),
+                get_a(TARGET_CHR.name),
                 read_len,
             )
         } else {
@@ -214,12 +209,12 @@ pub fn run(args: &QueryJunctionDiffArgs) -> Result<()> {
         };
         let pairs_b = if mapped_b {
             build_side_junctions(
-                get_b("cs"),
-                get_b("Strand").chars().next().unwrap_or('.'),
-                get_b("Query_Start").parse().unwrap_or(0),
-                get_b("Query_End").parse().unwrap_or(0),
-                get_b("Target_Start").parse().unwrap_or(0),
-                get_b("TargetChr"),
+                get_b(CS.name),
+                get_b(STRAND.name).chars().next().unwrap_or('.'),
+                get_b(QUERY_START.name).parse().unwrap_or(0),
+                get_b(QUERY_END.name).parse().unwrap_or(0),
+                get_b(TARGET_START.name).parse().unwrap_or(0),
+                get_b(TARGET_CHR.name),
                 read_len,
             )
         } else {
@@ -229,8 +224,8 @@ pub fn run(args: &QueryJunctionDiffArgs) -> Result<()> {
         let (qset_a, gset_a) = side_position_sets(&pairs_a);
         let (qset_b, gset_b) = side_position_sets(&pairs_b);
 
-        let strand_a = get_a("Strand").chars().next().unwrap_or('.');
-        let strand_b = get_b("Strand").chars().next().unwrap_or('.');
+        let strand_a = get_a(STRAND.name).chars().next().unwrap_or('.');
+        let strand_b = get_b(STRAND.name).chars().next().unwrap_or('.');
         let recs_a = build_junction_records(pairs_a, strand_a, &qset_b, &gset_b, mapped_b);
         let recs_b = build_junction_records(pairs_b, strand_b, &qset_a, &gset_a, mapped_a);
 
@@ -257,25 +252,20 @@ pub fn run(args: &QueryJunctionDiffArgs) -> Result<()> {
     let mut unique_a = UniqueJunctions::default();
     let mut unique_b = UniqueJunctions::default();
 
-    const TOTALS_WANTED: [&str; 6] =
-        ["TargetChr_A", "TargetChr_B", "genomic_junctions_A", "genomic_junctions_B", "Strand_A", "Strand_B"];
-    let mut totals_source = open_table(&args.input, InputFormat::Parquet, Some(&TOTALS_WANTED))
+    let totals_wanted = wanted_columns(&[], &[TARGET_CHR, GENOMIC_JUNCTIONS, STRAND]);
+    let totals_wanted_refs: Vec<&str> = totals_wanted.iter().map(String::as_str).collect();
+    let mut totals_source = open_table(&args.input, InputFormat::Parquet, Some(&totals_wanted_refs))
         .with_context(|| format!("re-reading comparison table '{}' for pass 2", args.input))?;
     let totals_cols_owned = totals_source.header()?;
     let totals_col_index: HashMap<&str, usize> =
         totals_cols_owned.iter().map(String::as_str).enumerate().map(|(i, c)| (c, i)).collect();
-    let totals_idx = |name: &str| -> Result<usize> {
-        totals_col_index
-            .get(name)
-            .copied()
-            .with_context(|| format!("comparison table is missing column '{name}'"))
-    };
-    let chrom_a_idx = totals_idx("TargetChr_A")?;
-    let chrom_b_idx = totals_idx("TargetChr_B")?;
-    let gj_a_idx = totals_idx("genomic_junctions_A")?;
-    let gj_b_idx = totals_idx("genomic_junctions_B")?;
-    let strand_a_idx = totals_idx("Strand_A")?;
-    let strand_b_idx = totals_idx("Strand_B")?;
+    let totals_idx = |col: Col, side: &str| require_col(&totals_col_index, &sided(col, side));
+    let chrom_a_idx = totals_idx(TARGET_CHR, SIDE_A)?;
+    let chrom_b_idx = totals_idx(TARGET_CHR, SIDE_B)?;
+    let gj_a_idx = totals_idx(GENOMIC_JUNCTIONS, SIDE_A)?;
+    let gj_b_idx = totals_idx(GENOMIC_JUNCTIONS, SIDE_B)?;
+    let strand_a_idx = totals_idx(STRAND, SIDE_A)?;
+    let strand_b_idx = totals_idx(STRAND, SIDE_B)?;
 
     while let Some(fields) = totals_source.next_row()? {
         let get = |i: usize| -> &str { fields.get(i).map(String::as_str).unwrap_or("") };

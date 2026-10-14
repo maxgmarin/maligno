@@ -36,8 +36,9 @@
 // ── Pipeline modules ──────────────────────────────────────────────────────────
 mod aln_input;          // PAF/SAM/BAM input detection; BAM → SAM text → sam2paf stream
 mod cigar_junctions;    // CIGAR-based intron extractor (utility; not yet wired in)
-mod comparison_row;     // comparison-table schema: column lists, row type, TSV writers
-mod parquet_out;        // Parquet writer for the comparison table (schema derived from comparison_row)
+mod columns;            // every output column name and type, defined once (alninfo, readinfo, comparison)
+mod comparison_row;     // comparison row type, A-vs-B metrics, TSV writers
+mod parquet_out;        // Parquet writer for the comparison table (schema derived from columns)
 mod compare_streaming;  // `toolkit merge-readinfo` command + merge-join machinery
 mod compare_summary;    // `toolkit summary` command + shared classifier/accumulator
 mod find_query_diff;   // `find-aln-diff` command (differing reads + regions, query or reference space)

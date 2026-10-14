@@ -64,7 +64,14 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::compare_summary::{classify, labels_from_row, require_ab_schema, CompareSummary, MapStatus, ReadClass, RefClass};
+use crate::columns::{
+    CLASSIFICATION_COLS, CLASSIFY_SIDE_COLS, LABEL_A, LABEL_B, READ_NAME, SIDE_A, SIDE_B, STRAND,
+    TARGET_CHR, TARGET_END, TARGET_START,
+};
+use crate::compare_summary::{
+    classify, labels_from_row, require_ab_schema, require_col, wanted_columns, CompareSummary,
+    MapStatus, ReadClass, RefClass, SideIndex,
+};
 use crate::interval_merge::{merge_and_count, Ivl, Locus};
 use crate::io_utils::open_output;
 use crate::table_input::{open_table, InputFormat};
@@ -206,16 +213,16 @@ fn build_ivl<'a>(
     outcome: Outcome,
     query_junctions_identical: bool,
 ) -> Option<Ivl<DiffMeta>> {
-    let chrom = get("TargetChr");
+    let chrom = get(TARGET_CHR.name);
     if chrom.is_empty() || chrom == "*" {
         return None;
     }
-    let start: u64 = get("Target_Start").parse().ok()?;
-    let end: u64 = get("Target_End").parse().ok()?;
+    let start: u64 = get(TARGET_START.name).parse().ok()?;
+    let end: u64 = get(TARGET_END.name).parse().ok()?;
     if end <= start {
         return None;
     }
-    let strand = get("Strand").chars().next().unwrap_or('.');
+    let strand = get(STRAND.name).chars().next().unwrap_or('.');
     Some(Ivl {
         chrom: chrom.to_string(),
         start,
@@ -224,11 +231,12 @@ fn build_ivl<'a>(
     })
 }
 
-/// The 8 classification-boolean column names, computed the same way
-/// regardless of `--space`/`--compare-by` (see the module doc comment).
-const BOOL_COLS: &str = "query_identical_same_strand\tquery_identical_revcomp\t\
-    query_junctions_identical\tref_same_position_same_aln\tref_same_position_diff_aln\t\
-    ref_diff_position_same_aln\tref_diff_position_diff_aln\tref_same_position_same_junctions";
+/// Header of the reads tables: the read name, the `second` column (`outcome` or
+/// `category`), then the 8 classification booleans, which are computed the same
+/// way regardless of `--space`/`--compare-by` (see the module doc comment).
+fn reads_header(second: &str) -> String {
+    format!("{}\t{second}\t{}", READ_NAME.name, CLASSIFICATION_COLS.join("\t"))
+}
 
 /// Result of `AlnDiffAccumulator::finish`.
 pub(crate) struct AlnDiffStats {
@@ -259,7 +267,7 @@ pub(crate) struct AlnDiffAccumulator {
 impl AlnDiffAccumulator {
     pub(crate) fn new(reads_out: &str, space: DiffSpace, compare_by: CompareBy) -> Result<Self> {
         let mut reads_w = open_output(Some(reads_out))?;
-        writeln!(reads_w, "Read_Name\toutcome\t{BOOL_COLS}")?;
+        writeln!(reads_w, "{}", reads_header("outcome"))?;
         Ok(Self {
             reads_w,
             vec_a: Vec::new(),
@@ -418,20 +426,11 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
     // but required unconditionally: they're always present in the comparison
     // table, so demanding them up front turns a mid-stream surprise into an
     // early, clear error.
-    const NEEDED: [&str; 9] = [
-        "TargetChr", "Strand", "cs", "Query_Start", "Query_End", "Target_Start", "Target_End",
-        "junctions", "genomic_junctions",
-    ];
-
-    // ── Input format: resolve, then open ───────────────────────────────────────
+    //
     // For a Parquet input, project down to just the columns this command reads
-    // (19 of the comparison table's 100) — Parquet skips decoding the rest, which
+    // (21 of the comparison table's 100) — Parquet skips decoding the rest, which
     // is where its per-column storage actually pays off.
-    let wanted: Vec<String> = ["Read_Name", "Label_A", "Label_B"]
-        .into_iter()
-        .map(String::from)
-        .chain(["A", "B"].iter().flat_map(|side| NEEDED.iter().map(move |b| format!("{b}_{side}"))))
-        .collect();
+    let wanted = wanted_columns(&[READ_NAME, LABEL_A, LABEL_B], &CLASSIFY_SIDE_COLS);
     let wanted_refs: Vec<&str> = wanted.iter().map(String::as_str).collect();
     let mut source = open_table(&args.input, args.input_format, Some(&wanted_refs))?;
 
@@ -443,23 +442,9 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
     let col_index: HashMap<&str, usize> =
         cols.iter().copied().enumerate().map(|(i, c)| (c, i)).collect();
     require_ab_schema(&cols)?;
-    let read_name_idx = *col_index
-        .get("Read_Name")
-        .context("comparison table is missing column 'Read_Name'")?;
-
-    let resolve = |side: &str| -> Result<HashMap<&'static str, usize>> {
-        let mut m = HashMap::new();
-        for base in NEEDED {
-            let name = format!("{base}_{side}");
-            let idx = *col_index
-                .get(name.as_str())
-                .with_context(|| format!("comparison table is missing column '{name}'"))?;
-            m.insert(base, idx);
-        }
-        Ok(m)
-    };
-    let idx_a = resolve("A")?;
-    let idx_b = resolve("B")?;
+    let read_name_idx = require_col(&col_index, READ_NAME.name)?;
+    let idx_a = SideIndex::resolve(&col_index, &CLASSIFY_SIDE_COLS, SIDE_A)?;
+    let idx_b = SideIndex::resolve(&col_index, &CLASSIFY_SIDE_COLS, SIDE_B)?;
 
     // Human-readable labels come from each row's `Label_A` / `Label_B` columns
     // (picked up from the first data row); used for reporting only.
@@ -471,7 +456,7 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
 
     let mut identical_w: Option<Box<dyn Write>> = if args.emit_identical_reads {
         let mut w = open_output(Some(&identical_out))?;
-        writeln!(w, "Read_Name\tcategory\t{BOOL_COLS}")?;
+        writeln!(w, "{}", reads_header("category"))?;
         Some(w)
     } else {
         None
@@ -488,12 +473,8 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
             (label_a, label_b) = labels_from_row(&col_index, &fields);
             seen_row = true;
         }
-        let get_a = |c: &str| -> &str {
-            idx_a.get(c).and_then(|&i| fields.get(i)).copied().unwrap_or("")
-        };
-        let get_b = |c: &str| -> &str {
-            idx_b.get(c).and_then(|&i| fields.get(i)).copied().unwrap_or("")
-        };
+        let get_a = |c: &str| idx_a.get(&fields, c);
+        let get_b = |c: &str| idx_b.get(&fields, c);
 
         // `base` is the raw, mode-independent classification — observed as-is
         // into `summary` so its meaning matches `compare`'s and

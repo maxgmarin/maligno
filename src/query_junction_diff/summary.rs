@@ -4,6 +4,7 @@
 
 use anyhow::Result;
 
+use crate::columns::SUMMARY_HEADER;
 use crate::io_utils::open_output;
 
 use super::rollup::UniqueJunctionCounts;
@@ -135,7 +136,7 @@ impl Summary {
     pub(super) fn write_tsv(&self, path: &str, label_a: &str, label_b: &str) -> Result<()> {
         use std::io::Write;
         let mut w = open_output(Some(path))?;
-        writeln!(w, "Category\tCount")?;
+        writeln!(w, "{}", SUMMARY_HEADER.join("\t"))?;
         writeln!(w, "label_A\t{label_a}")?;
         writeln!(w, "label_B\t{label_b}")?;
         for (k, v) in self.rows() {

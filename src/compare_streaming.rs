@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 
 use crate::compare::{run_merge, ReadSource, SourceRead};
 use crate::compare_summary::CompareSummary;
+use crate::columns::{READ_LEN, READ_NAME};
 use crate::comparison_row::write_compare_header;
 use crate::io_utils::{open_input, open_output};
 use crate::parquet_out::{is_parquet_path, ComparisonParquetWriter};
@@ -163,11 +164,11 @@ impl TsvReadSource {
     fn open(path: &str, side: &str) -> Result<Self> {
         let reader = ReadInfoReader::new(path)?;
         let idx_name = reader
-            .get_col_idx("Read_Name")
-            .with_context(|| format!("missing Read_Name in {side}"))?;
+            .get_col_idx(READ_NAME.name)
+            .with_context(|| format!("missing {} in {side}", READ_NAME.name))?;
         let idx_len = reader
-            .get_col_idx("Read_Len")
-            .with_context(|| format!("missing Read_Len in {side}"))?;
+            .get_col_idx(READ_LEN.name)
+            .with_context(|| format!("missing {} in {side}", READ_LEN.name))?;
         Ok(TsvReadSource { reader, idx_name, idx_len })
     }
 }
@@ -183,13 +184,13 @@ impl ReadSource for TsvReadSource {
         };
         let name = fields
             .get(self.idx_name)
-            .context("readinfo row is missing its Read_Name field")?
+            .with_context(|| format!("readinfo row is missing its {} field", READ_NAME.name))?
             .clone();
         let len: u64 = fields
             .get(self.idx_len)
-            .context("readinfo row is missing its Read_Len field")?
+            .with_context(|| format!("readinfo row is missing its {} field", READ_LEN.name))?
             .parse()
-            .context("failed to parse Read_Len")?;
+            .with_context(|| format!("failed to parse {}", READ_LEN.name))?;
         let line = fields.join("\t");
         self.reader.advance()?;
         Ok(Some(SourceRead { name, len, line }))

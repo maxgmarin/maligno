@@ -1,9 +1,9 @@
 //! The per-read comparison row: one typed value per output line.
 //!
-//! This module owns the **entire comparison-table schema** — the per-side column
-//! list, the comparison column list, the row type, and the two TSV writers. It is
-//! the single place to look when asking "what columns does `compare` emit, in what
-//! order, and how is each one computed?".
+//! This module owns the comparison table's **rows**: the row type, how each
+//! A-vs-B value is computed, and the TSV writers. The column names, order and
+//! types live in `columns.rs` (`COMPARE_KEY_COLS`, `COMPARE_SIDE_COLS`,
+//! `COMPARE_DIFF_COLS`).
 //!
 //! Splitting the row into typed parts lets the diff logic be tested on its own,
 //! and means the per-side parsing is written once and used for both sides.
@@ -19,7 +19,7 @@
 //!
 //! **The per-side columns are transported as `&str`, not re-rendered from parsed
 //! values.** That is load-bearing for two reasons. First, the writer loops over
-//! `READINFO_DATA_COLS` exactly as the header does, so the two cannot drift apart.
+//! `COMPARE_SIDE_COLS` exactly as the header does, so the two cannot drift apart.
 //! Second, `toolkit merge-readinfo` accepts arbitrary user TSVs: re-rendering would turn
 //! `1e-05` into `0.00001`, `+5` into `5`, and — because a missing column yields
 //! `""` from the accessors — would fabricate `0` where today an empty cell passes
@@ -28,6 +28,12 @@
 
 use std::io::Write;
 
+use crate::columns::{
+    compare_header, index_of, AS_MAX, COMPARE_SIDE_COLS, GENOMIC_JUNCTIONS, JUNCTIONS, JUNC_COUNT,
+    MS_MAX, N_DELETION_BASES, N_INSERTION_BASES, N_SOFTCLIPPED_BASES_END,
+    N_SOFTCLIPPED_BASES_START, N_SUBSTITUTION_BASES, QUERY_ALN_COV_MAX, QUERY_ALN_LEN_MAX,
+    SEQID_MAX, STRAND, TARGET_CHR,
+};
 use crate::io_utils::{escape_tsv_field, fmt_float};
 use crate::junction::{
     format_genomic_junction_tuple, format_junction_tuple, genomic_junction_set_diffs,
@@ -35,145 +41,16 @@ use crate::junction::{
     parse_genomic_junction_str, parse_junction_str,
 };
 
-// ── Column schema ────────────────────────────────────────────────────────────
-
-/// The per-side data columns, each emitted once suffixed `_A` and once `_B`.
-///
-/// These are read out of the readinfo table **by name**, so this order is free to
-/// differ from `readinfo.rs`'s `READINFO_HEADER`. It is grouped by topic — locus, alignment selection,
-/// identity/coverage, junction counts, cs-derived event counts, and the three long
-/// strings last — so the 100-column table is readable via
-/// `head -1 | tr '\t' '\n' | nl`. **This divergence from `READINFO_HEADER` is
-/// deliberate; do not "resync" the two.**
-pub(crate) const READINFO_DATA_COLS: &[&str] = &[
-    // Locus & span.
-    "TargetChr",
-    "Strand",
-    "Target_Start",
-    "Target_End",
-    "Query_Start",
-    "Query_End",
-    // Alignment selection & score.
-    "MQ_Best",
-    "Num_Aln",
-    "Num_Aln_tpP",
-    "Num_Aln_tpS",
-    "Num_Aln_MaxScore",
-    "AS_Max",
-    "ms_Max",
-    // Identity & coverage.
-    "seqid_Max",
-    "Query_Aln_Cov_Max",
-    "Query_Aln_Len_Max",
-    // Junction counts.
-    "JuncCount",
-    "N_Splice_Junction_Events",
-    "N_Splice_Junction_Bases",
-    // cs-derived event counts.
-    "N_Match_Events",
-    "N_Match_Bases",
-    "N_Substitution_Events",
-    "N_Substitution_Bases",
-    "N_Insertion_Events",
-    "N_Insertion_Bases",
-    "N_Deletion_Events",
-    "N_Deletion_Bases",
-    "N_SoftClipped_Events",
-    "N_SoftClipped_Bases_Start",
-    "N_SoftClipped_Bases_End",
-    // Long strings last — these dominate the table's on-disk size.
-    "junctions",
-    "genomic_junctions",
-    "cs",
-];
+// ── Column indices ───────────────────────────────────────────────────────────
 
 /// Number of per-side data columns. `AlignmentRow::raw` is sized from this, so the
 /// array and the header loop are provably the same length.
-const N_SIDE_COLS: usize = READINFO_DATA_COLS.len();
+const N_SIDE_COLS: usize = COMPARE_SIDE_COLS.len();
 
-/// The A-vs-B comparison columns, emitted after both per-side blocks. Grouped to
-/// mirror `READINFO_DATA_COLS`: orientation/identity, score, event diffs,
-/// query-space junctions, genomic-space junctions, then the object lists.
-///
-/// `AlignmentDiff`'s field order and `write_tsv_row`'s emission order must both
-/// match this list; `header_and_row_field_counts_agree` pins the length.
-pub(crate) fn comparison_col_names() -> Vec<&'static str> {
-    vec![
-        // Orientation & identity.
-        "Strand_Match",
-        "seqid_Diff",
-        "QueryAlnCov_Diff",
-        "QueryAlnLen_Diff",
-        // Score.
-        "AS_Diff",
-        "ms_Diff",
-        "AS_Ratio",
-        "ms_Ratio",
-        // Event-count diffs.
-        "N_Substitution_Bases_Diff",
-        "N_Substitution_Bases_Ratio",
-        "N_Insertion_Bases_Diff",
-        "N_Insertion_Bases_Ratio",
-        "N_Deletion_Bases_Diff",
-        "N_Deletion_Bases_Ratio",
-        "N_SoftClipped_Bases_Start_Diff",
-        "N_SoftClipped_Bases_End_Diff",
-        // Query-space junction set comparison.
-        "N_Matched_Junctions",
-        "N_Unmatched_Junctions",
-        "N_Junctions_OnlyA",
-        "N_Junctions_OnlyB",
-        "Junction_Distance",
-        "Junc_Dist_V2",
-        // Genomic-space junction set comparison.
-        "Genomic_N_Matched_Junctions",
-        "Genomic_N_Unmatched_Junctions",
-        "Genomic_N_Junctions_OnlyA",
-        "Genomic_N_Junctions_OnlyB",
-        // Object columns at the very end (the actual non-overlapping junctions,
-        // as opposed to just their counts above).
-        "Junctions_OnlyA",
-        "Junctions_OnlyB",
-        "Genomic_Junctions_OnlyA",
-        "Genomic_Junctions_OnlyB",
-    ]
-}
-
-// ── Compile-time column indices ──────────────────────────────────────────────
-
-/// `str` equality usable in a `const fn` (`==` on `&str` is not const yet).
-const fn str_eq(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut i = 0;
-    while i < a.len() {
-        if a[i] != b[i] {
-            return false;
-        }
-        i += 1;
-    }
-    true
-}
-
-/// Index of a column in `READINFO_DATA_COLS`, resolved at compile time. A typo in
-/// a column name is therefore a build failure, not a silently-empty field.
-const fn col_idx(name: &str) -> usize {
-    let mut i = 0;
-    while i < READINFO_DATA_COLS.len() {
-        if str_eq(READINFO_DATA_COLS[i], name) {
-            return i;
-        }
-        i += 1;
-    }
-    panic!("column name is not in READINFO_DATA_COLS")
-}
-
-const I_TARGET_CHR: usize = col_idx("TargetChr");
-const I_STRAND: usize = col_idx("Strand");
-const I_JUNCTIONS: usize = col_idx("junctions");
-const I_GENOMIC_JUNCTIONS: usize = col_idx("genomic_junctions");
+const I_TARGET_CHR: usize = index_of(&COMPARE_SIDE_COLS, TARGET_CHR);
+const I_STRAND: usize = index_of(&COMPARE_SIDE_COLS, STRAND);
+const I_JUNCTIONS: usize = index_of(&COMPARE_SIDE_COLS, JUNCTIONS);
+const I_GENOMIC_JUNCTIONS: usize = index_of(&COMPARE_SIDE_COLS, GENOMIC_JUNCTIONS);
 
 // ── Ratio helpers ────────────────────────────────────────────────────────────
 
@@ -223,7 +100,7 @@ pub(crate) struct AlignmentMetrics {
 
 /// One side of the comparison: the raw transport columns plus the parsed view.
 pub(crate) struct AlignmentRow<'r> {
-    /// The 33 per-side columns in `READINFO_DATA_COLS` order, exactly as read.
+    /// The 33 per-side columns in `COMPARE_SIDE_COLS` order, exactly as read.
     raw: [&'r str; N_SIDE_COLS],
     pub(crate) metrics: AlignmentMetrics,
 }
@@ -236,24 +113,24 @@ impl<'r> AlignmentRow<'r> {
     /// returned string to the *key*. Neither call site satisfies that — both return
     /// data borrowed from the row or reader, not from the column name.
     pub(crate) fn from_accessor(get: impl Fn(&str) -> &'r str) -> Self {
-        let raw = std::array::from_fn(|i| get(READINFO_DATA_COLS[i]));
+        let raw = std::array::from_fn(|i| get(COMPARE_SIDE_COLS[i].name));
         let metrics = AlignmentMetrics {
-            as_max: get("AS_Max").parse().unwrap_or(0),
-            ms_max: get("ms_Max").parse().unwrap_or(0),
-            seqid_max: get("seqid_Max").parse().unwrap_or(f64::NAN),
-            query_aln_cov_max: get("Query_Aln_Cov_Max").parse().unwrap_or(f64::NAN),
-            query_aln_len_max: get("Query_Aln_Len_Max").parse().unwrap_or(0),
-            n_ins_bases: get("N_Insertion_Bases").parse().unwrap_or(0),
-            n_del_bases: get("N_Deletion_Bases").parse().unwrap_or(0),
-            n_sub_bases: get("N_Substitution_Bases").parse().unwrap_or(0),
-            n_sc_start: get("N_SoftClipped_Bases_Start").parse().unwrap_or(0),
-            n_sc_end: get("N_SoftClipped_Bases_End").parse().unwrap_or(0),
-            junc_count: get("JuncCount").parse().unwrap_or(0),
+            as_max: get(AS_MAX.name).parse().unwrap_or(0),
+            ms_max: get(MS_MAX.name).parse().unwrap_or(0),
+            seqid_max: get(SEQID_MAX.name).parse().unwrap_or(f64::NAN),
+            query_aln_cov_max: get(QUERY_ALN_COV_MAX.name).parse().unwrap_or(f64::NAN),
+            query_aln_len_max: get(QUERY_ALN_LEN_MAX.name).parse().unwrap_or(0),
+            n_ins_bases: get(N_INSERTION_BASES.name).parse().unwrap_or(0),
+            n_del_bases: get(N_DELETION_BASES.name).parse().unwrap_or(0),
+            n_sub_bases: get(N_SUBSTITUTION_BASES.name).parse().unwrap_or(0),
+            n_sc_start: get(N_SOFTCLIPPED_BASES_START.name).parse().unwrap_or(0),
+            n_sc_end: get(N_SOFTCLIPPED_BASES_END.name).parse().unwrap_or(0),
+            junc_count: get(JUNC_COUNT.name).parse().unwrap_or(0),
         };
         Self { raw, metrics }
     }
 
-    /// The 33 per-side columns in `READINFO_DATA_COLS` order, exactly as read.
+    /// The 33 per-side columns in `COMPARE_SIDE_COLS` order, exactly as read.
     /// The Parquet writer walks this in step with the column list.
     pub(crate) fn raw(&self) -> &[&'r str; N_SIDE_COLS] {
         &self.raw
@@ -275,7 +152,7 @@ impl<'r> AlignmentRow<'r> {
 
 // ── The computed comparison block ────────────────────────────────────────────
 
-/// The A-vs-B metrics. Field order matches [`comparison_col_names`].
+/// The A-vs-B metrics. Field order matches `COMPARE_DIFF_COLS`.
 ///
 /// Sign conventions: every
 /// `*_diff` is **B − A**, every ratio is **B / A** (so the denominator is the A
@@ -381,7 +258,7 @@ impl AlignmentDiff {
 
 /// One comparison-block value, tagged with its type.
 ///
-/// [`AlignmentDiff::values`] yields these in `comparison_col_names()` order so a
+/// [`AlignmentDiff::values`] yields these in `COMPARE_DIFF_COLS` order so a
 /// second writer (Parquet) can consume the block without restating the order. The
 /// TSV writer keeps its own explicit `write!` sequence — the two are cross-checked
 /// by `parquet_matches_tsv_for_the_comparison_block` in `parquet_out`.
@@ -396,7 +273,7 @@ pub(crate) enum DiffValue<'a> {
 }
 
 impl AlignmentDiff {
-    /// The 30 comparison values in `comparison_col_names()` order.
+    /// The 30 comparison values in `COMPARE_DIFF_COLS` order.
     pub(crate) fn values(&self) -> Vec<DiffValue<'_>> {
         use DiffValue::*;
         vec![
@@ -558,17 +435,7 @@ impl<'r> ComparisonRow<'r> {
 /// instead, so column names are stable across datasets and unambiguous even when a
 /// label itself contains an underscore.
 pub(crate) fn write_compare_header<W: Write>(out: &mut W) -> std::io::Result<()> {
-    write!(out, "Read_Name\tRead_Len\tLabel_A\tLabel_B")?;
-    for col in READINFO_DATA_COLS {
-        write!(out, "\t{col}_A")?;
-    }
-    for col in READINFO_DATA_COLS {
-        write!(out, "\t{col}_B")?;
-    }
-    for col in comparison_col_names() {
-        write!(out, "\t{col}")?;
-    }
-    writeln!(out)
+    writeln!(out, "{}", compare_header().join("\t"))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -578,6 +445,7 @@ pub(crate) fn write_compare_header<W: Write>(out: &mut W) -> std::io::Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::columns::COMPARE_DIFF_COLS;
 
     /// Look a column up in a `(name, value)` slice, mimicking the accessors used at
     /// both call sites: an absent column yields `""`.
@@ -642,7 +510,7 @@ mod tests {
             h.len()
         );
         assert_eq!(
-            4 + 2 * READINFO_DATA_COLS.len() + comparison_col_names().len(),
+            4 + 2 * COMPARE_SIDE_COLS.len() + COMPARE_DIFF_COLS.len(),
             100
         );
     }

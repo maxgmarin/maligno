@@ -1,5 +1,6 @@
 use std::io::Write;
 
+use crate::columns::{header_line, ALNINFO_COLS};
 use crate::cs_parser::{parse_cs, CsStats};
 use crate::paf::PafRecord;
 
@@ -187,27 +188,13 @@ impl AlnInfo {
         }
     }
 
-    /// Write the TSV header row (column names).
+    /// Write the TSV header row (column names, from `columns::ALNINFO_COLS`).
     pub fn write_header<W: Write + ?Sized>(w: &mut W) -> std::io::Result<()> {
-        writeln!(w,
-            "Query_Name\tQuery_Len\tQuery_Start\tQuery_End\tStrand\t\
-             Target_Name\tTarget_Len\tTarget_Start\tTarget_End\t\
-             Num_Residue_Matches\tAln_Block_Len\tMQ\t\
-             ms\tAS\tcs\t\
-             N_Match_Events\tN_Match_Bases\t\
-             N_Substitution_Events\tN_Substitution_Bases\t\
-             N_Insertion_Events\tN_Insertion_Bases\t\
-             N_Deletion_Events\tN_Deletion_Bases\t\
-             N_Splice_Junction_Events\tN_Splice_Junction_Bases\t\
-             N_SoftClipped_Bases_Start\tN_SoftClipped_Bases_End\t\
-             N_SoftClipped_Events\t\
-             junctions\tsplice_junction_count\t\
-             Target_Start_1based\tseqid\tQuery_Aln_Len\tQuery_Aln_Cov\t\
-             genomic_junctions\ttp_tag"
-        )
+        writeln!(w, "{}", header_line(&ALNINFO_COLS))
     }
 
-    /// Write one TSV data row.
+    /// Write one TSV data row, fields in `ALNINFO_COLS` order (pinned by
+    /// `write_row_matches_the_alninfo_columns`).
     pub fn write_row<W: Write>(&self, w: &mut W) -> std::io::Result<()> {
         let escaped_cs = escape_tsv_field(&self.cs);
         write!(w,
@@ -429,5 +416,57 @@ mod tests {
         assert_eq!(a.ms, 0);
         assert!(a.junctions.is_empty());
         assert!(a.seqid.is_nan(), "identity is undefined without an alignment");
+    }
+
+    // ── the row lines up with ALNINFO_COLS ───────────────────────────────────
+
+    #[test]
+    fn write_row_matches_the_alninfo_columns() {
+        use crate::columns::*;
+        // Every field holds a distinct value, so a field emitted in the wrong
+        // position cannot match by accident.
+        let a = AlnInfo {
+            query_name: "read7".into(), query_len: 101, query_start: 2, query_end: 99,
+            strand: '-', target_name: "chr9".into(), target_len: 5000,
+            target_start: 200, target_end: 1300, num_residue_matches: 90,
+            aln_block_len: 95, mapq: 42, ms: 77, aln_score: 66, cs: ":10".into(),
+            n_match_events: 11, n_match_bases: 12, n_substitution_events: 13,
+            n_substitution_bases: 14, n_insertion_events: 15, n_insertion_bases: 16,
+            n_deletion_events: 17, n_deletion_bases: 18, n_splice_junction_events: 19,
+            n_splice_junction_bases: 20, n_softclipped_bases_start: 21,
+            n_softclipped_bases_end: 22, n_softclipped_events: 2,
+            junctions: vec![5, 6], splice_junction_count: 3, target_start_1based: 201,
+            seqid: 0.5, query_aln_len: 97, query_aln_cov: 0.25,
+            genomic_junctions: vec![("chr9".into(), 300, 400)], tp_tag: 'S',
+        };
+        let expected: [(Col, &str); 36] = [
+            (QUERY_NAME, "read7"), (QUERY_LEN, "101"), (QUERY_START, "2"), (QUERY_END, "99"),
+            (STRAND, "-"), (TARGET_NAME, "chr9"), (TARGET_LEN, "5000"),
+            (TARGET_START, "200"), (TARGET_END, "1300"), (NUM_RESIDUE_MATCHES, "90"),
+            (ALN_BLOCK_LEN, "95"), (MQ, "42"), (MS, "77"), (AS, "66"), (CS, ":10"),
+            (N_MATCH_EVENTS, "11"), (N_MATCH_BASES, "12"), (N_SUBSTITUTION_EVENTS, "13"),
+            (N_SUBSTITUTION_BASES, "14"), (N_INSERTION_EVENTS, "15"), (N_INSERTION_BASES, "16"),
+            (N_DELETION_EVENTS, "17"), (N_DELETION_BASES, "18"),
+            (N_SPLICE_JUNCTION_EVENTS, "19"), (N_SPLICE_JUNCTION_BASES, "20"),
+            (N_SOFTCLIPPED_BASES_START, "21"), (N_SOFTCLIPPED_BASES_END, "22"),
+            (N_SOFTCLIPPED_EVENTS, "2"), (JUNCTIONS, "(5, 6)"), (SPLICE_JUNCTION_COUNT, "3"),
+            (TARGET_START_1BASED, "201"), (SEQID, "0.5"), (QUERY_ALN_LEN, "97"),
+            (QUERY_ALN_COV, "0.25"), (GENOMIC_JUNCTIONS, "((300, 400),)"), (TP_TAG, "S"),
+        ];
+        let mut buf = Vec::new();
+        a.write_row(&mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        let fields: Vec<&str> = line.trim_end_matches('\n').split('\t').collect();
+        assert_eq!(fields.len(), ALNINFO_COLS.len());
+        for (i, (col, want)) in expected.iter().enumerate() {
+            let at = index_of(&ALNINFO_COLS, *col);
+            assert_eq!(at, i, "{:?} is listed out of order in this test", col.name);
+            assert_eq!(fields[at], *want, "column {:?}", col.name);
+        }
+
+        let mut hbuf = Vec::new();
+        AlnInfo::write_header(&mut hbuf).unwrap();
+        let header = String::from_utf8(hbuf).unwrap();
+        assert_eq!(header.trim_end().split('\t').count(), ALNINFO_COLS.len());
     }
 }

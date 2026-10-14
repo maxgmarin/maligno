@@ -30,7 +30,7 @@ use anyhow::{bail, Result};
 use crate::io_utils::{open_input, open_output};
 use crate::paf::parse_line;
 use crate::paf_groups::PafGroups;
-use crate::readinfo::{collapse_group, READINFO_HEADER};
+use crate::readinfo::{collapse_group, readinfo_header};
 use crate::record::AlnInfo;
 
 #[derive(clap::Args, Debug)]
@@ -145,7 +145,7 @@ pub(crate) fn stream_readinfo<W: Write + ?Sized>(
     if let Some(w) = alninfo_out.as_deref_mut() {
         AlnInfo::write_header(w)?;
     }
-    writeln!(readinfo_out, "{READINFO_HEADER}")?;
+    writeln!(readinfo_out, "{}", readinfo_header())?;
 
     let mut groups = PafGroups::new(reader, /* warn_unsorted = */ true);
     let mut seen: Option<HashSet<String>> = if strict_grouping {

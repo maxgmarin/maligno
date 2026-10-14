@@ -17,10 +17,10 @@
 //! gzip compresses across the whole row stream where Parquet compresses each
 //! column alone.
 //!
-//! **The schema is derived, never restated.** Column names and order come from
-//! `comparison_row`'s `READINFO_DATA_COLS` and `comparison_col_names()`, the same
-//! lists that drive the TSV header, so the two cannot drift. This module adds only
-//! the name → type mapping, and a test asserts that mapping is exhaustive.
+//! **The schema is derived, never restated.** Column names, order and types come
+//! from `columns.rs` (`COMPARE_KEY_COLS`, `COMPARE_SIDE_COLS`, `COMPARE_DIFF_COLS`),
+//! the same lists that drive the TSV header, so the two cannot drift. This module
+//! adds only the nullability rules and the Arrow type for each `ColType`.
 //!
 //! Layout is **flat** — 100 top-level columns named exactly as the TSV header —
 //! rather than nested `aln_a`/`aln_b`/`diff` structs, because the consumers are
@@ -45,9 +45,8 @@ use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::metadata::KeyValue;
 use parquet::file::properties::WriterProperties;
 
-use crate::comparison_row::{
-    comparison_col_names, ComparisonRow, DiffValue, READINFO_DATA_COLS,
-};
+use crate::columns::{ColType, COMPARE_DIFF_COLS, COMPARE_KEY_COLS, COMPARE_SIDE_COLS, SIDES, sided};
+use crate::comparison_row::{ComparisonRow, DiffValue};
 use crate::io_utils::fmt_float;
 
 /// Bumped when the Parquet column set, types or null semantics change. Recorded in
@@ -64,16 +63,6 @@ const ROW_GROUP_ROWS: usize = 20_000;
 
 // ── Column types ─────────────────────────────────────────────────────────────
 
-/// The Arrow type of one comparison-table column.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ColType {
-    Str,
-    U64,
-    I64,
-    F64,
-    Bool,
-}
-
 impl ColType {
     fn arrow(self) -> DataType {
         match self {
@@ -86,76 +75,8 @@ impl ColType {
     }
 }
 
-/// Type of a per-side column, by its unsuffixed name. `None` means the name is not
-/// a known per-side column — `per_side_types_are_exhaustive` makes that a test
-/// failure rather than a runtime surprise.
-fn per_side_type(name: &str) -> Option<ColType> {
-    Some(match name {
-        // Locus & span.
-        "TargetChr" | "Strand" => ColType::Str,
-        "Target_Start" | "Target_End" | "Query_Start" | "Query_End" => ColType::U64,
-        // Alignment selection & score.
-        "MQ_Best" | "Num_Aln" | "Num_Aln_tpP" | "Num_Aln_tpS" | "Num_Aln_MaxScore" => ColType::U64,
-        "AS_Max" | "ms_Max" => ColType::I64,
-        // Identity & coverage.
-        "seqid_Max" | "Query_Aln_Cov_Max" => ColType::F64,
-        "Query_Aln_Len_Max" => ColType::U64,
-        // Junction and cs-derived counts.
-        "JuncCount"
-        | "N_Splice_Junction_Events"
-        | "N_Splice_Junction_Bases"
-        | "N_Match_Events"
-        | "N_Match_Bases"
-        | "N_Substitution_Events"
-        | "N_Substitution_Bases"
-        | "N_Insertion_Events"
-        | "N_Insertion_Bases"
-        | "N_Deletion_Events"
-        | "N_Deletion_Bases"
-        | "N_SoftClipped_Events"
-        | "N_SoftClipped_Bases_Start"
-        | "N_SoftClipped_Bases_End" => ColType::U64,
-        // Long strings.
-        "junctions" | "genomic_junctions" | "cs" => ColType::Str,
-        _ => return None,
-    })
-}
-
-/// Type of a comparison-block column, by name.
-fn comparison_type(name: &str) -> Option<ColType> {
-    Some(match name {
-        "Strand_Match" => ColType::Bool,
-        "seqid_Diff" | "QueryAlnCov_Diff" => ColType::F64,
-        "AS_Ratio" | "ms_Ratio" => ColType::F64,
-        "N_Substitution_Bases_Ratio" | "N_Insertion_Bases_Ratio" | "N_Deletion_Bases_Ratio" => {
-            ColType::F64
-        }
-        "QueryAlnLen_Diff"
-        | "AS_Diff"
-        | "ms_Diff"
-        | "N_Substitution_Bases_Diff"
-        | "N_Insertion_Bases_Diff"
-        | "N_Deletion_Bases_Diff"
-        | "N_SoftClipped_Bases_Start_Diff"
-        | "N_SoftClipped_Bases_End_Diff" => ColType::I64,
-        "N_Matched_Junctions"
-        | "N_Unmatched_Junctions"
-        | "N_Junctions_OnlyA"
-        | "N_Junctions_OnlyB"
-        | "Junction_Distance"
-        | "Junc_Dist_V2"
-        | "Genomic_N_Matched_Junctions"
-        | "Genomic_N_Unmatched_Junctions"
-        | "Genomic_N_Junctions_OnlyA"
-        | "Genomic_N_Junctions_OnlyB" => ColType::U64,
-        "Junctions_OnlyA" | "Junctions_OnlyB" | "Genomic_Junctions_OnlyA"
-        | "Genomic_Junctions_OnlyB" => ColType::Str,
-        _ => return None,
-    })
-}
-
-/// Build the flat 100-column schema, deriving names and order from
-/// `comparison_row`'s lists.
+/// Build the flat 100-column schema, deriving names, order and types from
+/// `columns.rs`.
 ///
 /// **Nullability** encodes what a null *means*: "undefined", nothing else.
 /// - Per-side columns are nullable: they are transported as strings, so a value
@@ -170,24 +91,19 @@ fn comparison_type(name: &str) -> Option<ColType> {
 /// strings**, not nulled: they are meaningful values, and `*` is the mapping
 /// indicator downstream code tests against.
 pub(crate) fn build_schema() -> SchemaRef {
-    let mut fields = Vec::with_capacity(100);
-    fields.push(Field::new("Read_Name", DataType::Utf8, false));
-    fields.push(Field::new("Read_Len", DataType::UInt64, false));
-    fields.push(Field::new("Label_A", DataType::Utf8, false));
-    fields.push(Field::new("Label_B", DataType::Utf8, false));
-    for side in ["A", "B"] {
-        for col in READINFO_DATA_COLS {
-            let ty = per_side_type(col)
-                .unwrap_or_else(|| panic!("no Arrow type declared for per-side column {col:?}"));
-            fields.push(Field::new(format!("{col}_{side}"), ty.arrow(), true));
+    let mut fields = Vec::with_capacity(crate::columns::N_COMPARE_COLS);
+    for col in COMPARE_KEY_COLS {
+        fields.push(Field::new(col.name, col.ty.arrow(), false));
+    }
+    for side in SIDES {
+        for col in COMPARE_SIDE_COLS {
+            fields.push(Field::new(sided(col, side), col.ty.arrow(), true));
         }
     }
-    for col in comparison_col_names() {
-        let ty = comparison_type(col)
-            .unwrap_or_else(|| panic!("no Arrow type declared for comparison column {col:?}"));
+    for col in COMPARE_DIFF_COLS {
         // Only the float columns can be undefined; everything else is computed.
-        let nullable = ty == ColType::F64;
-        fields.push(Field::new(col, ty.arrow(), nullable));
+        let nullable = col.ty == ColType::F64;
+        fields.push(Field::new(col.name, col.ty.arrow(), nullable));
     }
     Arc::new(Schema::new(fields))
 }
@@ -251,7 +167,7 @@ impl ColBuilder {
             (ColBuilder::Str(b), DiffValue::Str(x)) => b.append_value(x),
             (_, v) => anyhow::bail!(
                 "comparison column type does not match the value produced for it ({v:?}) \
-                 — the type table in parquet_out.rs and AlignmentDiff::values() disagree"
+                 — COMPARE_DIFF_COLS and AlignmentDiff::values() disagree"
             ),
         }
         Ok(())
@@ -320,7 +236,7 @@ impl<W: Write + Send> ComparisonParquetWriter<W> {
 
     /// Append one row, flushing a row group when the buffer is full.
     pub(crate) fn append(&mut self, row: &ComparisonRow<'_>) -> Result<()> {
-        let n = READINFO_DATA_COLS.len();
+        let n = COMPARE_SIDE_COLS.len();
         self.cols[0].append_raw(row.read_name);
         match &mut self.cols[1] {
             ColBuilder::U64(b) => b.append_value(row.read_len),
@@ -580,37 +496,6 @@ mod tests {
     // ── the schema is derived, not restated ──────────────────────────────────
 
     #[test]
-    fn every_column_has_a_declared_arrow_type() {
-        for c in READINFO_DATA_COLS {
-            assert!(per_side_type(c).is_some(), "per-side column {c:?} has no Arrow type");
-        }
-        for c in comparison_col_names() {
-            assert!(comparison_type(c).is_some(), "comparison column {c:?} has no Arrow type");
-        }
-    }
-
-    #[test]
-    fn type_table_has_no_entries_for_columns_that_do_not_exist() {
-        // Guards the other direction: a renamed column must not leave a stale entry
-        // behind. Counted rather than enumerated, so it cannot drift out of date.
-        let per_side_named = [
-            "TargetChr", "Strand", "Target_Start", "Target_End", "Query_Start", "Query_End",
-            "MQ_Best", "Num_Aln", "Num_Aln_tpP", "Num_Aln_tpS", "Num_Aln_MaxScore",
-            "AS_Max", "ms_Max", "seqid_Max",
-            "Query_Aln_Cov_Max", "Query_Aln_Len_Max", "JuncCount",
-            "N_Splice_Junction_Events", "N_Splice_Junction_Bases", "N_Match_Events",
-            "N_Match_Bases", "N_Substitution_Events", "N_Substitution_Bases",
-            "N_Insertion_Events", "N_Insertion_Bases", "N_Deletion_Events",
-            "N_Deletion_Bases", "N_SoftClipped_Events", "N_SoftClipped_Bases_Start",
-            "N_SoftClipped_Bases_End", "junctions", "genomic_junctions", "cs",
-        ];
-        assert_eq!(per_side_named.len(), READINFO_DATA_COLS.len());
-        for c in per_side_named {
-            assert!(READINFO_DATA_COLS.contains(&c), "stale type-table entry: {c:?}");
-        }
-    }
-
-    #[test]
     fn schema_field_names_match_the_tsv_header_exactly() {
         let mut buf: Vec<u8> = Vec::new();
         crate::comparison_row::write_compare_header(&mut buf).unwrap();
@@ -625,12 +510,10 @@ mod tests {
     #[test]
     fn diff_values_agree_with_the_declared_comparison_types() {
         let (batch, _) = write_and_read(&[(&[], &[])]);
-        let names = comparison_col_names();
-        let base = 4 + 2 * READINFO_DATA_COLS.len();
-        for (i, name) in names.iter().enumerate() {
-            let want = comparison_type(name).unwrap().arrow();
+        let base = COMPARE_KEY_COLS.len() + 2 * COMPARE_SIDE_COLS.len();
+        for (i, col) in COMPARE_DIFF_COLS.iter().enumerate() {
             let got = batch.column(base + i).data_type();
-            assert_eq!(got, &want, "column {name:?} type mismatch");
+            assert_eq!(got, &col.ty.arrow(), "column {:?} type mismatch", col.name);
         }
     }
 
@@ -670,10 +553,10 @@ mod tests {
             (&unmapped, &unmapped),
         ]);
         let schema = build_schema();
-        let n_side = READINFO_DATA_COLS.len();
+        let n_side = COMPARE_SIDE_COLS.len();
         // Which columns are escaped on the way into the TSV: both per-side blocks
         // and the four trailing object lists. Not the keys or the labels.
-        let n_cols = 4 + 2 * n_side + comparison_col_names().len();
+        let n_cols = 4 + 2 * n_side + COMPARE_DIFF_COLS.len();
         let escaped = |c: usize| (4..4 + 2 * n_side).contains(&c) || c >= n_cols - 4;
 
         for (r, tsv_row) in tsv.iter().enumerate() {
@@ -839,7 +722,7 @@ mod tests {
         let wanted = ["Target_End_B", "TargetChr_A", "Strand_A", "Read_Name"];
         let mut r = ParquetRowReader::open(&path, Some(&wanted)).unwrap();
         // Schema order (Read_Name is column 0; per-side block is A-then-B,
-        // READINFO_DATA_COLS order): Read_Name, TargetChr_A, Strand_A, ..., Target_End_B.
+        // COMPARE_SIDE_COLS order): Read_Name, TargetChr_A, Strand_A, ..., Target_End_B.
         assert_eq!(r.columns(), &["Read_Name", "TargetChr_A", "Strand_A", "Target_End_B"]);
         let row = r.next_row().unwrap().expect("one row");
         assert_eq!(row, vec!["read1", "chr1", "+", "600"]);
