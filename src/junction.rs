@@ -65,7 +65,7 @@ pub fn junction_set_stats(a: &[i64], b: &[i64]) -> (u64, u64, u64) {
 ///
 /// The serialized form for `genomic_junctions` drops the chromosome
 /// from each inner tuple — chrom is available separately via the per-row
-/// `TargetChr` (alninfo) / `TargetChr_A` & `TargetChr_B` (compare) column. The caller
+/// `target_name` (alninfo, readinfo) / `target_name_A` & `target_name_B` (compare) column. The caller
 /// reconstructs full `(chrom, start, end)` tuples by combining this output with
 /// the relevant per-row chrom.
 ///
@@ -218,7 +218,7 @@ pub fn format_junction_tuple(juncs: &[i64]) -> String {
 /// Render `&[(String, u64, u64)]` as a Python tuple-of-tuples string.
 ///
 /// The chrom field is **intentionally dropped on serialization** —
-/// chrom is available separately via the per-row `TargetChr` sibling column, so
+/// chrom is available separately via the per-row `target_name` sibling column, so
 /// embedding it in every tuple was redundant noise. The in-memory tuple keeps
 /// its `String` chrom (used by `genomic_junction_set_stats` and friends for
 /// cross-chromosome safety); only the serialized form is shorter.
@@ -450,7 +450,7 @@ mod tests {
     fn format_then_parse_genomic_roundtrip_pairs_only() {
         // The serialized form drops chrom, so the round-trip
         // returns just (start, end) pairs. The caller reconstructs full tuples
-        // by combining the per-row TargetChr with these pairs.
+        // by combining the per-row target_name with these pairs.
         let v = vec![
             ("chr22".to_string(), 100, 250),
             ("chrX".to_string(), 999, 1500),

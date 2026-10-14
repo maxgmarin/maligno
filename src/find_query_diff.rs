@@ -10,7 +10,7 @@
 //!     query-identical), `diff_aln_only_A`, `diff_aln_only_B`.
 //!     Reverse-complement matches count as **identical** (not a difference).
 //!   - `reference` — compares each side's placement **on the reference
-//!     genome**: same `TargetChr`/`Strand`/`Target_Start` and same alignment
+//!     genome**: same `target_name`/`strand`/`target_start` and same alignment
 //!     (`cs`, or the genomic-coordinate junction set under `--compare-by
 //!     junctions`). Strict and literal — no reverse-complement accommodation,
 //!     so a real strand difference always means a different position. A
@@ -36,7 +36,7 @@
 //! `reference_diff`/`reference_identical` depending on `--space`; gzipped by
 //! default, `--no-gzip` to opt out):
 //!   1. `{prefix}.{stem}_reads.tsv[.gz]`      — one row per differing read:
-//!      `Read_Name`, `outcome`, plus 8 classification booleans (`1`/`0`)
+//!      `query_name`, `outcome`, plus 8 classification booleans (`1`/`0`)
 //!      computed the same way regardless of `--space`/`--compare-by` —
 //!      `query_identical_same_strand`, `query_identical_revcomp`,
 //!      `query_junctions_identical`, `ref_same_position_same_aln`,
@@ -65,8 +65,8 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use crate::columns::{
-    CLASSIFICATION_COLS, CLASSIFY_SIDE_COLS, LABEL_A, LABEL_B, READ_NAME, SIDE_A, SIDE_B, STRAND,
-    TARGET_CHR, TARGET_END, TARGET_START,
+    CLASSIFICATION_COLS, CLASSIFY_SIDE_COLS, LABEL_A, LABEL_B, QUERY_NAME, SIDE_A, SIDE_B, STRAND,
+    TARGET_NAME, TARGET_END, TARGET_START,
 };
 use crate::compare_summary::{
     classify, labels_from_row, require_ab_schema, require_col, wanted_columns, CompareSummary,
@@ -96,7 +96,7 @@ pub enum DiffSpace {
     #[default]
     Query,
     /// Compare each side's placement on the reference genome: same
-    /// `TargetChr`/`Strand`/`Target_Start` and same alignment. Strict and
+    /// `target_name`/`strand`/`target_start` and same alignment. Strict and
     /// literal — no reverse-complement accommodation, so a real strand
     /// difference always means a different position.
     Reference,
@@ -146,7 +146,7 @@ pub struct FindAlnDiffArgs {
     #[arg(long = "compare-by", value_enum, default_value = "all")]
     compare_by: CompareBy,
 
-    /// Also write a TSV of Read_Names considered identical between A and B
+    /// Also write a TSV of query_names considered identical between A and B
     /// under the active `--space`. Off by default.
     #[arg(long = "emit-identical-reads")]
     emit_identical_reads: bool,
@@ -213,7 +213,7 @@ fn build_ivl<'a>(
     outcome: Outcome,
     query_junctions_identical: bool,
 ) -> Option<Ivl<DiffMeta>> {
-    let chrom = get(TARGET_CHR.name);
+    let chrom = get(TARGET_NAME.name);
     if chrom.is_empty() || chrom == "*" {
         return None;
     }
@@ -235,7 +235,7 @@ fn build_ivl<'a>(
 /// `category`), then the 8 classification booleans, which are computed the same
 /// way regardless of `--space`/`--compare-by` (see the module doc comment).
 fn reads_header(second: &str) -> String {
-    format!("{}\t{second}\t{}", READ_NAME.name, CLASSIFICATION_COLS.join("\t"))
+    format!("{}\t{second}\t{}", QUERY_NAME.name, CLASSIFICATION_COLS.join("\t"))
 }
 
 /// Result of `AlnDiffAccumulator::finish`.
@@ -430,7 +430,7 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
     // For a Parquet input, project down to just the columns this command reads
     // (21 of the comparison table's 99) — Parquet skips decoding the rest, which
     // is where its per-column storage actually pays off.
-    let wanted = wanted_columns(&[READ_NAME, LABEL_A, LABEL_B], &CLASSIFY_SIDE_COLS);
+    let wanted = wanted_columns(&[QUERY_NAME, LABEL_A, LABEL_B], &CLASSIFY_SIDE_COLS);
     let wanted_refs: Vec<&str> = wanted.iter().map(String::as_str).collect();
     let mut source = open_table(&args.input, args.input_format, Some(&wanted_refs))?;
 
@@ -442,11 +442,11 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
     let col_index: HashMap<&str, usize> =
         cols.iter().copied().enumerate().map(|(i, c)| (c, i)).collect();
     require_ab_schema(&cols)?;
-    let read_name_idx = require_col(&col_index, READ_NAME.name)?;
+    let read_name_idx = require_col(&col_index, QUERY_NAME.name)?;
     let idx_a = SideIndex::resolve(&col_index, &CLASSIFY_SIDE_COLS, SIDE_A)?;
     let idx_b = SideIndex::resolve(&col_index, &CLASSIFY_SIDE_COLS, SIDE_B)?;
 
-    // Human-readable labels come from each row's `Label_A` / `Label_B` columns
+    // Human-readable labels come from each row's `label_A` / `label_B` columns
     // (picked up from the first data row); used for reporting only.
     let mut label_a = "A".to_string();
     let mut label_b = "B".to_string();

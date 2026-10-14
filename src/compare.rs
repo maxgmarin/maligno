@@ -4,9 +4,9 @@
 //! the per-set alninfo + readinfo tables.
 //!
 //! It owns its preconditions rather than trusting the user:
-//!   1. **sorts** both inputs by `Query_Name` (identical deterministic rule), so
+//!   1. **sorts** both inputs by `query_name` (identical deterministic rule), so
 //!      grouping and matching order are guaranteed,
-//!   2. **verifies** the two PAFs carry the same `Query_Name` set (O(1) check),
+//!   2. **verifies** the two PAFs carry the same `query_name` set (O(1) check),
 //!      erroring by default if they differ, then
 //!   3. in a **single in-memory pass**, collapses both sorted PAFs in lock-step
 //!      and feeds the merge-join directly — no readinfo written-then-reread. The
@@ -28,7 +28,7 @@
 //! other `--space`/`--compare-by` combinations still require the standalone
 //! command.
 //!
-//! Precondition (documented, not enforced): a `Query_Name` uniquely identifies a
+//! Precondition (documented, not enforced): a `query_name` uniquely identifies a
 //! single read/sequence, so reads are sorted and matched by name alone.
 //!
 //! The lock-step merge ([`run_merge`]) is shared with `toolkit merge-readinfo`:
@@ -112,14 +112,14 @@ pub struct CompareArgs {
 
     /// Name for dataset A
     /// 
-    /// recorded in the alignment comparison table's `Label_A` column.
+    /// recorded in the alignment comparison table's `label_A` column.
     #[arg(long = "label-a", value_name = "LABEL", default_value = "SetA",
           value_parser = validate_set_label)]
     label_a: String,
 
     /// Name for dataset B
     /// 
-    /// recorded in the alignment comparison table's `Label_B` column.
+    /// recorded in the alignment comparison table's `label_B` column.
     #[arg(long = "label-b", value_name = "LABEL", default_value = "SetB",
           value_parser = validate_set_label)]
     label_b: String,
@@ -274,8 +274,8 @@ pub fn run(args: &CompareArgs) -> Result<()> {
         );
         (args.aln_a.clone(), args.aln_b.clone())
     } else {
-        // ── Step 1: sort both inputs by Query_Name (consistent rule) ──────────
-        eprintln!("[INFO] sorting both inputs by Query_Name...");
+        // ── Step 1: sort both inputs by query_name (consistent rule) ──────────
+        eprintln!("[INFO] sorting both inputs by query_name...");
         let sort_one = |p: &str, fmt: AlnFormat, out: &str| {
             with_paf_lines(p, fmt, &sam_opts, |lines| {
                 sort_lines_to_file(lines, out, mem, &tmp_dir, Some(args.sort_threads))
@@ -381,7 +381,7 @@ pub fn run(args: &CompareArgs) -> Result<()> {
             return if args.presorted {
                 Err(e).context(
                     "--presorted requires both inputs to contain the same reads in the \
-                     same order (grouped by Query_Name; for SAM/BAM, name-sort both with \
+                     same order (grouped by query_name; for SAM/BAM, name-sort both with \
                      `samtools sort -n`); omit --presorted to sort them automatically",
                 )
             } else {

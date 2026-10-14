@@ -13,8 +13,8 @@
 //!
 //! `classify` reads per-side values by **unsuffixed** readinfo column name through
 //! two accessor closures, resolving them via a name→index map, so it is insensitive
-//! to column order. The columns it needs are `cs`, `Strand`, `Query_Start`,
-//! `Query_End`, `TargetChr`, `Target_Start`, `Target_End`.
+//! to column order. The columns it needs are `cs`, `strand`, `query_start`,
+//! `query_end`, `target_name`, `target_start`, `target_end`.
 //!
 //! cs-tag equality is **motif-blind**: intron donor/acceptor letters are blanked
 //! out (via `cs_strip_splice_motifs`) before comparing, so an intron with the same
@@ -25,7 +25,7 @@
 //!
 //! Reference-space classification (`RefClass`) is a second, independent axis for
 //! both-mapped reads: whether the two sides land at the same genomic **position**
-//! (`TargetChr` + `Strand` + `Target_Start` — the cs tag's own operations
+//! (`target_name` + `strand` + `target_start` — the cs tag's own operations
 //! determine the alignment's length, so a matching start plus matching cs implies
 //! a matching end too) and/or report the same **alignment** (`cs`, motif-blind).
 //! This is a strict, literal comparison: unlike `query_identical`, there is no
@@ -44,11 +44,11 @@ use std::io::Write;
 use anyhow::{bail, Context, Result};
 
 use crate::columns::{
-    sided, Col, CLASSIFY_SIDE_COLS, CS, GENOMIC_JUNCTIONS, JUNCTIONS, LABEL_A, LABEL_B,
+    sided, Col, CLASSIFY_SIDE_COLS, CS, GENOMIC_JUNCTIONS, QUERY_JUNCTIONS, LABEL_A, LABEL_B,
     QUERY_END, QUERY_IDENTICAL_REVCOMP, QUERY_IDENTICAL_SAME_STRAND, QUERY_JUNCTIONS_IDENTICAL,
     QUERY_START, REF_DIFF_POSITION_DIFF_ALN, REF_DIFF_POSITION_SAME_ALN,
     REF_SAME_POSITION_DIFF_ALN, REF_SAME_POSITION_SAME_ALN, REF_SAME_POSITION_SAME_JUNCTIONS,
-    SIDES, SIDE_A, SIDE_B, STRAND, SUMMARY_HEADER, TARGET_CHR, TARGET_START,
+    SIDES, SIDE_A, SIDE_B, STRAND, SUMMARY_HEADER, TARGET_NAME, TARGET_START,
 };
 use crate::cs_parser::{cs_revcomp, cs_strip_splice_motifs};
 use crate::io_utils::open_output;
@@ -67,8 +67,8 @@ pub(crate) enum MapStatus {
 }
 
 /// Reference-space classification of one both-mapped read: whether the two
-/// sides share the same genomic position (`TargetChr` + `Strand` +
-/// `Target_Start`) and/or report the same alignment (`cs`, motif-blind). See
+/// sides share the same genomic position (`target_name` + `strand` +
+/// `target_start`) and/or report the same alignment (`cs`, motif-blind). See
 /// the module doc comment for why this is a strict, literal comparison with
 /// no reverse-complement accommodation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,7 +118,7 @@ pub(crate) struct ReadClass {
     pub ref_same_position_same_junctions: Option<bool>,
 }
 
-/// A `TargetChr` value indicates an unmapped read when it is empty or `"*"`.
+/// A `target_name` value indicates an unmapped read when it is empty or `"*"`.
 #[inline]
 fn is_mapped(target_chr: &str) -> bool {
     !(target_chr.is_empty() || target_chr == "*")
@@ -131,8 +131,8 @@ where
     FA: Fn(&str) -> &'a str,
     FB: Fn(&str) -> &'a str,
 {
-    let mapped_a = is_mapped(get_a(TARGET_CHR.name));
-    let mapped_b = is_mapped(get_b(TARGET_CHR.name));
+    let mapped_a = is_mapped(get_a(TARGET_NAME.name));
+    let mapped_b = is_mapped(get_b(TARGET_NAME.name));
 
     let map_status = match (mapped_a, mapped_b) {
         (true, true) => MapStatus::BothMapped,
@@ -179,7 +179,7 @@ where
         // real strand difference always means a different position). A
         // matching start plus matching cs implies a matching end too, since
         // the cs tag's own operations determine the alignment's length.
-        let same_position = get_a(TARGET_CHR.name) == get_b(TARGET_CHR.name)
+        let same_position = get_a(TARGET_NAME.name) == get_b(TARGET_NAME.name)
             && get_a(STRAND.name) == get_b(STRAND.name)
             && get_a(TARGET_START.name) == get_b(TARGET_START.name);
         let same_aln = cs_a == cs_b;
@@ -193,16 +193,16 @@ where
         // Query-space splice-junction *set* identity — strand-agnostic (query
         // junctions are stored in plus-strand read coordinates), so no span
         // gate and no reverse-complement handling are needed here.
-        let ja = parse_junction_str(get_a(JUNCTIONS.name));
-        let jb = parse_junction_str(get_b(JUNCTIONS.name));
+        let ja = parse_junction_str(get_a(QUERY_JUNCTIONS.name));
+        let jb = parse_junction_str(get_b(QUERY_JUNCTIONS.name));
         let (_, only_a, only_b) = junction_set_stats(&ja, &jb);
         query_junctions_identical = Some(only_a == 0 && only_b == 0);
 
         // Genomic-coordinate junction-set identity, gated on the position axis
         // above. `genomic_junctions` cells carry only `(start, end)` pairs, so
-        // each side's `TargetChr` is reattached before comparing.
-        let chrom_a = get_a(TARGET_CHR.name);
-        let chrom_b = get_b(TARGET_CHR.name);
+        // each side's `target_name` is reattached before comparing.
+        let chrom_a = get_a(TARGET_NAME.name);
+        let chrom_b = get_b(TARGET_NAME.name);
         let ga: Vec<(String, u64, u64)> = parse_genomic_junction_str(get_a(GENOMIC_JUNCTIONS.name))
             .into_iter()
             .map(|(s, e)| (chrom_a.to_string(), s, e))
@@ -359,7 +359,7 @@ impl CompareSummary {
         ]
     }
 
-    /// Write the summary as a 2-column TSV (`Category<TAB>Count`), preceded by
+    /// Write the summary as a 2-column TSV (`category<TAB>count`), preceded by
     /// the two label provenance rows and any caller-supplied `extra`
     /// provenance rows (e.g. `find-aln-diff`'s `space`/`compare_by`), so the
     /// file is self-describing. This is the single column layout shared by
@@ -441,7 +441,7 @@ pub struct CompareSummaryArgs {
 /// Confirm a compare-table header uses the fixed `_A` / `_B` side suffixes.
 /// Shared by `toolkit summary`, `find-aln-diff` and `query-junction-diff`.
 pub(crate) fn require_ab_schema(cols: &[&str]) -> Result<()> {
-    let (a, b) = (sided(TARGET_CHR, SIDE_A), sided(TARGET_CHR, SIDE_B));
+    let (a, b) = (sided(TARGET_NAME, SIDE_A), sided(TARGET_NAME, SIDE_B));
     if cols.contains(&a.as_str()) && cols.contains(&b.as_str()) {
         return Ok(());
     }
@@ -498,7 +498,7 @@ impl SideIndex {
 }
 
 /// Recover the human-readable set labels from a compare table's first data row
-/// (the `Label_A` / `Label_B` columns). Falls back to `("A", "B")` when those
+/// (the `label_A` / `label_B` columns). Falls back to `("A", "B")` when those
 /// columns are absent or the table has no data rows, so label reporting is
 /// best-effort and never blocks the actual comparison.
 pub(crate) fn labels_from_row(col_index: &HashMap<&str, usize>, fields: &[&str]) -> (String, String) {
@@ -537,7 +537,7 @@ pub fn run(args: &CompareSummaryArgs) -> Result<()> {
     let idx_a = SideIndex::resolve(&col_index, &CLASSIFY_SIDE_COLS, SIDE_A)?;
     let idx_b = SideIndex::resolve(&col_index, &CLASSIFY_SIDE_COLS, SIDE_B)?;
 
-    // The human-readable labels live in each row's `Label_A` / `Label_B`, so they
+    // The human-readable labels live in each row's `label_A` / `label_B`, so they
     // are picked up from the first data row and used for reporting only.
     let mut label_a = "A".to_string();
     let mut label_b = "B".to_string();
@@ -583,30 +583,30 @@ mod tests {
 
     #[test]
     fn ab_schema_accepted() {
-        let cols = ["Read_Name", "Label_A", "Label_B", "TargetChr_A", "TargetChr_B"];
+        let cols = ["query_name", "label_A", "label_B", "target_name_A", "target_name_B"];
         assert!(require_ab_schema(&cols).is_ok());
     }
 
     #[test]
     fn one_sided_ab_schema_is_rejected() {
-        // `TargetChr_B` missing → not a usable comparison table.
-        let cols = ["Read_Name", "TargetChr_A"];
+        // `target_name_B` missing → not a usable comparison table.
+        let cols = ["query_name", "target_name_A"];
         assert!(require_ab_schema(&cols).is_err());
     }
 
     #[test]
     fn non_compare_table_is_rejected() {
-        // No `TargetChr_*` columns at all (e.g. an alninfo/readinfo table).
-        let cols = ["Query_Name", "Query_Len", "TargetChr"];
+        // No `target_name_*` columns at all (e.g. an alninfo/readinfo table).
+        let cols = ["query_name", "query_len", "target_name"];
         let err = require_ab_schema(&cols).unwrap_err().to_string();
-        assert!(err.contains("missing the `TargetChr_A`"), "unexpected error: {err}");
+        assert!(err.contains("missing the `target_name_A`"), "unexpected error: {err}");
     }
 
     // ─── labels_from_row ───────────────────────────────────────────────────
 
     #[test]
     fn labels_read_from_first_data_row() {
-        let cols = ["Read_Name", "Read_Len", "Label_A", "Label_B", "TargetChr_A"];
+        let cols = ["query_name", "query_len", "label_A", "label_B", "target_name_A"];
         let fields = ["r1", "100", "Splice", "SpliceHQ", "chr1"];
         assert_eq!(
             labels_from_row(&index(&cols), &fields),
@@ -616,8 +616,8 @@ mod tests {
 
     #[test]
     fn labels_fall_back_when_columns_absent() {
-        // No Label_A/Label_B columns → report the bare side identifiers.
-        let cols = ["Read_Name", "TargetChr_A", "TargetChr_B"];
+        // No label_A/label_B columns → report the bare side identifiers.
+        let cols = ["query_name", "target_name_A", "target_name_B"];
         let fields = ["r1", "chr1", "chr1"];
         assert_eq!(
             labels_from_row(&index(&cols), &fields),
@@ -627,7 +627,7 @@ mod tests {
 
     #[test]
     fn labels_fall_back_on_empty_values_and_short_rows() {
-        let cols = ["Read_Name", "Label_A", "Label_B"];
+        let cols = ["query_name", "label_A", "label_B"];
         // Empty label value → fall back rather than reporting "".
         assert_eq!(
             labels_from_row(&index(&cols), &["r1", "", "SpliceHQ"]),
@@ -673,12 +673,12 @@ mod tests {
     }
 
     const BOTH_MAPPED_SAME_POSITION: &[(&str, &str)] = &[
-        ("TargetChr", "chr1"),
-        ("Strand", "+"),
+        ("target_name", "chr1"),
+        ("strand", "+"),
         ("cs", ":10"),
-        ("Query_Start", "0"),
-        ("Query_End", "10"),
-        ("Target_Start", "100"),
+        ("query_start", "0"),
+        ("query_end", "10"),
+        ("target_start", "100"),
     ];
 
     /// `extra` entries take precedence over `BOTH_MAPPED_SAME_POSITION`'s
@@ -691,48 +691,48 @@ mod tests {
 
     #[test]
     fn query_junctions_identical_empty_equals_empty() {
-        let a = mapped_with(&[("junctions", "()")]);
-        let b = mapped_with(&[("junctions", "()")]);
+        let a = mapped_with(&[("query_junctions", "()")]);
+        let b = mapped_with(&[("query_junctions", "()")]);
         let class = classify(&getter(Box::leak(a.into_boxed_slice())), &getter(Box::leak(b.into_boxed_slice())));
         assert_eq!(class.query_junctions_identical, Some(true));
     }
 
     #[test]
     fn query_junctions_identical_same_set() {
-        let a = mapped_with(&[("junctions", "(10, 20)")]);
-        let b = mapped_with(&[("junctions", "(10, 20)")]);
+        let a = mapped_with(&[("query_junctions", "(10, 20)")]);
+        let b = mapped_with(&[("query_junctions", "(10, 20)")]);
         let class = classify(&getter(Box::leak(a.into_boxed_slice())), &getter(Box::leak(b.into_boxed_slice())));
         assert_eq!(class.query_junctions_identical, Some(true));
     }
 
     #[test]
     fn query_junctions_identical_ignores_order() {
-        let a = mapped_with(&[("junctions", "(10, 20)")]);
-        let b = mapped_with(&[("junctions", "(20, 10)")]);
+        let a = mapped_with(&[("query_junctions", "(10, 20)")]);
+        let b = mapped_with(&[("query_junctions", "(20, 10)")]);
         let class = classify(&getter(Box::leak(a.into_boxed_slice())), &getter(Box::leak(b.into_boxed_slice())));
         assert_eq!(class.query_junctions_identical, Some(true));
     }
 
     #[test]
     fn query_junctions_identical_disjoint_is_different() {
-        let a = mapped_with(&[("junctions", "(10,)")]);
-        let b = mapped_with(&[("junctions", "(20,)")]);
+        let a = mapped_with(&[("query_junctions", "(10,)")]);
+        let b = mapped_with(&[("query_junctions", "(20,)")]);
         let class = classify(&getter(Box::leak(a.into_boxed_slice())), &getter(Box::leak(b.into_boxed_slice())));
         assert_eq!(class.query_junctions_identical, Some(false));
     }
 
     #[test]
     fn query_junctions_identical_one_side_empty_is_different() {
-        let a = mapped_with(&[("junctions", "(10,)")]);
-        let b = mapped_with(&[("junctions", "()")]);
+        let a = mapped_with(&[("query_junctions", "(10,)")]);
+        let b = mapped_with(&[("query_junctions", "()")]);
         let class = classify(&getter(Box::leak(a.into_boxed_slice())), &getter(Box::leak(b.into_boxed_slice())));
         assert_eq!(class.query_junctions_identical, Some(false));
     }
 
     #[test]
     fn query_junctions_identical_subset_is_different() {
-        let a = mapped_with(&[("junctions", "(10, 20)")]);
-        let b = mapped_with(&[("junctions", "(10,)")]);
+        let a = mapped_with(&[("query_junctions", "(10, 20)")]);
+        let b = mapped_with(&[("query_junctions", "(10,)")]);
         let class = classify(&getter(Box::leak(a.into_boxed_slice())), &getter(Box::leak(b.into_boxed_slice())));
         assert_eq!(class.query_junctions_identical, Some(false));
     }
@@ -755,9 +755,9 @@ mod tests {
 
     #[test]
     fn ref_same_position_same_junctions_false_when_position_differs() {
-        // Same genomic-junction set, but a different Target_Start (position).
-        let a = mapped_with(&[("genomic_junctions", "((100, 250),)"), ("Target_Start", "100")]);
-        let b = mapped_with(&[("genomic_junctions", "((100, 250),)"), ("Target_Start", "200")]);
+        // Same genomic-junction set, but a different target_start (position).
+        let a = mapped_with(&[("genomic_junctions", "((100, 250),)"), ("target_start", "100")]);
+        let b = mapped_with(&[("genomic_junctions", "((100, 250),)"), ("target_start", "200")]);
         let class = classify(&getter(Box::leak(a.into_boxed_slice())), &getter(Box::leak(b.into_boxed_slice())));
         assert_eq!(class.ref_same_position_same_junctions, Some(false));
     }
@@ -765,7 +765,7 @@ mod tests {
     #[test]
     fn junction_identity_fields_are_none_unless_both_mapped() {
         let a = mapped_with(&[]);
-        let unmapped: Vec<(&str, &str)> = vec![("TargetChr", "*")];
+        let unmapped: Vec<(&str, &str)> = vec![("target_name", "*")];
         let class = classify(&getter(Box::leak(a.into_boxed_slice())), &getter(Box::leak(unmapped.into_boxed_slice())));
         assert_eq!(class.query_junctions_identical, None);
         assert_eq!(class.ref_same_position_same_junctions, None);
@@ -774,8 +774,8 @@ mod tests {
     #[test]
     fn neither_mapped_is_query_identical_but_not_via_revcomp() {
         // Both aligners agreeing a read is unmapped is itself agreement.
-        let unmapped_a: Vec<(&str, &str)> = vec![("TargetChr", "*")];
-        let unmapped_b: Vec<(&str, &str)> = vec![("TargetChr", "")];
+        let unmapped_a: Vec<(&str, &str)> = vec![("target_name", "*")];
+        let unmapped_b: Vec<(&str, &str)> = vec![("target_name", "")];
         let class = classify(
             &getter(Box::leak(unmapped_a.into_boxed_slice())),
             &getter(Box::leak(unmapped_b.into_boxed_slice())),
@@ -795,7 +795,7 @@ mod tests {
         // Sanity check the NeitherMapped branch didn't leak into
         // OnlyAMapped/OnlyBMapped — those must stay `false`, unchanged.
         let mapped = mapped_with(&[]);
-        let unmapped: Vec<(&str, &str)> = vec![("TargetChr", "*")];
+        let unmapped: Vec<(&str, &str)> = vec![("target_name", "*")];
         let class = classify(
             &getter(Box::leak(mapped.into_boxed_slice())),
             &getter(Box::leak(unmapped.into_boxed_slice())),
@@ -892,7 +892,7 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = content.lines().collect();
         let _ = std::fs::remove_file(&path);
-        assert_eq!(lines[0], "Category\tCount");
+        assert_eq!(lines[0], "category\tcount");
         assert_eq!(lines[1], "label_A\tSplice");
         assert_eq!(lines[2], "label_B\tSpliceHQ");
         assert_eq!(lines[3], "space\tquery");

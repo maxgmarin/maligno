@@ -1,8 +1,8 @@
-//! In-process external sort of a PAF by `Query_Name`, plus the read-ID set check.
+//! In-process external sort of a PAF by `query_name`, plus the read-ID set check.
 //!
-//! Sorting whole lines byte-lexicographically groups records by `Query_Name`
+//! Sorting whole lines byte-lexicographically groups records by `query_name`
 //! (the field-terminating `\t` = 0x09 sorts below any name byte) and orders the
-//! groups by `Query_Name` — equivalent to `LC_ALL=C sort -t$'\t' -k1,1` for PAF,
+//! groups by `query_name` — equivalent to `LC_ALL=C sort -t$'\t' -k1,1` for PAF,
 //! which has no tabs/newlines inside names. Backed by `ext-sort`: it buffers up
 //! to a byte limit in RAM, spills sorted runs to temp files, then k-way merges.
 
@@ -38,7 +38,7 @@ pub(crate) fn parse_mem(s: &str) -> Result<u64> {
 }
 
 /// Sort a stream of PAF lines (a PAF file, or PAF converted on the fly from
-/// SAM/BAM) by `Query_Name` (byte-lex, whole-line) into `output` (`.gz` is
+/// SAM/BAM) by `query_name` (byte-lex, whole-line) into `output` (`.gz` is
 /// gzip-compressed). Buffers up to `mem_bytes` in RAM, spilling sorted runs to
 /// `tmp_dir`.
 pub(crate) fn sort_lines_to_file(
@@ -72,7 +72,7 @@ pub(crate) fn sort_lines_to_file(
 
 // ── Read-ID set check ─────────────────────────────────────────────────────────
 
-/// Counts + a few examples from comparing the `Query_Name` sets of two PAFs.
+/// Counts + a few examples from comparing the `query_name` sets of two PAFs.
 pub(crate) struct IdSetCheck {
     pub shared: u64,
     pub only_a: u64,
@@ -81,7 +81,7 @@ pub(crate) struct IdSetCheck {
     pub examples_b: Vec<String>,
 }
 
-/// Streams the *distinct* `Query_Name`s of a sorted PAF in ascending order.
+/// Streams the *distinct* `query_name`s of a sorted PAF in ascending order.
 /// Constant memory (one buffered line + the last name returned).
 struct DistinctNames {
     reader: Box<dyn BufRead>,
@@ -123,7 +123,7 @@ impl DistinctNames {
 }
 
 /// Merge the distinct-name streams of two **sorted** PAFs to determine whether
-/// they carry the same `Query_Name` set. O(1) memory.
+/// they carry the same `query_name` set. O(1) memory.
 pub(crate) fn read_id_set_check(a: &str, b: &str, max_examples: usize) -> Result<IdSetCheck> {
     let mut da = DistinctNames::new(a)?;
     let mut db = DistinctNames::new(b)?;

@@ -13,12 +13,12 @@ for the full mode matrix).
 
 | # | Column | Description |
 |---|---|---|
-| 1 | `Read_Name` | Read ID |
+| 1 | `query_name` | Read ID |
 | 2 | `outcome` | Category: `diff_aln_to_both` (mapped in both sets, not identical under the active mode; `reference_diff` under `--space reference`), `diff_aln_only_A` (mapped in A only), or `diff_aln_only_B` (mapped in B only) |
 | 3 | `query_identical_same_strand` | `1` if `query_identical` reached via the same-strand branch |
 | 4 | `query_identical_revcomp` | `1` if `query_identical` reached via the reverse-complement branch |
 | 5 | `query_junctions_identical` | `1` if both mapped and the **query-space** splice-junction sets match — computed unconditionally, not just under `--compare-by junctions` |
-| 6 | `ref_same_position_same_aln` | `1` if reference-identical: same `TargetChr`/`Strand`/`Target_Start` and same `cs` |
+| 6 | `ref_same_position_same_aln` | `1` if reference-identical: same `target_name`/`strand`/`target_start` and same `cs` |
 | 7 | `ref_same_position_diff_aln` | `1` if same position, different `cs` |
 | 8 | `ref_diff_position_same_aln` | `1` if same `cs`, different position (relocated) |
 | 9 | `ref_diff_position_diff_aln` | `1` if both position and `cs` differ |

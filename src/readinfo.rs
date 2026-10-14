@@ -14,12 +14,12 @@ const COL_QUERY_LEN: usize = index_of(&ALNINFO_COLS, QUERY_LEN);
 const COL_QUERY_START: usize = index_of(&ALNINFO_COLS, QUERY_START);
 const COL_QUERY_END: usize = index_of(&ALNINFO_COLS, QUERY_END);
 const COL_STRAND: usize = index_of(&ALNINFO_COLS, STRAND);
-const COL_MQ: usize = index_of(&ALNINFO_COLS, MQ);
+const COL_MQ: usize = index_of(&ALNINFO_COLS, MAPQ);
 const COL_TARGET_NAME: usize = index_of(&ALNINFO_COLS, TARGET_NAME);
 const COL_TARGET_START: usize = index_of(&ALNINFO_COLS, TARGET_START);
 const COL_TARGET_END: usize = index_of(&ALNINFO_COLS, TARGET_END);
-const COL_MS: usize = index_of(&ALNINFO_COLS, MS);
-const COL_AS: usize = index_of(&ALNINFO_COLS, AS);
+const COL_MS: usize = index_of(&ALNINFO_COLS, MS_SCORE);
+const COL_AS: usize = index_of(&ALNINFO_COLS, AS_SCORE);
 const COL_CS: usize = index_of(&ALNINFO_COLS, CS);
 const COL_N_MATCH_EVENTS: usize = index_of(&ALNINFO_COLS, N_MATCH_EVENTS);
 const COL_N_MATCH_BASES: usize = index_of(&ALNINFO_COLS, N_MATCH_BASES);
@@ -29,13 +29,13 @@ const COL_N_INS_EVENTS: usize = index_of(&ALNINFO_COLS, N_INSERTION_EVENTS);
 const COL_N_INS_BASES: usize = index_of(&ALNINFO_COLS, N_INSERTION_BASES);
 const COL_N_DEL_EVENTS: usize = index_of(&ALNINFO_COLS, N_DELETION_EVENTS);
 const COL_N_DEL_BASES: usize = index_of(&ALNINFO_COLS, N_DELETION_BASES);
-const COL_N_SPLICE_EVENTS: usize = index_of(&ALNINFO_COLS, N_SPLICE_JUNCTION_EVENTS);
-const COL_N_SPLICE_BASES: usize = index_of(&ALNINFO_COLS, N_SPLICE_JUNCTION_BASES);
-const COL_N_SC_START: usize = index_of(&ALNINFO_COLS, N_SOFTCLIPPED_BASES_START);
-const COL_N_SC_END: usize = index_of(&ALNINFO_COLS, N_SOFTCLIPPED_BASES_END);
-const COL_N_SC_EVENTS: usize = index_of(&ALNINFO_COLS, N_SOFTCLIPPED_EVENTS);
-const COL_JUNCTIONS: usize = index_of(&ALNINFO_COLS, JUNCTIONS);
-const COL_SEQID: usize = index_of(&ALNINFO_COLS, SEQID);
+const COL_N_SPLICE_EVENTS: usize = index_of(&ALNINFO_COLS, N_INTRON_EVENTS);
+const COL_N_SPLICE_BASES: usize = index_of(&ALNINFO_COLS, N_INTRON_BASES);
+const COL_N_SC_START: usize = index_of(&ALNINFO_COLS, N_SOFTCLIP_BASES_START);
+const COL_N_SC_END: usize = index_of(&ALNINFO_COLS, N_SOFTCLIP_BASES_END);
+const COL_N_SC_EVENTS: usize = index_of(&ALNINFO_COLS, N_SOFTCLIP_EVENTS);
+const COL_JUNCTIONS: usize = index_of(&ALNINFO_COLS, QUERY_JUNCTIONS);
+const COL_ALN_IDENTITY: usize = index_of(&ALNINFO_COLS, ALN_IDENTITY);
 const COL_QUERY_ALN_LEN: usize = index_of(&ALNINFO_COLS, QUERY_ALN_LEN);
 const COL_QUERY_ALN_COV: usize = index_of(&ALNINFO_COLS, QUERY_ALN_COV);
 const COL_GENOMIC_JUNCTIONS: usize = index_of(&ALNINFO_COLS, GENOMIC_JUNCTIONS);
@@ -98,7 +98,7 @@ pub struct ReadInfoRow {
     pub num_aln_tpp: u64,
     /// Mapped alignment rows whose `tp:A` is `S` or `i` (secondary).
     pub num_aln_tps: u64,
-    /// All fields except Read_Name and Read_Len, pre-formatted for pass-through,
+    /// All fields except query_name and query_len, pre-formatted for pass-through,
     /// in `READINFO_COLS` order (pinned by `raw_fields_follow_the_readinfo_columns`).
     pub raw_fields: Vec<String>,
 }
@@ -120,12 +120,12 @@ pub(crate) struct AlnRow {
     pub(crate) fields: Vec<String>,
     pub(crate) ms: i64,
     pub(crate) aln_score: i64,
-    pub(crate) is_aligned: bool, // Target_Name != "*"
+    pub(crate) is_aligned: bool, // target_name != "*"
     pub(crate) mapq: u32,        // parsed once; used as tertiary sort key
 }
 
 impl AlnRow {
-    /// Query_Name (read ID) of this alignment row — used to detect group
+    /// query_name (read ID) of this alignment row — used to detect group
     /// boundaries when reading PAF straight into per-read groups.
     pub(crate) fn query_name(&self) -> &str {
         &self.fields[COL_QUERY_NAME]
@@ -156,7 +156,7 @@ pub(crate) fn parse_aln_row(line: &str) -> Option<AlnRow> {
 /// highest-confidence alignment becomes the representative; every per-alignment
 /// column (target, strand, scores, identity, coverage, junctions, cs,
 /// coordinates, event counts) comes from that single row. Only the counts
-/// (Num_Aln, Num_Aln_tpP, Num_Aln_tpS, Num_Aln_MaxScore) are computed over the
+/// (n_alns, n_alns_tp_p, n_alns_tp_s, n_alns_tied_top_score) are computed over the
 /// full group.
 pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
     rows.sort_by(|a, b| {
@@ -204,7 +204,7 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
     let ms: i64 = best.ms;
     let query_aln_cov: f64 = bf[COL_QUERY_ALN_COV].parse().unwrap_or(f64::NAN);
     let query_aln_len: u64 = bf[COL_QUERY_ALN_LEN].parse().unwrap_or(0);
-    let seqid: f64 = bf[COL_SEQID].parse().unwrap_or(f64::NAN);
+    let seqid: f64 = bf[COL_ALN_IDENTITY].parse().unwrap_or(f64::NAN);
 
     // Counts over all rows in the group.
     let mut num_aln: u64 = 0;
@@ -225,7 +225,7 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
     }
 
     // Count aligned rows tied with the best on every selection key (ms, AS,
-    // MQ). Num_Aln_MaxScore = 1 means the representative won outright; > 1
+    // MQ). n_alns_tied_top_score = 1 means the representative won outright; > 1
     // means input order picked it among equals.
     let top_key = rows
         .iter()
@@ -237,7 +237,7 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
         .filter(|r| r.is_aligned && Some((r.ms, r.aln_score, r.mapq)) == top_key)
         .count() as u64;
 
-    // Build raw_fields for pass-through (all columns except Read_Name, Read_Len),
+    // Build raw_fields for pass-through (all columns except query_name, query_len),
     // in READINFO_COLS order.
     let raw_fields: Vec<String> = vec![
         target_chr.clone(),
@@ -388,8 +388,8 @@ pub fn run(args: &ReadInfoArgs) -> Result<()> {
                 if !warned_unsorted && name.as_bytes() < cur.as_bytes() {
                     eprintln!(
                         "WARNING: input alninfo is not byte-lex sorted by \
-                         Query_Name (saw {cur:?} then {name:?}). `readinfo` \
-                         groups by *contiguous* Query_Name runs and the \
+                         query_name (saw {cur:?} then {name:?}). `readinfo` \
+                         groups by *contiguous* query_name runs and the \
                          downstream `compare` step requires byte-lex sort. \
                          If reads aren't contiguous, per-read summaries will \
                          be wrong. To pre-sort, either sort the alninfo:\n\
@@ -461,8 +461,8 @@ mod tests {
         parse_aln_row(&f.join("\t")).expect("valid alninfo row")
     }
 
-    /// Collapse `rows`, check the tpP + tpS <= Num_Aln invariant, and return
-    /// (Num_Aln_tpP, Num_Aln_tpS, Num_Aln).
+    /// Collapse `rows`, check the tpP + tpS <= n_alns invariant, and return
+    /// (n_alns_tp_p, n_alns_tp_s, n_alns).
     fn counts(mut rows: Vec<AlnRow>) -> (u64, u64, u64) {
         let ri = collapse_group(&mut rows);
         assert!(ri.num_aln_tpp + ri.num_aln_tps <= ri.num_aln);
@@ -478,7 +478,7 @@ mod tests {
         let header = readinfo_header();
         let cols: Vec<&str> = header.split('\t').collect();
         assert_eq!(cols.len(), 36);
-        assert_eq!(&cols[33..], &["tp_tag", "Num_Aln_tpP", "Num_Aln_tpS"]);
+        assert_eq!(&cols[33..], &["tp_tag", "n_alns_tp_p", "n_alns_tp_s"]);
         let ri = collapse_group(&mut [row("chr1", 50, 50, 60, "P")]);
         assert_eq!(2 + ri.raw_fields.len(), cols.len());
     }
@@ -564,15 +564,15 @@ mod tests {
         let vals: [(Col, &str); 36] = [
             (QUERY_NAME, "r9"), (QUERY_LEN, "101"), (QUERY_START, "2"), (QUERY_END, "99"),
             (STRAND, "-"), (TARGET_NAME, "chr9"), (TARGET_LEN, "5000"),
-            (TARGET_START, "200"), (TARGET_END, "1300"), (NUM_RESIDUE_MATCHES, "90"),
-            (ALN_BLOCK_LEN, "95"), (MQ, "42"), (MS, "77"), (AS, "66"), (CS, ":10"),
+            (TARGET_START, "200"), (TARGET_END, "1300"), (N_RESIDUE_MATCHES, "90"),
+            (ALN_BLOCK_LEN, "95"), (MAPQ, "42"), (MS_SCORE, "77"), (AS_SCORE, "66"), (CS, ":10"),
             (N_MATCH_EVENTS, "11"), (N_MATCH_BASES, "12"), (N_SUBSTITUTION_EVENTS, "13"),
             (N_SUBSTITUTION_BASES, "14"), (N_INSERTION_EVENTS, "15"), (N_INSERTION_BASES, "16"),
             (N_DELETION_EVENTS, "17"), (N_DELETION_BASES, "18"),
-            (N_SPLICE_JUNCTION_EVENTS, "19"), (N_SPLICE_JUNCTION_BASES, "20"),
-            (N_SOFTCLIPPED_BASES_START, "21"), (N_SOFTCLIPPED_BASES_END, "22"),
-            (N_SOFTCLIPPED_EVENTS, "2"), (JUNCTIONS, "(5, 6, 7)"), (SPLICE_JUNCTION_COUNT, "3"),
-            (TARGET_START_1BASED, "201"), (SEQID, "0.5"), (QUERY_ALN_LEN, "97"),
+            (N_INTRON_EVENTS, "19"), (N_INTRON_BASES, "20"),
+            (N_SOFTCLIP_BASES_START, "21"), (N_SOFTCLIP_BASES_END, "22"),
+            (N_SOFTCLIP_EVENTS, "2"), (QUERY_JUNCTIONS, "(5, 6, 7)"), (N_QUERY_JUNCTIONS, "3"),
+            (TARGET_START_1BASED, "201"), (ALN_IDENTITY, "0.5"), (QUERY_ALN_LEN, "97"),
             (QUERY_ALN_COV, "0.25"), (GENOMIC_JUNCTIONS, "((300, 400),)"), (TP_TAG, "S"),
         ];
         let mut f = vec![String::new(); ALNINFO_COLS.len()];
@@ -582,18 +582,18 @@ mod tests {
         let ri = collapse_group(&mut [parse_aln_row(&f.join("\t")).unwrap()]);
 
         let expected: [(Col, &str); 34] = [
-            (TARGET_CHR, "chr9"), (STRAND, "-"), (MQ_BEST, "42"), (AS_MAX, "66"),
-            (MS_MAX, "77"), (QUERY_ALN_COV_MAX, "0.25"), (QUERY_ALN_LEN_MAX, "97"),
-            (SEQID_MAX, "0.5"), (JUNCTIONS, "(5, 6, 7)"), (NUM_ALN, "1"),
-            (NUM_ALN_MAXSCORE, "1"), (JUNC_COUNT, "3"),
+            (TARGET_NAME, "chr9"), (STRAND, "-"), (MAPQ, "42"), (AS_SCORE, "66"),
+            (MS_SCORE, "77"), (QUERY_ALN_COV, "0.25"), (QUERY_ALN_LEN, "97"),
+            (ALN_IDENTITY, "0.5"), (QUERY_JUNCTIONS, "(5, 6, 7)"), (N_ALNS, "1"),
+            (N_ALNS_TIED_TOP_SCORE, "1"), (N_QUERY_JUNCTIONS, "3"),
             (N_MATCH_EVENTS, "11"), (N_MATCH_BASES, "12"), (N_SUBSTITUTION_EVENTS, "13"),
             (N_SUBSTITUTION_BASES, "14"), (N_INSERTION_EVENTS, "15"), (N_INSERTION_BASES, "16"),
             (N_DELETION_EVENTS, "17"), (N_DELETION_BASES, "18"),
-            (N_SPLICE_JUNCTION_EVENTS, "19"), (N_SPLICE_JUNCTION_BASES, "20"),
-            (N_SOFTCLIPPED_BASES_START, "21"), (N_SOFTCLIPPED_BASES_END, "22"),
-            (N_SOFTCLIPPED_EVENTS, "2"), (CS, ":10"), (GENOMIC_JUNCTIONS, "((300, 400),)"),
+            (N_INTRON_EVENTS, "19"), (N_INTRON_BASES, "20"),
+            (N_SOFTCLIP_BASES_START, "21"), (N_SOFTCLIP_BASES_END, "22"),
+            (N_SOFTCLIP_EVENTS, "2"), (CS, ":10"), (GENOMIC_JUNCTIONS, "((300, 400),)"),
             (QUERY_START, "2"), (QUERY_END, "99"), (TARGET_START, "200"), (TARGET_END, "1300"),
-            (TP_TAG, "S"), (NUM_ALN_TPP, "0"), (NUM_ALN_TPS, "1"),
+            (TP_TAG, "S"), (N_ALNS_TP_P, "0"), (N_ALNS_TP_S, "1"),
         ];
         assert_eq!(2 + ri.raw_fields.len(), READINFO_COLS.len());
         assert_eq!((ri.read_name.as_str(), ri.read_len), ("r9", 101));
@@ -617,7 +617,7 @@ mod tests {
             f[COL_TARGET_NAME] = target.into();
             f[COL_MS] = ms.to_string();
             f[COL_AS] = aln_score.to_string();
-            f[COL_SEQID] = seqid.into();
+            f[COL_ALN_IDENTITY] = seqid.into();
             f[COL_QUERY_ALN_LEN] = len.into();
             f[COL_QUERY_ALN_COV] = cov.into();
             f[COL_TP_TAG] = "P".into();
@@ -632,7 +632,7 @@ mod tests {
         assert_eq!((ri.seqid, ri.query_aln_cov), (0.9, 0.6));
         let at = |c: Col| ri.raw_fields[index_of(&READINFO_COLS, c) - 2].as_str();
         assert_eq!(
-            [at(AS_MAX), at(MS_MAX), at(SEQID_MAX), at(QUERY_ALN_COV_MAX), at(QUERY_ALN_LEN_MAX)],
+            [at(AS_SCORE), at(MS_SCORE), at(ALN_IDENTITY), at(QUERY_ALN_COV), at(QUERY_ALN_LEN)],
             ["60", "50", "0.9", "0.6", "60"]
         );
         assert_eq!((ri.num_aln, ri.num_aln_maxscore), (2, 1));

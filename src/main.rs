@@ -30,7 +30,7 @@
 //!   - `toolkit query-junction-diff`  alignment comparison table (Parquet) -> per-read,
 //!                                    per-side splice-junction reconstruction and diff
 //!
-//! Only reads present in both inputs, matched on Read_Name, produce an output row.
+//! Only reads present in both inputs, matched on query_name, produce an output row.
 
 
 // ── Pipeline modules ──────────────────────────────────────────────────────────

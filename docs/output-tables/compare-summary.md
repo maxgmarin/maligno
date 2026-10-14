@@ -2,12 +2,12 @@
 
 `{prefix}.compare.summary.tsv` — aggregate summary statistics over the
 comparison table, tallied as `compare` streams its rows (constant memory).
-2 columns: `Category`, `Count`. The same schema is written by
+2 columns: `category`, `count`. The same schema is written by
 `toolkit summary` (computed from an existing `compare.tsv`/`.parquet`)
 and, with `space`/`compare_by` rows added after `label_A`/`label_B`, by
 `toolkit find-aln-diff`.
 
-Every `Category` below is one **row** in the file, in this order:
+Every `category` below is one **row** in the file, in this order:
 
 | Category | Meaning |
 |---|---|
@@ -24,7 +24,7 @@ Every `Category` below is one **row** in the file, in this order:
 | `query_not_identical` | Both mapped but not `query_identical` — i.e. `aligned_both - query_identical_same_strand - query_identical_revcomp` (not gated on `aligned_neither`, which is never part of this count) |
 | `query_junctions_identical` | Both mapped, **query-space** splice-junction sets match — a looser criterion than `query_identical` (ignores mismatches/indels/soft-clips) |
 | `query_junctions_not_identical` | Both mapped but query-space junction sets differ |
-| `ref_same_position_same_aln` | Same `TargetChr`/`Strand`/`Target_Start` **and** same `cs` (motif-blind) — reference-identical |
+| `ref_same_position_same_aln` | Same `target_name`/`strand`/`target_start` **and** same `cs` (motif-blind) — reference-identical |
 | `ref_same_position_diff_aln` | Same position, different `cs` |
 | `ref_diff_position_same_aln` | Same `cs`, different position — relocated |
 | `ref_diff_position_diff_aln` | Both position and `cs` differ |
@@ -35,8 +35,8 @@ Every `Category` below is one **row** in the file, in this order:
 
 **Notes**
 - Classification is computed from each side's **representative (best)
-  alignment** using `TargetChr`, `Strand`, `cs`, `Query_Start`/`Query_End`,
-  `Target_Start`/`Target_End`, `junctions`, `genomic_junctions` — the same
+  alignment** using `target_name`, `strand`, `cs`, `query_start`/`query_end`,
+  `target_start`/`target_end`, `query_junctions`, `genomic_junctions` — the same
   columns from the [compare table](compare.md).
 - Reference-space classification is strict and literal: no
   reverse-complement accommodation, so a real strand difference always

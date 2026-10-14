@@ -3,8 +3,8 @@
 //! The pairing, classification and row writing are `compare`'s own
 //! ([`crate::compare::run_merge`]); this module only supplies a readinfo-TSV
 //! [`ReadSource`], so both commands produce the same table and summary from the
-//! same per-read rows. Reads are matched on `Read_Name`; both inputs must be
-//! sorted by `Read_Name` in byte order (`LC_ALL=C`).
+//! same per-read rows. Reads are matched on `query_name`; both inputs must be
+//! sorted by `query_name` in byte order (`LC_ALL=C`).
 
 use std::io::{self, BufRead, Write};
 
@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 
 use crate::compare::{run_merge, ReadSource, SourceRead};
 use crate::compare_summary::CompareSummary;
-use crate::columns::{COMPARE_SIDE_COLS, READ_LEN, READ_NAME};
+use crate::columns::{COMPARE_SIDE_COLS, QUERY_LEN, QUERY_NAME};
 use crate::comparison_row::write_compare_header;
 use crate::io_utils::{open_input, open_output};
 use crate::parquet_out::{is_parquet_path, ComparisonParquetWriter};
@@ -21,8 +21,8 @@ use crate::parquet_out::{is_parquet_path, ComparisonParquetWriter};
 
 /// Validate a `--label-a` / `--label-b` value.
 ///
-/// The label is written as a **data value** (the `Label_A` /
-/// `Label_B` columns) on every comparison row, and it is also interpolated into
+/// The label is written as a **data value** (the `label_A` /
+/// `label_B` columns) on every comparison row, and it is also interpolated into
 /// per-set output filenames, so a tab/newline would corrupt the TSV and a path
 /// separator would redirect output. Underscores are fine — side identity comes
 /// from the fixed `_A` / `_B` column suffixes, not from parsing the label.
@@ -41,20 +41,20 @@ pub(crate) fn validate_set_label(s: &str) -> Result<String, String> {
 
 #[derive(clap::Args, Debug)]
 pub struct MergeReadinfoArgs {
-    /// Readinfo TSV A (must be sorted by Read_Name)
+    /// Readinfo TSV A (must be sorted by query_name)
     #[arg(short = 'a', long = "readinfo-a", value_name = "readinfo_a.tsv[.gz]")]
     pub readinfo_a: String,
 
-    /// Readinfo TSV B (must be sorted by Read_Name)
+    /// Readinfo TSV B (must be sorted by query_name)
     #[arg(short = 'b', long = "readinfo-b", value_name = "readinfo_b.tsv[.gz]")]
     pub readinfo_b: String,
 
-    /// Name for dataset A, recorded in the output's `Label_A` column
+    /// Name for dataset A, recorded in the output's `label_A` column
     #[arg(long = "label-a", value_name = "LABEL", default_value = "SetA",
           value_parser = validate_set_label)]
     pub label_a: String,
 
-    /// Name for dataset B, recorded in the output's `Label_B` column
+    /// Name for dataset B, recorded in the output's `label_B` column
     #[arg(long = "label-b", value_name = "LABEL", default_value = "SetB",
           value_parser = validate_set_label)]
     pub label_b: String,
@@ -64,7 +64,7 @@ pub struct MergeReadinfoArgs {
     pub output: String,
 
     /// Compare the shared intersection of reads instead of erroring when the two
-    /// inputs do not carry the exact same "Read_Name" set.
+    /// inputs do not carry the exact same "query_name" set.
     #[arg(long = "allow-id-mismatch")]
     pub allow_id_mismatch: bool,
 }
@@ -169,8 +169,8 @@ impl TsvReadSource {
                 format!("readinfo table {side} ('{path}') is missing column '{name}'")
             })
         };
-        let idx_name = require(READ_NAME.name)?;
-        let idx_len = require(READ_LEN.name)?;
+        let idx_name = require(QUERY_NAME.name)?;
+        let idx_len = require(QUERY_LEN.name)?;
         for col in COMPARE_SIDE_COLS {
             require(col.name)?;
         }
@@ -189,13 +189,13 @@ impl ReadSource for TsvReadSource {
         };
         let name = fields
             .get(self.idx_name)
-            .with_context(|| format!("readinfo row is missing its {} field", READ_NAME.name))?
+            .with_context(|| format!("readinfo row is missing its {} field", QUERY_NAME.name))?
             .clone();
         let len: u64 = fields
             .get(self.idx_len)
-            .with_context(|| format!("readinfo row is missing its {} field", READ_LEN.name))?
+            .with_context(|| format!("readinfo row is missing its {} field", QUERY_LEN.name))?
             .parse()
-            .with_context(|| format!("failed to parse {}", READ_LEN.name))?;
+            .with_context(|| format!("failed to parse {}", QUERY_LEN.name))?;
         let line = fields.join("\t");
         self.reader.advance()?;
         Ok(Some(SourceRead { name, len, line }))
@@ -272,7 +272,7 @@ mod tests {
     use super::*;
 
     /// Write a small readinfo TSV and return its path. Each row gives the first
-    /// three columns (Read_Name, Read_Len, TargetChr); the rest are left empty.
+    /// three columns (query_name, query_len, target_name); the rest are left empty.
     fn write_tsv(name: &str, rows: &[&str]) -> String {
         write_tsv_with_header(name, &crate::readinfo::readinfo_header(), rows)
     }
@@ -304,7 +304,7 @@ mod tests {
         }
     }
 
-    /// (Read_Name, Read_Len) of every data row in a comparison TSV.
+    /// (query_name, query_len) of every data row in a comparison TSV.
     fn rows(out: &str) -> Vec<(String, String)> {
         std::fs::read_to_string(out)
             .unwrap()
@@ -319,8 +319,8 @@ mod tests {
 
     #[test]
     fn matches_on_read_name_only_like_compare() {
-        // r1's Read_Len differs between the sides: it is still compared, and the
-        // output Read_Len is side A's, as in `compare`.
+        // r1's query_len differs between the sides: it is still compared, and the
+        // output query_len is side A's, as in `compare`.
         let a = write_tsv("len_a", &["r1\t100\tchr1", "r2\t50\tchr2"]);
         let b = write_tsv("len_b", &["r1\t101\tchr1", "r2\t50\t*"]);
         let out = write_tsv("len_out", &[]);

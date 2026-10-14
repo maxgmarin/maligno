@@ -25,7 +25,7 @@ pub struct PafRecord<'a> {
     /// 'I' inversion of the primary). '*' when absent or unmapped — the
     /// same sentinel this codebase already uses for an unknown `strand`.
     pub tp_tag:               char,
-    /// True when Target_Name == "*" (unmapped record).
+    /// True when target_name == "*" (unmapped record).
     pub is_unmapped:          bool,
 }
 

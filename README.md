@@ -88,12 +88,13 @@ maligno compare \
 
 It then runs the whole pipeline in four main steps:
 
-1. **Sort** both inputs by `Query_Name`.
+1. **Sort** both inputs by `query_name`.
 2. **Verify** both inputs carry the **same read-ID set**. By default it **errors**
    if they differ, reporting how many IDs are shared / only in A / only in B.
 3. **Select representative alignment for each readID within each read set (A and B)**.
    In cases where a read has multiple alignments reported, the best alignment is
-   chosen by alignment score: `ms` tag, then `AS` tag, then alignment `MQ`.
+   chosen by alignment score: `ms` tag, then `AS` tag, then mapping quality (`mapq`).
+   Every value reported for the read describes that one alignment.
 4. **Compare the representative alignment across sets A and B**. The selected
    alignments for each read are systematically compared and the results are
    written to a final comparison table (Parquet by default) that keeps track of each alignment's info
@@ -104,8 +105,8 @@ It then runs the whole pipeline in four main steps:
 | Flag | Purpose |
 |------|---------|
 | `-a`/`--aln-a`, `-b`/`--aln-b` | input alignments for set A / B: PAF (`.paf[.gz]`), SAM or BAM |
-| `--sam-records-to-convert` | SAM/BAM inputs only: `primary-supp` (default, = `sam2paf -p`), `primary` (= `-P`), or `all`; unmapped reads are always kept. This also decides which alignment types the `Num_Aln_tpP`/`Num_Aln_tpS` counts can see (the default drops secondaries, so `Num_Aln_tpS` is `0`) |
-| `--label-a`, `--label-b` | names for each set, used in filenames and recorded in the comparison table's `Label_A` / `Label_B` columns |
+| `--sam-records-to-convert` | SAM/BAM inputs only: `primary-supp` (default, = `sam2paf -p`), `primary` (= `-P`), or `all`; unmapped reads are always kept. This also decides which alignment types the `n_alns_tp_p`/`n_alns_tp_s` counts can see (the default drops secondaries, so `n_alns_tp_s` is `0`) |
+| `--label-a`, `--label-b` | names for each set, used in filenames and recorded in the comparison table's `label_A` / `label_B` columns |
 | `-o`, `--outdir` | output directory |
 | `-p`, `--prefix` | filename prefix for all outputs |
 | `--sort-mem` | in-RAM sort buffer per file (default `1G`; `K`/`M`/`G`) |
@@ -129,8 +130,8 @@ A `compare` run can write the following files in the user defined output directo
 |------|------|----------|
 | `{prefix}.{label}.alninfo.tsv.gz` | 36 | **per-alignment** table: one row per PAF alignment (every alignment, per set); opt-in via `--emit-alninfo` |
 | `{prefix}.{label}.readinfo.tsv.gz` | 36 | **per-read** table: the chosen best alignment for each read (per set); opt-in via `--emit-readinfo` |
-| `{prefix}.compare.parquet` | 100 | the **comparison** table (unless `--format tsv`) |
-| `{prefix}.compare.tsv.gz` | 100 | the same table as gzipped TSV (only with `--format tsv` or `both`) |
+| `{prefix}.compare.parquet` | 99 | the **comparison** table (unless `--format tsv`) |
+| `{prefix}.compare.tsv.gz` | 99 | the same table as gzipped TSV (only with `--format tsv` or `both`) |
 | `{prefix}.compare.summary.tsv` | 2 | **aggregate summary statistics** (see below) |
 | `{prefix}.query_diff_reads.tsv.gz` | 10 | table of all reads with difference in alignment between set A and B  |
 | `{prefix}.query_diff_regions.{A,B}.bed.gz` | 10 | genomic regions where differing reads cluster, per set |
@@ -178,14 +179,14 @@ maligno compare \
 # Inspect a comparison header (column number → name).
 zcat < test_data/test_results/Splice_vs_SpliceHQ.compare.tsv.gz | head -1 | tr '\t' '\n' | nl
 
-# Sanity-check column counts (expect 36 for alninfo and readinfo, 100 for compare, 10 for query_diff_reads).
+# Sanity-check column counts (expect 36 for alninfo and readinfo, 99 for compare, 10 for query_diff_reads).
 for f in test_data/test_results/Splice_vs_SpliceHQ.*.tsv.gz; do
   printf '%s\t' "$f"; zcat < "$f" | awk -F'\t' '{print NF}' | sort -u | paste -sd, -
 done
 
 # Count reads whose query-coordinate junctions don't exactly agree between the two sets.
 zcat < test_data/test_results/Splice_vs_SpliceHQ.compare.tsv.gz \
-  | awk -F'\t' 'NR==1{for(i=1;i<=NF;i++)c[$i]=i;next} $c["N_Unmatched_Junctions"]>0' | wc -l
+  | awk -F'\t' 'NR==1{for(i=1;i<=NF;i++)c[$i]=i;next} $c["n_query_junctions_not_shared"]>0' | wc -l
 ```
 
 ---
@@ -211,7 +212,7 @@ The full manual lives in **[`docs/REFERENCE.md`](docs/REFERENCE.md)**:
 
 #### The alignment comparison table (`{prefix}.compare.parquet` or `{prefix}.compare.tsv.gz`)
 
-One row per read, 100 columns: the representative alignment's stats for set A and
+One row per read, 99 columns: the representative alignment's stats for set A and
 for set B (suffixed `_A` / `_B`), plus a block of columns comparing how those two
 alignments differ (score, coverage, indels, soft-clipping, and junction agreement
 in both query and genomic space).
@@ -232,11 +233,11 @@ The headline is the **per-read alignment status**, followed by **identity** stat
 |----------|---------|
 | `label_A` / `label_B` | which dataset each side is (the `--label-a` / `--label-b` values), so the summary is self-describing |
 | `reads_compared` | reads written to the comparison table |
-| `aligned_both` / `aligned_only_A` / `aligned_only_B` / `aligned_neither` | how the read's representative alignment maps in each set (an unmapped side is `TargetChr == "*"`) |
+| `aligned_both` / `aligned_only_A` / `aligned_only_B` / `aligned_neither` | how the read's representative alignment maps in each set (an unmapped side is `target_name == "*"`) |
 | `query_identical` / `query_not_identical` | `query_identical`: either both sides mapped over the same query span with the **same alignment relative to the read** (the same `cs` on the same strand, or reverse-complement `cs` on opposite strands; intron motif letters ignored), or neither side mapped at all (`aligned_neither`: both aligners agreeing a read doesn't map is agreement, not disagreement); `query_not_identical` is its complement among `aligned_both` reads only |
 | `query_identical_same_strand` / `query_identical_revcomp` | the both-mapped `query_identical` reads, split by same-strand vs reverse-complement match |
 | `query_junctions_identical` / `query_junctions_not_identical` | same, but comparing only the **query-space splice-junction set** (ignores mismatches/indels/soft-clips) |
-| `ref_same_position_same_aln` | reference-identical: same `TargetChr` + `Strand` + `Target_Start` (same genomic position) **and** same `cs` |
+| `ref_same_position_same_aln` | reference-identical: same `target_name` + `strand` + `target_start` (same genomic position) **and** same `cs` |
 | `ref_same_position_diff_aln` | same reference position, different alignment (e.g. a different indel placement at the same site) |
 | `ref_diff_position_same_aln` | same alignment, different reference position |
 | `ref_diff_position_diff_aln` | both reference position and alignment differ |

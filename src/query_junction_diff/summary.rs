@@ -129,7 +129,7 @@ impl Summary {
         ]
     }
 
-    /// Same `Category`/`Count` + `label_A`/`label_B` provenance-row
+    /// Same `category`/`count` + `label_A`/`label_B` provenance-row
     /// convention as `CompareSummary::write_tsv` (compare_summary.rs) — a
     /// dedicated writer for this dedicated struct, not a change to
     /// `CompareSummary` itself.

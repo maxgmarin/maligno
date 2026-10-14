@@ -69,7 +69,7 @@ exceptions are `compare`'s `-a`/`-b` (real file paths only), Parquet inputs
 (real file paths only), and `toolkit query-junction-diff` (Parquet only).
 
 **Read identity.** maligno matches alignments across files by read name
-(`Query_Name` in PAF, `QNAME` in SAM/BAM), so each name must identify one
+(`query_name` in PAF, `QNAME` in SAM/BAM), so each name must identify one
 read. For paired-end SAM/BAM, `/1` or `/2` is appended to each mate's name, so
 mates are compared separately.
 
@@ -102,8 +102,8 @@ picks which records are converted:
 | `primary` | primary only | `sam2paf -P -U` |
 | `all` | every record | `sam2paf -U` |
 
-This also decides which alignments the per-read `Num_Aln_tpP` / `Num_Aln_tpS`
-counts can see. Under the default, secondaries are dropped, so `Num_Aln_tpS`
+This also decides which alignments the per-read `n_alns_tp_p` / `n_alns_tp_s`
+counts can see. Under the default, secondaries are dropped, so `n_alns_tp_s`
 is `0`.
 
 Every kept, mapped SAM/BAM record needs a `cs` tag, or an `MD` tag plus `SEQ`
@@ -160,7 +160,7 @@ Written to `--outdir`, named by `--prefix`:
 ### Labels
 
 `--label-a` / `--label-b` (defaults `SetA` / `SetB`) name the two sets. They
-are written to the comparison table's `Label_A` / `Label_B` columns and to the
+are written to the comparison table's `label_A` / `label_B` columns and to the
 summary, and are used in the per-set output filenames. They must be non-empty,
 must differ from each other, and must not contain tabs, newlines, `/` or `\`.
 Underscores are fine. Columns are always suffixed `_A` / `_B`, whatever the
@@ -224,7 +224,7 @@ gives the same bytes as `samtools view -h in.bam | maligno sam2paf -`.
 | `-U` | write a placeholder PAF record for each unmapped read (otherwise unmapped reads are dropped) |
 
 Pass `-U` when the PAF will be compared: unmapped reads then appear as
-`Num_Aln = 0` rows instead of disappearing.
+`n_alns = 0` rows instead of disappearing.
 
 **The `cs` requirement.** Each kept, mapped record's `cs` comes from its
 `cs:Z:` tag when present, or is built from `CIGAR` + `MD` + `SEQ`. If neither
@@ -260,7 +260,7 @@ over the PAF. At least one output must be given.
   count matches, substitutions, insertions, deletions and splice junctions;
   soft-clip lengths, junction coordinates and identity/coverage are derived
   from it. Rows are written in input order with constant memory, and input
-  order doesn't matter. Unmapped records (`Target_Name == "*"`) get a row with
+  order doesn't matter. Unmapped records (`target_name == "*"`) get a row with
   zeroed statistics.
 - **`--readinfo`** writes one row per read (36 columns; see
   [readinfo.md](output-tables/readinfo.md)): the read's
@@ -299,10 +299,16 @@ table is identical to the one `compare` writes from the same reads (see
 [compare.md](output-tables/compare.md)). Output is Parquet when `-o` ends in
 `.parquet`, otherwise TSV (`.tsv[.gz]`).
 
-**Matching.** Reads are matched on **`Read_Name`** with a streaming merge:
-constant memory, one pass over each file. If a read's `Read_Len` differs between
+**Required columns.** Each input must carry `query_name`, `query_len` and every
+readinfo column that goes into the comparison table (all of
+[readinfo.md](output-tables/readinfo.md) except `tp_tag`), in any order. A
+missing column is an error naming the file and the column, as `compare`'s own
+readinfo rows always carry them all.
+
+**Matching.** Reads are matched on **`query_name`** with a streaming merge:
+constant memory, one pass over each file. If a read's `query_len` differs between
 the two files, the output carries side A's. Both inputs must be **sorted by
-`Read_Name` in byte order**. Sort the PAF before `paf2tables` (see above), or
+`query_name` in byte order**. Sort the PAF before `paf2tables` (see above), or
 sort existing readinfo files with the header kept on top:
 
 ```bash
@@ -312,7 +318,7 @@ sort existing readinfo files with the header kept on top:
 ```
 
 - `LC_ALL=C` forces byte order, regardless of locale.
-- `-k1,1` sorts on `Read_Name`.
+- `-k1,1` sorts on `query_name`.
 - `sort` works on files larger than memory. `-T <dir>` and `-S <size>` set its
   scratch directory and memory cap.
 
@@ -355,7 +361,7 @@ to stderr, and also written to `-o` when given (`.tsv[.gz]`, or `-` for stdout).
 - **Input format:** `--input-format auto` (the default) reads Parquet for a
   `.parquet` path and TSV otherwise. Parquet must be a real file, not stdin.
 - **Columns:** every column is looked up by name, so column order doesn't
-  matter. The set names come from `Label_A` / `Label_B`.
+  matter. The set names come from `label_A` / `label_B`.
 - **Reads in only one input:** the table only contains reads present in both
   inputs, so `present_only_in_A_by_id` / `present_only_in_B_by_id` are always
   `0` here. Only `compare` and `toolkit merge-readinfo` can fill them in.
@@ -385,7 +391,7 @@ Which coordinate space defines a difference:
 | Value | A read is identical when |
 |---|---|
 | `query` (default) | it is `query_identical`: same query span and same alignment relative to the read; a reverse-complement match counts as identical (see [Classification](#classification)) |
-| `reference` | it is reference-identical: same `TargetChr` / `Strand` / `Target_Start` and same alignment content (per `--compare-by`). Strict and literal: no reverse-complement accommodation. |
+| `reference` | it is reference-identical: same `target_name` / `strand` / `target_start` and same alignment content (per `--compare-by`). Strict and literal: no reverse-complement accommodation. |
 
 ### `--compare-by`
 
@@ -472,11 +478,11 @@ occurs across the whole table.
 A read is "differing", and gets junction reconstruction, when:
 
 ```
-mapped_a = TargetChr_A not empty or "*"      (mapped_b likewise)
+mapped_a = target_name_A not empty or "*"      (mapped_b likewise)
 differing =
-    mapped_a && mapped_b    => N_Junctions_OnlyA > 0 || N_Junctions_OnlyB > 0
-    mapped_a && !mapped_b   => JuncCount_A > 0
-    !mapped_a && mapped_b   => JuncCount_B > 0
+    mapped_a && mapped_b    => n_query_junctions_only_A > 0 || n_query_junctions_only_B > 0
+    mapped_a && !mapped_b   => n_query_junctions_A > 0
+    !mapped_a && mapped_b   => n_query_junctions_B > 0
     !mapped_a && !mapped_b  => false
 ```
 
@@ -507,26 +513,30 @@ A read can have several alignments. Before comparing, each side's alignments
 for a read are collapsed to one **representative (best) alignment**. This is
 used by `compare` and `toolkit paf2tables --readinfo`.
 
-- **Selection:** highest `ms`, then highest `AS`, then highest mapping quality
-  (`MQ`). Full ties keep the first in input order, usually the aligner's own
-  order.
-- **The best alignment supplies** `TargetChr`, `Strand`, `MQ_Best`, `cs`,
-  `junctions`, `genomic_junctions`, the event counts, and the spans
-  `Query_Start` / `Query_End` and `Target_Start` / `Target_End`. Spans are
-  0-based half-open (as in PAF and BED). Together with `TargetChr` and
-  `Strand`, they give each read a BED-style interval.
-- **Maxima over all the read's alignments:** `AS_Max`, `ms_Max`,
-  `Query_Aln_Cov_Max`, `Query_Aln_Len_Max`, `seqid_Max`.
-- **`Num_Aln`** counts the read's mapped alignments. A read that is present but
-  unmapped has `Num_Aln = 0`, `TargetChr = "*"`, and zeroed or NaN statistics.
-- **`Num_Aln_MaxScore`** counts the alignments tied with the best on both `ms`
-  and `AS`. `1` means a clear winner; `> 1` means mapping quality or input
-  order broke the tie. Aligners such as STAR write `ms = 0` for every
-  alignment, so `AS` does the actual selection.
-- **`Num_Aln_tpP` / `Num_Aln_tpS`** count mapped alignments by their `tp:A`
+- **Selection:** highest `ms_score` (the `ms:i` tag), then highest `as_score`
+  (`AS:i`), then highest `mapq`. Full ties keep the first in input order,
+  usually the aligner's own order.
+- **Every per-alignment value comes from the representative alone:**
+  `target_name`, `strand`, `mapq`, `as_score`, `ms_score`, `aln_identity`,
+  `query_aln_cov`, `query_aln_len`, `cs`, `query_junctions`,
+  `genomic_junctions`, the event counts, and the spans `query_start` /
+  `query_end` and `target_start` / `target_end`. So every per-side value in
+  the comparison table, and every A-vs-B difference, describes the same two
+  alignments. Spans are 0-based half-open (as in PAF and BED). Together with
+  `target_name` and `strand`, they give each read a BED-style interval.
+- **`n_alns`** counts the read's mapped alignments, including supplementary
+  segments. A read that is present but unmapped has `n_alns = 0`,
+  `target_name = "*"`, and zeroed or NaN statistics.
+- **`n_alns_tied_top_score`** counts the mapped alignments tied with the
+  representative on all three selection keys: `ms_score`, `as_score` and
+  `mapq`. `1` means the representative won outright; `> 1` means that many
+  alignments were equal on every key and input order picked one. Aligners such
+  as STAR write `ms = 0` for every alignment, so `as_score` does the actual
+  selection.
+- **`n_alns_tp_p` / `n_alns_tp_s`** count mapped alignments by their `tp:A`
   tag: `P` or `I` (primary, including supplementary) and `S` or `i`
   (secondary). Alignments without a `tp` tag count toward neither.
-- **`MQ_Best`** is the best alignment's mapping quality. For STAR, the common
+- **`mapq`** is the representative alignment's mapping quality. For STAR, the common
   values are 255 (unique), 3 (2 loci), 1 (3 loci) and 0 (more than 3). A
   difference between sides points to reads where the two runs disagree on how
   unique the mapping is.
@@ -536,13 +546,13 @@ used by `compare` and `toolkit paf2tables --readinfo`.
 ## Classification
 
 Each read in the comparison table is classified from the two sides'
-representative alignments, using `TargetChr`, `Strand`, `cs`,
-`Query_Start` / `Query_End`, `Target_Start`, `junctions` and
+representative alignments, using `target_name`, `strand`, `cs`,
+`query_start` / `query_end`, `target_start`, `query_junctions` and
 `genomic_junctions`. These classes feed the summary statistics and
 `toolkit find-aln-diff`. The summary rows are listed in
 [compare-summary.md](output-tables/compare-summary.md).
 
-**Mapping status.** A side with `TargetChr` equal to `*` or empty is
+**Mapping status.** A side with `target_name` equal to `*` or empty is
 unmapped. Each read is `aligned_both`, `aligned_only_A`, `aligned_only_B` or
 `aligned_neither`.
 
@@ -553,10 +563,10 @@ writes `~nn<len>nn` where minimap2 writes the true motif, e.g. `~ct<len>ac`),
 and that alone should not make identical alignments differ.
 
 **Query-space identity (`query_identical`).** Both sides are mapped and cover
-the same query span (`Query_Start` / `Query_End`, in forward-read
+the same query span (`query_start` / `query_end`, in forward-read
 coordinates), and either:
 
-- **same strand:** `Strand_A == Strand_B` and `cs_A == cs_B`
+- **same strand:** `strand_A == strand_B` and `cs_A == cs_B`
   (→ `query_identical_same_strand`), or
 - **reverse complement:** `Strand_A != Strand_B` and `cs_A` equals the reverse
   complement of `cs_B` (→ `query_identical_revcomp`). This is the same
@@ -573,7 +583,7 @@ are strict and literal: there is no reverse-complement accommodation, so a
 real strand difference always counts as a different position. There are two
 axes:
 
-- **position:** same `TargetChr`, `Strand` and `Target_Start`. With matching
+- **position:** same `target_name`, `strand` and `target_start`. With matching
   `cs`, the end must match too.
 - **alignment:** same `cs`.
 
@@ -585,7 +595,7 @@ The four combinations are `ref_same_position_same_aln` (reference-identical),
 sets, that compares only the deduplicated splice-junction sets and ignores
 mismatches, indels and soft-clips:
 
-- **query space:** the `junctions` sets match → `query_junctions_identical`
+- **query space:** the `query_junctions` sets match → `query_junctions_identical`
   (otherwise `query_junctions_not_identical`).
 - **genomic space:** among same-position reads, the `genomic_junctions` sets
   also match → `ref_same_position_same_junctions` (otherwise
@@ -599,30 +609,30 @@ Splice junctions are compared as **sets** (deduplicated on each side), in two
 coordinate spaces. These columns are always present in the comparison table;
 see [compare.md](output-tables/compare.md).
 
-| Query space (`junctions`) | Genomic space (`genomic_junctions`) | Meaning |
+| Query space (`query_junctions`) | Genomic space (`genomic_junctions`) | Meaning |
 |---|---|---|
-| `N_Matched_Junctions` | `Genomic_N_Matched_Junctions` | junctions in both, \|A ∩ B\| |
-| `N_Junctions_OnlyA` | `Genomic_N_Junctions_OnlyA` | only in A, \|A \ B\| |
-| `N_Junctions_OnlyB` | `Genomic_N_Junctions_OnlyB` | only in B, \|B \ A\| |
-| `N_Unmatched_Junctions` | `Genomic_N_Unmatched_Junctions` | in exactly one side (`OnlyA + OnlyB`) |
-| `Junctions_OnlyA` / `Junctions_OnlyB` | `Genomic_Junctions_OnlyA` / `Genomic_Junctions_OnlyB` | the unmatched junctions themselves |
+| `n_query_junctions_shared` | `n_genomic_junctions_shared` | junctions in both, \|A ∩ B\| |
+| `n_query_junctions_only_A` | `n_genomic_junctions_only_A` | only in A, \|A \ B\| |
+| `n_query_junctions_only_B` | `n_genomic_junctions_only_B` | only in B, \|B \ A\| |
+| `n_query_junctions_not_shared` | `n_genomic_junctions_not_shared` | in exactly one side (`only_A + only_B`) |
+| `query_junctions_only_A` / `query_junctions_only_B` | `genomic_junctions_only_A` / `genomic_junctions_only_B` | the unmatched junctions themselves |
 
-`N_Matched_Junctions + N_Junctions_OnlyA` equals A's junction count, and
+`n_query_junctions_shared + n_query_junctions_only_A` equals A's junction count, and
 likewise for B. The same holds for the genomic columns.
 
 **Format.** Junction lists are written as Python tuples-of-tuples with
 0-based half-open coordinates, e.g. `((1200, 1201), (3400, 3401))`, and parse
 with `ast.literal_eval`. An empty set is `()`. `genomic_junctions` tuples are
-`(start, end)` on the reference; the chromosome is in the row's `TargetChr`.
+`(start, end)` on the reference; the chromosome is in the row's `target_name`.
 When genomic junctions are compared, each side's tuples are paired with that
-side's own `TargetChr`, so junctions on different contigs never match.
+side's own `target_name`, so junctions on different contigs never match.
 
 ---
 
 ## TSV and Parquet
 
 The comparison table can be written as Parquet (`compare`'s default), gzipped
-TSV, or both, with the same 100 columns, names and order (`pd.read_parquet` is
+TSV, or both, with the same 99 columns, names and order (`pd.read_parquet` is
 a drop-in for `pd.read_csv`). Parquet is much faster to read when you only need
 a few columns. `toolkit summary` and `toolkit find-aln-diff` read either form;
 `toolkit query-junction-diff` reads Parquet only.
@@ -631,7 +641,7 @@ a few columns. `toolkit summary` and `toolkit find-aln-diff` read either form;
 where the TSV has `NaN` in a float column, or an empty `cs`. Meaningful values
 stay values:
 
-- `TargetChr` and `Strand` stay `*` for an unmapped side; they are the mapping
+- `target_name` and `strand` stay `*` for an unmapped side; they are the mapping
   indicator.
 - An empty junction set stays `()`.
 - A real `0` stays `0`.
@@ -685,17 +695,17 @@ CMP=results/AvsB.compare.tsv.gz
 gzip -dc < "$CMP" | head -1 | tr '\t' '\n' | nl
 
 # Distribution of unmatched junctions, query space then genomic space
-tsvcut "$CMP" N_Unmatched_Junctions         | tail -n +2 | sort | uniq -c
-tsvcut "$CMP" Genomic_N_Unmatched_Junctions | tail -n +2 | sort | uniq -c
+tsvcut "$CMP" n_query_junctions_not_shared         | tail -n +2 | sort | uniq -c
+tsvcut "$CMP" n_genomic_junctions_not_shared | tail -n +2 | sort | uniq -c
 
 # Reads whose query-space junction sets disagree: count, then the junctions themselves
-tsvwhere "$CMP" N_Unmatched_Junctions pos | tail -n +2 | wc -l
-tsvwhere "$CMP" N_Unmatched_Junctions pos \
+tsvwhere "$CMP" n_query_junctions_not_shared pos | tail -n +2 | wc -l
+tsvwhere "$CMP" n_query_junctions_not_shared pos \
   | awk -F'\t' 'NR==1{for(i=1;i<=NF;i++)h[$i]=i}
-                {print $h["Read_Name"]"\t"$h["JuncCount_A"]"\t"$h["JuncCount_B"]"\t"$h["Junctions_OnlyA"]"\t"$h["Junctions_OnlyB"]}' \
+                {print $h["query_name"]"\t"$h["n_query_junctions_A"]"\t"$h["n_query_junctions_B"]"\t"$h["query_junctions_only_A"]"\t"$h["query_junctions_only_B"]}' \
   | column -t -s $'\t' | less -S
 
-# Check column counts (alninfo 36, readinfo 36, comparison table 100)
+# Check column counts (alninfo 36, readinfo 36, comparison table 99)
 gzip -dc < "$CMP" | awk -F'\t' '{print NF}' | sort | uniq -c
 ```
 
@@ -705,7 +715,7 @@ gzip -dc < "$CMP" | awk -F'\t' '{print NF}' | sort | uniq -c
 
 ### `merge-readinfo` compared fewer reads than expected
 
-`toolkit merge-readinfo` assumes both readinfo files are sorted by `Read_Name`
+`toolkit merge-readinfo` assumes both readinfo files are sorted by `query_name`
 in the **same byte order**. By default an out-of-order read is an error. With
 `--allow-id-mismatch`, though, unsorted input silently lowers `reads_compared`.
 Common causes are sorting without `LC_ALL=C`, or combining files from several

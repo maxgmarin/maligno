@@ -6,7 +6,7 @@
 //!
 //! ```text
 //!   --alninfo  only   → stream every alignment row (no grouping required)
-//!   --readinfo only   → group by Query_Name, collapse to the best alignment
+//!   --readinfo only   → group by query_name, collapse to the best alignment
 //!   --alninfo+--readinfo → do both in one pass (tee alninfo while collapsing)
 //! ```
 //!
@@ -17,9 +17,9 @@
 //!
 //! readinfo correctness depends on every read's alignments being **contiguous**
 //! in the input (the same precondition `readinfo` has always had); alninfo never
-//! cares about order. By default the reader groups contiguous `Query_Name` runs
+//! cares about order. By default the reader groups contiguous `query_name` runs
 //! and emits a one-shot warning if the input isn't byte-lex sorted.
-//! `--strict-grouping` adds a rigorous guard that errors if a `Query_Name`
+//! `--strict-grouping` adds a rigorous guard that errors if a `query_name`
 //! reappears non-contiguously (at the cost of O(#distinct reads) memory).
 
 use std::collections::HashSet;
@@ -51,11 +51,11 @@ pub struct Paf2TablesArgs {
     alninfo: Option<String>,
 
     /// Write the per-read best-alignment summary (36 cols) here. '.gz' for gzip.
-    /// Omit to skip the readinfo output. Requires the PAF be grouped by Query_Name.
+    /// Omit to skip the readinfo output. Requires the PAF be grouped by query_name.
     #[arg(short = 'r', long = "readinfo", value_name = "readinfo.tsv[.gz]")]
     readinfo: Option<String>,
 
-    /// Error if a Query_Name reappears non-contiguously (rigorous grouping check;
+    /// Error if a query_name reappears non-contiguously (rigorous grouping check;
     /// uses memory proportional to the number of distinct reads). Only affects
     /// the readinfo output.
     #[arg(long = "strict-grouping")]
@@ -80,7 +80,7 @@ pub fn run(args: &Paf2TablesArgs) -> Result<()> {
             w.flush()?;
             Ok(())
         }
-        // readinfo-only or both: group by Query_Name; tee alninfo when requested.
+        // readinfo-only or both: group by query_name; tee alninfo when requested.
         (alninfo_path, Some(readinfo_path)) => {
             let reader = open_input(&args.input)?;
             let mut readinfo_out = open_output(Some(readinfo_path))?;
@@ -131,10 +131,10 @@ pub(crate) fn stream_alninfo<R: BufRead, W: Write>(reader: &mut R, w: &mut W) ->
     Ok(())
 }
 
-/// Stream a PAF into the "readinfo" table by grouping contiguous `Query_Name`
+/// Stream a PAF into the "readinfo" table by grouping contiguous `query_name`
 /// runs and collapsing each to its best alignment. If `alninfo_out` is `Some`,
 /// every alignment's alninfo row is tee'd to it in the same pass (byte-identical
-/// to the `--alninfo`-only output). With `strict_grouping`, errors if a `Query_Name` reappears
+/// to the `--alninfo`-only output). With `strict_grouping`, errors if a `query_name` reappears
 /// non-contiguously.
 pub(crate) fn stream_readinfo<W: Write + ?Sized>(
     reader: Box<dyn BufRead>,
@@ -161,7 +161,7 @@ pub(crate) fn stream_readinfo<W: Write + ?Sized>(
             if !seen.insert(name.to_owned()) {
                 bail!(
                     "read {name:?} appears non-contiguously; input PAF is not \
-                     grouped by Query_Name. Pre-sort with \
+                     grouped by query_name. Pre-sort with \
                      `LC_ALL=C sort -t$'\\t' -k1,1`, or drop --strict-grouping to \
                      group only contiguous runs.",
                 );

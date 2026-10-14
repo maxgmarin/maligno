@@ -84,10 +84,10 @@ impl ColType {
 ///   fabricated `0` there is exactly the corruption this format is meant to avoid.
 /// - Float columns are nullable: `NaN` means "undefined" (identity with no
 ///   alignment, a ratio over a zero denominator) and is stored as a null.
-/// - The keys, `Strand_Match` and the computed integer comparison columns are
+/// - The keys, `strand_match` and the computed integer comparison columns are
 ///   **not** nullable — they are always derived and always present.
 ///
-/// Note `*` (`TargetChr`/`Strand`) and `()` (empty junction set) are **kept as
+/// Note `*` (`target_name`/`strand`) and `()` (empty junction set) are **kept as
 /// strings**, not nulled: they are meaningful values, and `*` is the mapping
 /// indicator downstream code tests against.
 pub(crate) fn build_schema() -> SchemaRef {
@@ -240,7 +240,7 @@ impl<W: Write + Send> ComparisonParquetWriter<W> {
         self.cols[0].append_raw(row.read_name);
         match &mut self.cols[1] {
             ColBuilder::U64(b) => b.append_value(row.read_len),
-            _ => unreachable!("Read_Len is UInt64"),
+            _ => unreachable!("query_len is UInt64"),
         }
         self.cols[2].append_raw(row.label_a);
         self.cols[3].append_raw(row.label_b);
@@ -524,27 +524,27 @@ mod tests {
         // A mapped/mapped pair and an unmapped/mapped pair, so nulls, "*", "()" and
         // real zeros all appear.
         let mapped_a = [
-            ("TargetChr", "chr1"), ("Strand", "+"), ("cs", ":100"),
-            ("Query_Start", "0"), ("Query_End", "100"),
-            ("Target_Start", "500"), ("Target_End", "600"),
-            ("seqid_Max", "0.99"), ("Query_Aln_Cov_Max", "1.0"),
-            ("AS_Max", "90"), ("ms_Max", "100"), ("junctions", "(10, 20)"),
-            ("genomic_junctions", "((510, 520),)"), ("N_Insertion_Bases", "2"),
+            ("target_name", "chr1"), ("strand", "+"), ("cs", ":100"),
+            ("query_start", "0"), ("query_end", "100"),
+            ("target_start", "500"), ("target_end", "600"),
+            ("aln_identity", "0.99"), ("query_aln_cov", "1.0"),
+            ("as_score", "90"), ("ms_score", "100"), ("query_junctions", "(10, 20)"),
+            ("genomic_junctions", "((510, 520),)"), ("n_insertion_bases", "2"),
         ];
         let mapped_b = [
-            ("TargetChr", "chr1"), ("Strand", "+"), ("cs", ":50*at:49"),
-            ("Query_Start", "0"), ("Query_End", "100"),
-            ("Target_Start", "500"), ("Target_End", "600"),
-            ("seqid_Max", "0.98"), ("Query_Aln_Cov_Max", "1.0"),
-            ("AS_Max", "88"), ("ms_Max", "99"), ("junctions", "(10, 30)"),
-            ("genomic_junctions", "((510, 530),)"), ("N_Insertion_Bases", "4"),
+            ("target_name", "chr1"), ("strand", "+"), ("cs", ":50*at:49"),
+            ("query_start", "0"), ("query_end", "100"),
+            ("target_start", "500"), ("target_end", "600"),
+            ("aln_identity", "0.98"), ("query_aln_cov", "1.0"),
+            ("as_score", "88"), ("ms_score", "99"), ("query_junctions", "(10, 30)"),
+            ("genomic_junctions", "((510, 530),)"), ("n_insertion_bases", "4"),
         ];
         let unmapped = [
-            ("TargetChr", "*"), ("Strand", "*"), ("cs", ""),
-            ("Query_Start", "0"), ("Query_End", "0"),
-            ("Target_Start", "0"), ("Target_End", "0"),
-            ("seqid_Max", "NaN"), ("Query_Aln_Cov_Max", "0.0"),
-            ("AS_Max", "0"), ("ms_Max", "0"), ("junctions", "()"),
+            ("target_name", "*"), ("strand", "*"), ("cs", ""),
+            ("query_start", "0"), ("query_end", "0"),
+            ("target_start", "0"), ("target_end", "0"),
+            ("aln_identity", "NaN"), ("query_aln_cov", "0.0"),
+            ("as_score", "0"), ("ms_score", "0"), ("query_junctions", "()"),
             ("genomic_junctions", "()"),
         ];
         let (batch, tsv) = write_and_read(&[
@@ -577,9 +577,9 @@ mod tests {
     #[test]
     fn nulls_mean_undefined_and_nothing_else() {
         let unmapped = [
-            ("TargetChr", "*"), ("Strand", "*"), ("cs", ""),
-            ("seqid_Max", "NaN"), ("Query_Aln_Cov_Max", "0.0"),
-            ("junctions", "()"), ("genomic_junctions", "()"), ("AS_Max", "0"),
+            ("target_name", "*"), ("strand", "*"), ("cs", ""),
+            ("aln_identity", "NaN"), ("query_aln_cov", "0.0"),
+            ("query_junctions", "()"), ("genomic_junctions", "()"), ("as_score", "0"),
         ];
         let (batch, _) = write_and_read(&[(&unmapped, &unmapped)]);
         let idx = |name: &str| {
@@ -589,27 +589,27 @@ mod tests {
 
         // Undefined -> null.
         assert!(is_null("cs_A"), "an unmapped cs is undefined, so null");
-        assert!(is_null("seqid_Max_A"), "NaN identity is undefined, so null");
-        assert!(is_null("AS_Ratio"), "a zero denominator is undefined, so null");
-        assert!(is_null("seqid_Diff"), "a diff against NaN is undefined, so null");
+        assert!(is_null("aln_identity_A"), "NaN identity is undefined, so null");
+        assert!(is_null("as_score_ratio"), "a zero denominator is undefined, so null");
+        assert!(is_null("aln_identity_diff"), "a diff against NaN is undefined, so null");
 
         // Meaningful values -> preserved, NOT nulled.
-        assert!(!is_null("TargetChr_A"));
+        assert!(!is_null("target_name_A"));
         assert_eq!(
-            batch.column(idx("TargetChr_A")).as_any().downcast_ref::<StringArray>().unwrap().value(0),
+            batch.column(idx("target_name_A")).as_any().downcast_ref::<StringArray>().unwrap().value(0),
             "*", "'*' is the mapping indicator and must survive"
         );
-        assert!(!is_null("junctions_A"));
+        assert!(!is_null("query_junctions_A"));
         assert_eq!(
-            batch.column(idx("junctions_A")).as_any().downcast_ref::<StringArray>().unwrap().value(0),
+            batch.column(idx("query_junctions_A")).as_any().downcast_ref::<StringArray>().unwrap().value(0),
             "()", "an empty junction set is a value, not a null"
         );
-        assert!(!is_null("Query_Aln_Cov_Max_A"), "0.0 coverage is a real zero");
+        assert!(!is_null("query_aln_cov_A"), "0.0 coverage is a real zero");
         assert_eq!(
-            batch.column(idx("Query_Aln_Cov_Max_A")).as_any().downcast_ref::<Float64Array>().unwrap().value(0),
+            batch.column(idx("query_aln_cov_A")).as_any().downcast_ref::<Float64Array>().unwrap().value(0),
             0.0
         );
-        assert!(!is_null("AS_Max_A"), "a zero score is a real zero, not a null");
+        assert!(!is_null("as_score_A"), "a zero score is a real zero, not a null");
     }
 
     #[test]
@@ -620,7 +620,7 @@ mod tests {
         let idx = |name: &str| {
             build_schema().fields().iter().position(|f| f.name() == name).unwrap()
         };
-        for c in ["Target_Start_A", "MQ_Best_A", "N_Match_Events_B", "AS_Max_A"] {
+        for c in ["target_start_A", "mapq_A", "n_match_events_B", "as_score_A"] {
             assert!(batch.column(idx(c)).is_null(0), "{c} should be null, not 0");
         }
     }
@@ -632,7 +632,7 @@ mod tests {
         // Per-side values arrive already escaped once (readinfo escaped them on the
         // way out) and the TSV writer escapes again. Parquet stores what it was
         // handed, so the TSV cell is one further escaping of the Parquet cell.
-        let a = [("cs", "a\\b"), ("TargetChr", "chr1")];
+        let a = [("cs", "a\\b"), ("target_name", "chr1")];
         let (batch, tsv) = write_and_read(&[(&a, &[])]);
         let idx = build_schema().fields().iter().position(|f| f.name() == "cs_A").unwrap();
         let pq = batch.column(idx).as_any().downcast_ref::<StringArray>().unwrap().value(0);
@@ -688,12 +688,12 @@ mod tests {
     fn write_temp_parquet(tag: &str) -> String {
         let path = std::env::temp_dir()
             .join(format!("maligno_pq_row_reader_{tag}_{}.parquet", std::process::id()));
-        let a = [("TargetChr", "chr1"), ("Strand", "+"), ("cs", ":100"),
-            ("Query_Start", "0"), ("Query_End", "100"),
-            ("Target_Start", "500"), ("Target_End", "600")];
-        let b = [("TargetChr", "chr1"), ("Strand", "+"), ("cs", ":50*at:49"),
-            ("Query_Start", "0"), ("Query_End", "100"),
-            ("Target_Start", "500"), ("Target_End", "600")];
+        let a = [("target_name", "chr1"), ("strand", "+"), ("cs", ":100"),
+            ("query_start", "0"), ("query_end", "100"),
+            ("target_start", "500"), ("target_end", "600")];
+        let b = [("target_name", "chr1"), ("strand", "+"), ("cs", ":50*at:49"),
+            ("query_start", "0"), ("query_end", "100"),
+            ("target_start", "500"), ("target_end", "600")];
         let mut w = ComparisonParquetWriter::new(std::fs::File::create(&path).unwrap())
             .expect("writer");
         let row = ComparisonRow::build("read1", 100, "SetA", "SetB", |c| lookup(&a, c), |c| lookup(&b, c));
@@ -719,11 +719,11 @@ mod tests {
         let path = write_temp_parquet("proj");
         // Deliberately out of schema order and with a duplicate-ish adjacent
         // pair, to confirm the reader restores file/schema order regardless.
-        let wanted = ["Target_End_B", "TargetChr_A", "Strand_A", "Read_Name"];
+        let wanted = ["target_end_B", "target_name_A", "strand_A", "query_name"];
         let mut r = ParquetRowReader::open(&path, Some(&wanted)).unwrap();
-        // Schema order (Read_Name is column 0; per-side block is A-then-B,
-        // COMPARE_SIDE_COLS order): Read_Name, TargetChr_A, Strand_A, ..., Target_End_B.
-        assert_eq!(r.columns(), &["Read_Name", "TargetChr_A", "Strand_A", "Target_End_B"]);
+        // Schema order (query_name is column 0; per-side block is A-then-B,
+        // COMPARE_SIDE_COLS order): query_name, target_name_A, Strand_A, ..., target_end_B.
+        assert_eq!(r.columns(), &["query_name", "target_name_A", "strand_A", "target_end_B"]);
         let row = r.next_row().unwrap().expect("one row");
         assert_eq!(row, vec!["read1", "chr1", "+", "600"]);
         assert!(r.next_row().unwrap().is_none());
@@ -733,7 +733,7 @@ mod tests {
     #[test]
     fn projecting_a_nonexistent_column_is_a_clear_error() {
         let path = write_temp_parquet("missing");
-        let wanted = ["TargetChr_A", "Not_A_Real_Column"];
+        let wanted = ["target_name_A", "Not_A_Real_Column"];
         let err = match ParquetRowReader::open(&path, Some(&wanted)) {
             Ok(_) => panic!("expected an error for a nonexistent column"),
             Err(e) => e.to_string(),

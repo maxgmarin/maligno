@@ -29,9 +29,9 @@
 use std::io::Write;
 
 use crate::columns::{
-    compare_header, index_of, AS_MAX, COMPARE_SIDE_COLS, GENOMIC_JUNCTIONS, JUNCTIONS, MS_MAX, N_DELETION_BASES, N_INSERTION_BASES, N_SOFTCLIPPED_BASES_END,
-    N_SOFTCLIPPED_BASES_START, N_SUBSTITUTION_BASES, QUERY_ALN_COV_MAX, QUERY_ALN_LEN_MAX,
-    SEQID_MAX, STRAND, TARGET_CHR,
+    compare_header, index_of, AS_SCORE, COMPARE_SIDE_COLS, GENOMIC_JUNCTIONS, QUERY_JUNCTIONS, MS_SCORE, N_DELETION_BASES, N_INSERTION_BASES, N_SOFTCLIP_BASES_END,
+    N_SOFTCLIP_BASES_START, N_SUBSTITUTION_BASES, QUERY_ALN_COV, QUERY_ALN_LEN,
+    ALN_IDENTITY, STRAND, TARGET_NAME,
 };
 use crate::io_utils::{escape_tsv_field, fmt_float};
 use crate::junction::{
@@ -46,9 +46,9 @@ use crate::junction::{
 /// array and the header loop are provably the same length.
 const N_SIDE_COLS: usize = COMPARE_SIDE_COLS.len();
 
-const I_TARGET_CHR: usize = index_of(&COMPARE_SIDE_COLS, TARGET_CHR);
+const I_TARGET_CHR: usize = index_of(&COMPARE_SIDE_COLS, TARGET_NAME);
 const I_STRAND: usize = index_of(&COMPARE_SIDE_COLS, STRAND);
-const I_JUNCTIONS: usize = index_of(&COMPARE_SIDE_COLS, JUNCTIONS);
+const I_JUNCTIONS: usize = index_of(&COMPARE_SIDE_COLS, QUERY_JUNCTIONS);
 const I_GENOMIC_JUNCTIONS: usize = index_of(&COMPARE_SIDE_COLS, GENOMIC_JUNCTIONS);
 
 // ── Ratio helpers ────────────────────────────────────────────────────────────
@@ -112,16 +112,16 @@ impl<'r> AlignmentRow<'r> {
     pub(crate) fn from_accessor(get: impl Fn(&str) -> &'r str) -> Self {
         let raw = std::array::from_fn(|i| get(COMPARE_SIDE_COLS[i].name));
         let metrics = AlignmentMetrics {
-            aln_score: get(AS_MAX.name).parse().unwrap_or(0),
-            ms: get(MS_MAX.name).parse().unwrap_or(0),
-            seqid: get(SEQID_MAX.name).parse().unwrap_or(f64::NAN),
-            query_aln_cov: get(QUERY_ALN_COV_MAX.name).parse().unwrap_or(f64::NAN),
-            query_aln_len: get(QUERY_ALN_LEN_MAX.name).parse().unwrap_or(0),
+            aln_score: get(AS_SCORE.name).parse().unwrap_or(0),
+            ms: get(MS_SCORE.name).parse().unwrap_or(0),
+            seqid: get(ALN_IDENTITY.name).parse().unwrap_or(f64::NAN),
+            query_aln_cov: get(QUERY_ALN_COV.name).parse().unwrap_or(f64::NAN),
+            query_aln_len: get(QUERY_ALN_LEN.name).parse().unwrap_or(0),
             n_ins_bases: get(N_INSERTION_BASES.name).parse().unwrap_or(0),
             n_del_bases: get(N_DELETION_BASES.name).parse().unwrap_or(0),
             n_sub_bases: get(N_SUBSTITUTION_BASES.name).parse().unwrap_or(0),
-            n_sc_start: get(N_SOFTCLIPPED_BASES_START.name).parse().unwrap_or(0),
-            n_sc_end: get(N_SOFTCLIPPED_BASES_END.name).parse().unwrap_or(0),
+            n_sc_start: get(N_SOFTCLIP_BASES_START.name).parse().unwrap_or(0),
+            n_sc_end: get(N_SOFTCLIP_BASES_END.name).parse().unwrap_or(0),
         };
         Self { raw, metrics }
     }
@@ -340,7 +340,7 @@ impl<'r> ComparisonRow<'r> {
     /// `header_and_row_field_counts_agree`.
     ///
     /// Escaping: the 66 per-side fields and
-    /// the 4 object-list fields are escaped; `Read_Name` and the two labels are
+    /// the 4 object-list fields are escaped; `query_name` and the two labels are
     /// **not** (labels are validated by `validate_set_label` instead). Note the
     /// per-side values were already escaped once when the readinfo row was written,
     /// so this is a second pass over them — `escape_tsv_field` is not idempotent,
@@ -420,7 +420,7 @@ impl<'r> ComparisonRow<'r> {
 /// per-side data columns (suffixed `_A` / `_B`), then the comparison columns.
 ///
 /// Side suffixes are **fixed** (`_A` / `_B`), never the user's label — the
-/// human-readable labels are carried as the `Label_A` / `Label_B` data columns
+/// human-readable labels are carried as the `label_A` / `label_B` data columns
 /// instead, so column names are stable across datasets and unambiguous even when a
 /// label itself contains an underscore.
 pub(crate) fn write_compare_header<W: Write>(out: &mut W) -> std::io::Result<()> {
@@ -507,18 +507,18 @@ mod tests {
     #[test]
     fn header_layout_is_keys_then_a_then_b_then_comparison() {
         let h = header_fields();
-        assert_eq!(&h[..4], &["Read_Name", "Read_Len", "Label_A", "Label_B"]);
-        assert_eq!(h[4], "TargetChr_A");
+        assert_eq!(&h[..4], &["query_name", "query_len", "label_A", "label_B"]);
+        assert_eq!(h[4], "target_name_A");
         assert_eq!(h[36], "cs_A");
-        assert_eq!(h[37], "TargetChr_B");
+        assert_eq!(h[37], "target_name_B");
         assert_eq!(h[69], "cs_B");
-        assert_eq!(h[70], "Strand_Match");
-        assert_eq!(h[98], "Genomic_Junctions_OnlyB");
-        // The alignment-type counts sit directly after Num_Aln on each side.
+        assert_eq!(h[70], "strand_match");
+        assert_eq!(h[98], "genomic_junctions_only_B");
+        // The alignment-type counts sit directly after n_alns on each side.
         for side in ["A", "B"] {
-            let n = col(&format!("Num_Aln_{side}"));
-            assert_eq!(h[n + 1], format!("Num_Aln_tpP_{side}"));
-            assert_eq!(h[n + 2], format!("Num_Aln_tpS_{side}"));
+            let n = col(&format!("n_alns_{side}"));
+            assert_eq!(h[n + 1], format!("n_alns_tp_p_{side}"));
+            assert_eq!(h[n + 2], format!("n_alns_tp_s_{side}"));
         }
     }
 
@@ -545,7 +545,7 @@ mod tests {
     #[test]
     fn keys_and_labels_are_not_escaped() {
         // Labels are validated by `validate_set_label` rather than escaped, and
-        // Read_Name is passed through as-is. Backslashes must survive untouched.
+        // query_name is passed through as-is. Backslashes must survive untouched.
         let mut buf: Vec<u8> = Vec::new();
         ComparisonRow::build("read\\1", 100, "Set\\A", "Set\\B", |_| "", |_| "")
             .write_tsv_row(&mut buf)
@@ -562,7 +562,7 @@ mod tests {
     #[test]
     fn zero_denominator_yields_nan_not_infinity() {
         // The guard tests the integer before the cast. A bare float division would
-        // give inf here, changing AS_Ratio for every read whose A side scored 0.
+        // give inf here, changing as_score_ratio for every read whose A side scored 0.
         assert!(ratio_i64(5, 0).is_nan(), "5/0 must be NaN, not inf");
         assert!(ratio_i64(-5, 0).is_nan(), "-5/0 must be NaN, not -inf");
         assert!(ratio_i64(0, 0).is_nan());
@@ -575,26 +575,26 @@ mod tests {
     #[test]
     fn all_four_ratio_columns_render_nan_when_the_a_side_is_zero() {
         let a = [
-            ("AS_Max", "0"),
-            ("ms_Max", "0"),
-            ("N_Substitution_Bases", "0"),
-            ("N_Insertion_Bases", "0"),
-            ("N_Deletion_Bases", "0"),
+            ("as_score", "0"),
+            ("ms_score", "0"),
+            ("n_substitution_bases", "0"),
+            ("n_insertion_bases", "0"),
+            ("n_deletion_bases", "0"),
         ];
         let b = [
-            ("AS_Max", "50"),
-            ("ms_Max", "60"),
-            ("N_Substitution_Bases", "7"),
-            ("N_Insertion_Bases", "8"),
-            ("N_Deletion_Bases", "9"),
+            ("as_score", "50"),
+            ("ms_score", "60"),
+            ("n_substitution_bases", "7"),
+            ("n_insertion_bases", "8"),
+            ("n_deletion_bases", "9"),
         ];
         let r = render(&a, &b);
         for c in [
-            "AS_Ratio",
-            "ms_Ratio",
-            "N_Substitution_Bases_Ratio",
-            "N_Insertion_Bases_Ratio",
-            "N_Deletion_Bases_Ratio",
+            "as_score_ratio",
+            "ms_score_ratio",
+            "n_substitution_bases_ratio",
+            "n_insertion_bases_ratio",
+            "n_deletion_bases_ratio",
         ] {
             assert_eq!(r[col(c)], "NaN", "{c} should be NaN when the A side is 0");
         }
@@ -602,11 +602,11 @@ mod tests {
 
     #[test]
     fn ratios_are_b_over_a() {
-        let a = [("AS_Max", "10"), ("ms_Max", "10")];
-        let b = [("AS_Max", "20"), ("ms_Max", "5")];
+        let a = [("as_score", "10"), ("ms_score", "10")];
+        let b = [("as_score", "20"), ("ms_score", "5")];
         let d = diff_of(&a, &b);
-        assert_eq!(d.as_ratio, 2.0, "AS_Ratio is B/A");
-        assert_eq!(d.ms_ratio, 0.5, "ms_Ratio is B/A");
+        assert_eq!(d.as_ratio, 2.0, "as_score_ratio is B/A");
+        assert_eq!(d.ms_ratio, 0.5, "ms_score_ratio is B/A");
     }
 
     // ── sign conventions ─────────────────────────────────────────────────────
@@ -614,28 +614,28 @@ mod tests {
     #[test]
     fn every_diff_is_b_minus_a() {
         let a = [
-            ("AS_Max", "10"),
-            ("ms_Max", "10"),
-            ("Query_Aln_Len_Max", "100"),
-            ("N_Substitution_Bases", "1"),
-            ("N_Insertion_Bases", "2"),
-            ("N_Deletion_Bases", "3"),
-            ("N_SoftClipped_Bases_Start", "4"),
-            ("N_SoftClipped_Bases_End", "5"),
-            ("seqid_Max", "0.9"),
-            ("Query_Aln_Cov_Max", "0.8"),
+            ("as_score", "10"),
+            ("ms_score", "10"),
+            ("query_aln_len", "100"),
+            ("n_substitution_bases", "1"),
+            ("n_insertion_bases", "2"),
+            ("n_deletion_bases", "3"),
+            ("n_softclip_bases_start", "4"),
+            ("n_softclip_bases_end", "5"),
+            ("aln_identity", "0.9"),
+            ("query_aln_cov", "0.8"),
         ];
         let b = [
-            ("AS_Max", "13"),
-            ("ms_Max", "14"),
-            ("Query_Aln_Len_Max", "110"),
-            ("N_Substitution_Bases", "2"),
-            ("N_Insertion_Bases", "4"),
-            ("N_Deletion_Bases", "6"),
-            ("N_SoftClipped_Bases_Start", "9"),
-            ("N_SoftClipped_Bases_End", "1"),
-            ("seqid_Max", "1.0"),
-            ("Query_Aln_Cov_Max", "0.5"),
+            ("as_score", "13"),
+            ("ms_score", "14"),
+            ("query_aln_len", "110"),
+            ("n_substitution_bases", "2"),
+            ("n_insertion_bases", "4"),
+            ("n_deletion_bases", "6"),
+            ("n_softclip_bases_start", "9"),
+            ("n_softclip_bases_end", "1"),
+            ("aln_identity", "1.0"),
+            ("query_aln_cov", "0.5"),
         ];
         let d = diff_of(&a, &b);
         assert_eq!(d.as_diff, 3);
@@ -654,19 +654,19 @@ mod tests {
 
     #[test]
     fn strand_match_compares_the_raw_strand_strings() {
-        assert!(diff_of(&[("Strand", "+")], &[("Strand", "+")]).strand_match);
-        assert!(!diff_of(&[("Strand", "+")], &[("Strand", "-")]).strand_match);
+        assert!(diff_of(&[("strand", "+")], &[("strand", "+")]).strand_match);
+        assert!(!diff_of(&[("strand", "+")], &[("strand", "-")]).strand_match);
         // Two unmapped sides agree with each other.
-        assert!(diff_of(&[("Strand", "*")], &[("Strand", "*")]).strand_match);
-        assert!(!diff_of(&[("Strand", "*")], &[("Strand", "+")]).strand_match);
+        assert!(diff_of(&[("strand", "*")], &[("strand", "*")]).strand_match);
+        assert!(!diff_of(&[("strand", "*")], &[("strand", "+")]).strand_match);
     }
 
     #[test]
     fn strand_match_renders_lowercase() {
-        let r = render(&[("Strand", "+")], &[("Strand", "+")]);
-        assert_eq!(r[col("Strand_Match")], "true");
-        let r = render(&[("Strand", "+")], &[("Strand", "-")]);
-        assert_eq!(r[col("Strand_Match")], "false");
+        let r = render(&[("strand", "+")], &[("strand", "+")]);
+        assert_eq!(r[col("strand_match")], "true");
+        let r = render(&[("strand", "+")], &[("strand", "-")]);
+        assert_eq!(r[col("strand_match")], "false");
     }
 
     // ── parse defaults and the unmapped case ─────────────────────────────────
@@ -682,7 +682,7 @@ mod tests {
         assert_eq!(m.n_sub_bases, 0);
         assert_eq!(m.n_sc_start, 0);
         assert_eq!(m.n_sc_end, 0);
-        assert!(m.seqid.is_nan(), "seqid_Max defaults to NaN, not 0");
+        assert!(m.seqid.is_nan(), "aln_identity defaults to NaN, not 0");
         assert!(m.query_aln_cov.is_nan());
     }
 
@@ -691,22 +691,22 @@ mod tests {
         // The per-side columns are transported as &str precisely so this holds. If
         // they were re-rendered from parsed values, these would become "0".
         let r = render(&[], &[]);
-        for c in ["N_Match_Events_A", "Target_Start_A", "cs_B", "MQ_Best_B"] {
+        for c in ["n_match_events_A", "target_start_A", "cs_B", "mapq_B"] {
             assert_eq!(r[col(c)], "", "{c} should stay empty, not become 0");
         }
     }
 
     #[test]
     fn unmapped_side_propagates_nan_through_the_float_diffs() {
-        // What an unmapped read looks like coming out of readinfo: seqid/cov are NaN.
-        let unmapped = [("TargetChr", "*"), ("Strand", "*"), ("seqid_Max", "NaN"),
-                        ("Query_Aln_Cov_Max", "NaN"), ("cs", ""), ("junctions", "()")];
-        let mapped = [("TargetChr", "chr1"), ("Strand", "+"), ("seqid_Max", "0.99"),
-                      ("Query_Aln_Cov_Max", "1.0"), ("cs", ":100"), ("junctions", "()")];
+        // What an unmapped read looks like coming out of readinfo: identity/coverage are NaN.
+        let unmapped = [("target_name", "*"), ("strand", "*"), ("aln_identity", "NaN"),
+                        ("query_aln_cov", "NaN"), ("cs", ""), ("query_junctions", "()")];
+        let mapped = [("target_name", "chr1"), ("strand", "+"), ("aln_identity", "0.99"),
+                      ("query_aln_cov", "1.0"), ("cs", ":100"), ("query_junctions", "()")];
         let r = render(&unmapped, &mapped);
-        assert_eq!(r[col("seqid_Diff")], "NaN");
-        assert_eq!(r[col("QueryAlnCov_Diff")], "NaN");
-        assert_eq!(r[col("TargetChr_A")], "*");
+        assert_eq!(r[col("aln_identity_diff")], "NaN");
+        assert_eq!(r[col("query_aln_cov_diff")], "NaN");
+        assert_eq!(r[col("target_name_A")], "*");
         assert_eq!(r[col("cs_A")], "", "an unmapped cs is an empty cell");
     }
 
@@ -714,8 +714,8 @@ mod tests {
 
     #[test]
     fn junction_counts_and_object_lists_line_up() {
-        let a = [("junctions", "(10, 20, 30)")];
-        let b = [("junctions", "(20, 30, 40)")];
+        let a = [("query_junctions", "(10, 20, 30)")];
+        let b = [("query_junctions", "(20, 30, 40)")];
         let d = diff_of(&a, &b);
         assert_eq!(d.n_matched_junctions, 2);
         assert_eq!(d.n_junctions_only_a, 1);
@@ -732,8 +732,8 @@ mod tests {
     fn genomic_junctions_on_different_contigs_never_match() {
         // The chrom is reattached before the set comparison, so identical coordinate
         // pairs on different contigs must not overlap.
-        let a = [("TargetChr", "chr1"), ("genomic_junctions", "((100, 200),)")];
-        let b = [("TargetChr", "chr2"), ("genomic_junctions", "((100, 200),)")];
+        let a = [("target_name", "chr1"), ("genomic_junctions", "((100, 200),)")];
+        let b = [("target_name", "chr2"), ("genomic_junctions", "((100, 200),)")];
         let d = diff_of(&a, &b);
         assert_eq!(d.genomic_n_matched_junctions, 0);
         assert_eq!(d.genomic_n_junctions_only_a, 1);
@@ -744,8 +744,8 @@ mod tests {
 
     #[test]
     fn same_contig_genomic_junctions_match() {
-        let a = [("TargetChr", "chr1"), ("genomic_junctions", "((100, 200),)")];
-        let b = [("TargetChr", "chr1"), ("genomic_junctions", "((100, 200),)")];
+        let a = [("target_name", "chr1"), ("genomic_junctions", "((100, 200),)")];
+        let b = [("target_name", "chr1"), ("genomic_junctions", "((100, 200),)")];
         let d = diff_of(&a, &b);
         assert_eq!(d.genomic_n_matched_junctions, 1);
         assert_eq!(d.genomic_n_unmatched_junctions, 0);

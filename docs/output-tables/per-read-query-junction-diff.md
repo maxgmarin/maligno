@@ -9,11 +9,11 @@ for the selection formula). Written by `toolkit query-junction-diff`.
 
 | # | Column | Description |
 |---|---|---|
-| 1 | `Read_Name` | Read ID |
+| 1 | `query_name` | Read ID |
 | 2 | `side` | Which set this junction was reconstructed from: `A` or `B` |
 | 3 | `junction_index` | 1-based ordinal position of this junction along the read, 5'→3' in original-read orientation (see Notes) |
 | 4 | `strand` | This alignment's strand (`+`/`-`) |
-| 5 | `query_pos` | Query-space junction coordinate (plus-strand-normalized, same convention as [compare.md](compare.md)'s `junctions` column) |
+| 5 | `query_pos` | Query-space junction coordinate (plus-strand-normalized, same convention as [compare.md](compare.md)'s `query_junctions` columns) |
 | 6 | `chrom` | Genomic contig of this junction |
 | 7 | `genomic_start` | Junction's absolute genomic interval start (0-based half-open) |
 | 8 | `genomic_end` | Junction's absolute genomic interval end |

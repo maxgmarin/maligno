@@ -1,7 +1,7 @@
 //! Shared PAF → per-read group reader.
 //!
 //! Turns a PAF `BufRead` into a sequence of per-read groups, where each group
-//! is the contiguous run of alignment rows sharing one `Query_Name`. Each row
+//! is the contiguous run of alignment rows sharing one `query_name`. Each row
 //! is materialized into the exact same `AlnRow` form `readinfo` works with, by
 //! routing every PAF record through the unchanged conversion + serialization
 //! path:
@@ -29,7 +29,7 @@ use crate::record::AlnInfo;
 
 /// Streaming reader that yields one per-read group (`Vec<AlnRow>`) at a time.
 ///
-/// Requires the input PAF to be **grouped** by `Query_Name` (each read's
+/// Requires the input PAF to be **grouped** by `query_name` (each read's
 /// alignments contiguous). Constant memory: only the current group plus a
 /// one-row lookahead are held at any time.
 pub(crate) struct PafGroups<R: BufRead> {
@@ -41,7 +41,7 @@ pub(crate) struct PafGroups<R: BufRead> {
     eof: bool,
     warn_unsorted: bool,     // emit the readinfo-style lex-decrease warning once
     warned: bool,
-    last_group_name: Option<String>, // last yielded group's Query_Name (for the warning)
+    last_group_name: Option<String>, // last yielded group's query_name (for the warning)
 }
 
 impl<R: BufRead> PafGroups<R> {
@@ -110,7 +110,7 @@ impl<R: BufRead> PafGroups<R> {
         }
     }
 
-    /// Return the next contiguous-`Query_Name` group as a `Vec<AlnRow>`, or
+    /// Return the next contiguous-`query_name` group as a `Vec<AlnRow>`, or
     /// `None` at EOF, teeing each alignment's alninfo TSV bytes to `alninfo_out`
     /// as it is read (pass `&mut None` to skip the tee). Used by `paf2tables` to
     /// produce the alninfo and readinfo tables in a single pass.
@@ -134,9 +134,9 @@ impl<R: BufRead> PafGroups<R> {
             if let Some(prev) = &self.last_group_name {
                 if group_name.as_bytes() < prev.as_bytes() {
                     eprintln!(
-                        "WARNING: input PAF is not byte-lex sorted by Query_Name \
+                        "WARNING: input PAF is not byte-lex sorted by query_name \
                          (saw {prev:?} then {group_name:?}). Grouping by *contiguous* \
-                         Query_Name runs still works, but the downstream `compare` \
+                         query_name runs still works, but the downstream `compare` \
                          step requires byte-lex sort. To pre-sort:\n\
                          \n\
                          \tLC_ALL=C sort -t$'\\t' -k1,1 in.paf > sorted.paf\n"

@@ -4,7 +4,7 @@
 #
 # Use it when `toolkit merge-readinfo` reports fewer `reads_compared` than
 # expected: if `reads_compared` is lower than the shared count printed here, the
-# two files are not sorted by Read_Name in the same byte order.
+# two files are not sorted by query_name in the same byte order.
 #
 # Usage: check-readinfo-overlap.sh a.readinfo.tsv[.gz] b.readinfo.tsv[.gz]
 # -----------------------------------------------------------------------------
@@ -25,7 +25,7 @@ decompress() {
   esac
 }
 
-# Unique Read_Name values (column 1) from each file.
+# Unique query_name values (column 1) from each file.
 a_names=$(mktemp); b_names=$(mktemp)
 trap 'rm -f "$a_names" "$b_names"' EXIT
 
@@ -46,7 +46,7 @@ Read-name overlap
   shared read names:    $n_shared
 
   ⇒ \`toolkit merge-readinfo\`'s reads_compared should equal $n_shared. If it is lower,
-    the two files are not sorted by Read_Name in the same byte order. Re-sort each with:
+    the two files are not sorted by query_name in the same byte order. Re-sort each with:
 
         LC_ALL=C sort -t\$'\\t' -k1,1 input.readinfo.tsv > sorted.tsv
         # (keep the header separately)

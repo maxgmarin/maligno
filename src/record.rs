@@ -291,7 +291,7 @@ fn write_junction_tuple<W: Write>(w: &mut W, junctions: &[i64]) -> std::io::Resu
 /// Write genomic junctions in Python's `str(tuple of tuples)` format.
 ///
 /// The chrom field is **dropped on serialization** — chrom is available
-/// per-row via the `Target_Name` (alninfo) / `TargetChr` (readinfo) sibling column,
+/// per-row via the sibling `target_name` column (alninfo, readinfo),
 /// so embedding it in every tuple was redundant. The in-memory `AlnInfo` keeps the
 /// chrom (used by downstream set-comparison for cross-chrom safety); only the
 /// serialized form is shorter.
@@ -442,15 +442,15 @@ mod tests {
         let expected: [(Col, &str); 36] = [
             (QUERY_NAME, "read7"), (QUERY_LEN, "101"), (QUERY_START, "2"), (QUERY_END, "99"),
             (STRAND, "-"), (TARGET_NAME, "chr9"), (TARGET_LEN, "5000"),
-            (TARGET_START, "200"), (TARGET_END, "1300"), (NUM_RESIDUE_MATCHES, "90"),
-            (ALN_BLOCK_LEN, "95"), (MQ, "42"), (MS, "77"), (AS, "66"), (CS, ":10"),
+            (TARGET_START, "200"), (TARGET_END, "1300"), (N_RESIDUE_MATCHES, "90"),
+            (ALN_BLOCK_LEN, "95"), (MAPQ, "42"), (MS_SCORE, "77"), (AS_SCORE, "66"), (CS, ":10"),
             (N_MATCH_EVENTS, "11"), (N_MATCH_BASES, "12"), (N_SUBSTITUTION_EVENTS, "13"),
             (N_SUBSTITUTION_BASES, "14"), (N_INSERTION_EVENTS, "15"), (N_INSERTION_BASES, "16"),
             (N_DELETION_EVENTS, "17"), (N_DELETION_BASES, "18"),
-            (N_SPLICE_JUNCTION_EVENTS, "19"), (N_SPLICE_JUNCTION_BASES, "20"),
-            (N_SOFTCLIPPED_BASES_START, "21"), (N_SOFTCLIPPED_BASES_END, "22"),
-            (N_SOFTCLIPPED_EVENTS, "2"), (JUNCTIONS, "(5, 6)"), (SPLICE_JUNCTION_COUNT, "3"),
-            (TARGET_START_1BASED, "201"), (SEQID, "0.5"), (QUERY_ALN_LEN, "97"),
+            (N_INTRON_EVENTS, "19"), (N_INTRON_BASES, "20"),
+            (N_SOFTCLIP_BASES_START, "21"), (N_SOFTCLIP_BASES_END, "22"),
+            (N_SOFTCLIP_EVENTS, "2"), (QUERY_JUNCTIONS, "(5, 6)"), (N_QUERY_JUNCTIONS, "3"),
+            (TARGET_START_1BASED, "201"), (ALN_IDENTITY, "0.5"), (QUERY_ALN_LEN, "97"),
             (QUERY_ALN_COV, "0.25"), (GENOMIC_JUNCTIONS, "((300, 400),)"), (TP_TAG, "S"),
         ];
         let mut buf = Vec::new();
