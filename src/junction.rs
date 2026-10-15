@@ -127,8 +127,8 @@ pub fn parse_genomic_junction_str(s: &str) -> Vec<(u64, u64)> {
 }
 
 /// A genomic junction as `toolkit genomic-junction-compare` identifies it:
-/// `(contig, intron_start, intron_end, genome_strand)`, 0-based half-open, with
-/// `genome_strand` `+`, `-` or `*` (unknown; its own value, matching only `*`).
+/// `(contig, intron_start, intron_end, intron_strand)`, 0-based half-open, with
+/// `intron_strand` `+`, `-` or `*` (unknown; its own value, matching only `*`).
 pub type GenomicJunction = (String, u64, u64, char);
 
 /// Set-overlap stats for genome-coordinate junctions, treating each

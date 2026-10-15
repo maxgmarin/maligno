@@ -163,8 +163,8 @@ pub(crate) fn complement_base(b: u8) -> u8 {
 /// complemented, so a minus-strand GT-AG intron (`~ct…ac` in cs) reads `gt-ag`.
 /// With an unknown strand (`*`) the orientation can't be known, and the letters
 /// are kept reference-forward. `nnnn` stays `nn-nn`.
-pub(crate) fn oriented_motif(m: [u8; 4], genome_strand: char) -> String {
-    let [a, b, c, d] = if genome_strand == '-' {
+pub(crate) fn oriented_motif(m: [u8; 4], intron_strand: char) -> String {
+    let [a, b, c, d] = if intron_strand == '-' {
         [complement_base(m[3]), complement_base(m[2]), complement_base(m[1]), complement_base(m[0])]
     } else {
         m

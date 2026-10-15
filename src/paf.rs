@@ -114,7 +114,7 @@ pub fn transcript_strand(strand: char, ts: Option<char>, xs: Option<char>) -> ch
 /// `strand` when the read is sense (`+`), the opposite strand when antisense
 /// (`-`), and `*` when either is unknown. Every intron of an alignment lies on
 /// this strand.
-pub fn genome_strand(strand: char, transcript_strand: char) -> char {
+pub fn intron_strand(strand: char, transcript_strand: char) -> char {
     match (strand, transcript_strand) {
         ('+' | '-', '+') => strand,
         ('+', '-') => '-',
@@ -251,12 +251,12 @@ mod tests {
     }
 
     #[test]
-    fn genome_strand_combines_alignment_and_transcript_strand() {
-        assert_eq!(genome_strand('+', '+'), '+');
-        assert_eq!(genome_strand('-', '+'), '-');
-        assert_eq!(genome_strand('+', '-'), '-');
-        assert_eq!(genome_strand('-', '-'), '+');
-        assert_eq!(genome_strand('+', '*'), '*');
-        assert_eq!(genome_strand('*', '+'), '*');
+    fn intron_strand_combines_alignment_and_transcript_strand() {
+        assert_eq!(intron_strand('+', '+'), '+');
+        assert_eq!(intron_strand('-', '+'), '-');
+        assert_eq!(intron_strand('+', '-'), '-');
+        assert_eq!(intron_strand('-', '-'), '+');
+        assert_eq!(intron_strand('+', '*'), '*');
+        assert_eq!(intron_strand('*', '+'), '*');
     }
 }

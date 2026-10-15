@@ -531,11 +531,11 @@ different references (another assembly, or a reverse-complemented one), the
 coordinates aren't comparable; don't run it.
 
 **What a genomic junction is.** `(target_name, intron_start, intron_end,
-genome_strand)`, 0-based half-open:
-- `genome_strand` is the strand of the alignment's transcript on the
+intron_strand)`, 0-based half-open:
+- `intron_strand` is the strand of the alignment's transcript on the
   reference: `strand` when `transcript_strand` is `+`, the opposite when it
   is `-`, and `*` when unknown (see [Transcript strand](#transcript-strand)).
-  Every junction of an alignment gets that alignment's genome strand.
+  Every junction of an alignment gets that alignment's intron strand.
 - The same coordinates on `+` and `-` are **different junctions**, and `*`
   matches only `*`. Run aligners so they write the strand tags (STAR needs
   `--outSAMstrandField intronMotif`), or every junction is `*`.
@@ -639,10 +639,13 @@ different references, like the query-space junctions.
 - STAR writes `XS:A` only when run with `--outSAMstrandField intronMotif`.
   Without it every value is `*`.
 
-**Genome strand.** The strand of the transcript on the reference is
-`strand` when `transcript_strand` is `+`, and the opposite of `strand` when it
-is `-`. For example, `strand` `-` with `transcript_strand` `-` is a transcript
-on the reference's `+` strand.
+**Intron strand.** The strand of the transcript, and so of its introns, on
+the reference is `strand` when `transcript_strand` is `+`, and the opposite of
+`strand` when it is `-`. For example, `strand` `-` with `transcript_strand` `-`
+is a transcript on the reference's `+` strand.
+[`toolkit genomic-junction-compare`](#toolkit-genomic-junction-compare) reports
+this as `intron_strand`. Unlike `transcript_strand`, it is relative to the
+reference, not the read.
 
 ---
 

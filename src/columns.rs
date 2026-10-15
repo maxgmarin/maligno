@@ -343,11 +343,12 @@ pub(crate) const CLASSIFY_SIDE_COLS: [Col; 8] = [
 
 // ── toolkit genomic-junction-compare ─────────────────────────────────────────
 //
-// A genomic junction there is `(contig, intron_start, intron_end, genome_strand)`;
+// A genomic junction there is `(contig, intron_start, intron_end, intron_strand)`;
 // see `junction::GenomicJunction`.
 
-/// Transcript strand on the reference (`paf::genome_strand`): `+`, `-`, `*`.
-pub(crate) const GENOME_STRAND: Col = col("genome_strand", Str);
+/// Strand of an alignment's introns on the reference (`paf::intron_strand`):
+/// `+`, `-`, `*`. Reference-relative, unlike the read-relative `TRANSCRIPT_STRAND`.
+pub(crate) const INTRON_STRAND: Col = col("intron_strand", Str);
 /// Number of genomic junctions in one side's representative alignment.
 pub(crate) const N_GENOMIC_JUNCTIONS: Col = col("n_genomic_junctions", U64);
 /// One side's junction motifs, parallel to its `genomic_junctions` list.
@@ -375,7 +376,7 @@ pub(crate) const GJC_INPUT_SIDE_COLS: [Col; 5] =
 pub(crate) fn gjc_per_read_header() -> Vec<String> {
     let pair = |c: Col| [sided(c, SIDE_A), sided(c, SIDE_B)];
     let mut h = vec![QUERY_NAME.name.to_string()];
-    for c in [TARGET_NAME, STRAND, GENOME_STRAND, N_GENOMIC_JUNCTIONS] {
+    for c in [TARGET_NAME, STRAND, INTRON_STRAND, N_GENOMIC_JUNCTIONS] {
         h.extend(pair(c));
     }
     for c in [
@@ -400,7 +401,7 @@ pub(crate) const GJC_PER_JUNCTION_COLS: [Col; 8] = [
     TARGET_NAME,
     INTRON_START,
     INTRON_END,
-    GENOME_STRAND,
+    INTRON_STRAND,
     N_READS_A,
     N_READS_B,
     MOTIF_A,
