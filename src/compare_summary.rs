@@ -44,17 +44,15 @@ use std::io::Write;
 use anyhow::{bail, Context, Result};
 
 use crate::columns::{
-    sided, Col, CLASSIFY_SIDE_COLS, CS, GENOMIC_JUNCTIONS, QUERY_JUNCTIONS, LABEL_A, LABEL_B,
+    sided, Col, CLASSIFY_SIDE_COLS, CS, QUERY_JUNCTIONS, LABEL_A, LABEL_B,
     QUERY_END, QUERY_IDENTICAL_REVCOMP, QUERY_IDENTICAL_SAME_STRAND, QUERY_JUNCTIONS_IDENTICAL,
     QUERY_START, REF_DIFF_POSITION_DIFF_ALN, REF_DIFF_POSITION_SAME_ALN,
-    REF_SAME_POSITION_DIFF_ALN, REF_SAME_POSITION_SAME_ALN, REF_SAME_POSITION_SAME_JUNCTIONS,
+    REF_SAME_POSITION_DIFF_ALN, REF_SAME_POSITION_SAME_ALN,
     SIDES, SIDE_A, SIDE_B, STRAND, SUMMARY_HEADER, TARGET_NAME, TARGET_START,
 };
 use crate::cs_parser::{cs_revcomp, cs_strip_splice_motifs};
 use crate::io_utils::open_output;
-use crate::junction::{
-    genomic_junction_set_stats, junction_set_stats, parse_genomic_junction_str, parse_junction_str,
-};
+use crate::junction::{junction_set_stats, parse_junction_str};
 use crate::table_input::{open_table, InputFormat};
 
 /// Whether each side's representative alignment is mapped.
@@ -111,11 +109,6 @@ pub(crate) struct ReadClass {
     /// Query-space splice-junction *set* identity (deduplicated per side).
     /// `None` unless both sides are mapped — same convention as `ref_class`.
     pub query_junctions_identical: Option<bool>,
-    /// Genomic-coordinate splice-junction *set* identity, gated on
-    /// `ref_class`'s position axis (`same_position()`) — mirrors
-    /// `find-aln-diff`'s `ref_same_position_same_junctions` semantics.
-    /// `None` unless both sides are mapped.
-    pub ref_same_position_same_junctions: Option<bool>,
 }
 
 /// A `target_name` value indicates an unmapped read when it is empty or `"*"`.
@@ -145,7 +138,6 @@ where
     let mut query_identical_rc = false;
     let mut ref_class = None;
     let mut query_junctions_identical = None;
-    let mut ref_same_position_same_junctions = None;
 
     if mapped_a && mapped_b {
         // Compare cs tags with intron donor/acceptor motif letters blanked out
@@ -197,26 +189,10 @@ where
         let jb = parse_junction_str(get_b(QUERY_JUNCTIONS.name));
         let (_, only_a, only_b) = junction_set_stats(&ja, &jb);
         query_junctions_identical = Some(only_a == 0 && only_b == 0);
-
-        // Genomic-coordinate junction-set identity, gated on the position axis
-        // above. `genomic_junctions` cells carry only `(start, end)` pairs, so
-        // each side's `target_name` is reattached before comparing.
-        let chrom_a = get_a(TARGET_NAME.name);
-        let chrom_b = get_b(TARGET_NAME.name);
-        let ga: Vec<(String, u64, u64)> = parse_genomic_junction_str(get_a(GENOMIC_JUNCTIONS.name))
-            .into_iter()
-            .map(|(s, e)| (chrom_a.to_string(), s, e))
-            .collect();
-        let gb: Vec<(String, u64, u64)> = parse_genomic_junction_str(get_b(GENOMIC_JUNCTIONS.name))
-            .into_iter()
-            .map(|(s, e)| (chrom_b.to_string(), s, e))
-            .collect();
-        let (_, only_ga, only_gb) = genomic_junction_set_stats(&ga, &gb);
-        ref_same_position_same_junctions = Some(same_position && only_ga == 0 && only_gb == 0);
     } else if map_status == MapStatus::NeitherMapped {
         // Both aligners agreeing a read doesn't map at all is itself a form
         // of agreement — count it as query_identical (same-strand branch, not
-        // reverse-complement). `ref_class`/junction-identity stay `None`:
+        // reverse-complement). `ref_class`/`query_junctions_identical` stay `None`:
         // those remain a "both mapped" concept, untouched by this branch.
         query_identical = true;
     }
@@ -226,7 +202,6 @@ where
         query_identical,
         query_identical_rc,
         query_junctions_identical,
-        ref_same_position_same_junctions,
         ref_class,
     }
 }
@@ -247,7 +222,6 @@ pub(crate) struct CompareSummary {
     pub ref_diff_position_same_aln: u64,
     pub ref_diff_position_diff_aln: u64,
     pub query_junctions_identical: u64,
-    pub ref_same_position_same_junctions: u64,
     pub a_only_by_id: u64,
     pub b_only_by_id: u64,
 }
@@ -287,9 +261,6 @@ impl CompareSummary {
         if let Some(true) = c.query_junctions_identical {
             self.query_junctions_identical += 1;
         }
-        if let Some(true) = c.ref_same_position_same_junctions {
-            self.ref_same_position_same_junctions += 1;
-        }
     }
 
     /// Record a read present only in set A by read-ID (not in B's PAF at all).
@@ -318,16 +289,6 @@ impl CompareSummary {
         self.aligned_both - self.query_junctions_identical
     }
 
-    /// Same-position (reference) reads whose junction sets differ. Gated on
-    /// `same_position` regardless of `same_aln` — matching how
-    /// `ref_same_position_same_junctions` itself is gated — not on
-    /// `aligned_both`, since a different-position read has no meaningful
-    /// "junctions at the same position" comparison at all.
-    fn ref_same_position_diff_junctions(&self) -> u64 {
-        (self.ref_same_position_same_aln + self.ref_same_position_diff_aln)
-            - self.ref_same_position_same_junctions
-    }
-
     /// The ordered (category, count) rows — the single layout used by both the
     /// TSV writer and the stderr renderer.
     ///
@@ -352,8 +313,6 @@ impl CompareSummary {
             (REF_SAME_POSITION_DIFF_ALN.to_string(), self.ref_same_position_diff_aln),
             (REF_DIFF_POSITION_SAME_ALN.to_string(), self.ref_diff_position_same_aln),
             (REF_DIFF_POSITION_DIFF_ALN.to_string(), self.ref_diff_position_diff_aln),
-            (REF_SAME_POSITION_SAME_JUNCTIONS.to_string(), self.ref_same_position_same_junctions),
-            ("ref_same_position_diff_junctions".to_string(), self.ref_same_position_diff_junctions()),
             ("present_only_in_A_by_id".to_string(), self.a_only_by_id),
             ("present_only_in_B_by_id".to_string(), self.b_only_by_id),
         ]
@@ -515,8 +474,8 @@ pub(crate) fn labels_from_row(col_index: &HashMap<&str, usize>, fields: &[&str])
 }
 
 pub fn run(args: &CompareSummaryArgs) -> Result<()> {
-    // For a Parquet input, project down to just the 20 columns this command
-    // reads (of the comparison table's 101) — Parquet skips decoding the rest,
+    // For a Parquet input, project down to just the 18 columns this command
+    // reads (of the comparison table's 95) — Parquet skips decoding the rest,
     // which is where its per-column storage actually pays off.
     let wanted = wanted_columns(&[LABEL_A, LABEL_B], &CLASSIFY_SIDE_COLS);
     let wanted_refs: Vec<&str> = wanted.iter().map(String::as_str).collect();
@@ -738,37 +697,11 @@ mod tests {
     }
 
     #[test]
-    fn ref_same_position_same_junctions_true_when_position_and_set_match() {
-        let a = mapped_with(&[("genomic_junctions", "((100, 250),)")]);
-        let b = mapped_with(&[("genomic_junctions", "((100, 250),)")]);
-        let class = classify(&getter(Box::leak(a.into_boxed_slice())), &getter(Box::leak(b.into_boxed_slice())));
-        assert_eq!(class.ref_same_position_same_junctions, Some(true));
-    }
-
-    #[test]
-    fn ref_same_position_same_junctions_false_when_set_differs() {
-        let a = mapped_with(&[("genomic_junctions", "((100, 250),)")]);
-        let b = mapped_with(&[("genomic_junctions", "((400, 800),)")]);
-        let class = classify(&getter(Box::leak(a.into_boxed_slice())), &getter(Box::leak(b.into_boxed_slice())));
-        assert_eq!(class.ref_same_position_same_junctions, Some(false));
-    }
-
-    #[test]
-    fn ref_same_position_same_junctions_false_when_position_differs() {
-        // Same genomic-junction set, but a different target_start (position).
-        let a = mapped_with(&[("genomic_junctions", "((100, 250),)"), ("target_start", "100")]);
-        let b = mapped_with(&[("genomic_junctions", "((100, 250),)"), ("target_start", "200")]);
-        let class = classify(&getter(Box::leak(a.into_boxed_slice())), &getter(Box::leak(b.into_boxed_slice())));
-        assert_eq!(class.ref_same_position_same_junctions, Some(false));
-    }
-
-    #[test]
-    fn junction_identity_fields_are_none_unless_both_mapped() {
+    fn query_junction_identity_is_none_unless_both_mapped() {
         let a = mapped_with(&[]);
         let unmapped: Vec<(&str, &str)> = vec![("target_name", "*")];
         let class = classify(&getter(Box::leak(a.into_boxed_slice())), &getter(Box::leak(unmapped.into_boxed_slice())));
         assert_eq!(class.query_junctions_identical, None);
-        assert_eq!(class.ref_same_position_same_junctions, None);
     }
 
     #[test]
@@ -787,7 +720,6 @@ mod tests {
         // "both mapped" concept — unaffected by this branch.
         assert_eq!(class.ref_class, None);
         assert_eq!(class.query_junctions_identical, None);
-        assert_eq!(class.ref_same_position_same_junctions, None);
     }
 
     #[test]
@@ -816,7 +748,6 @@ mod tests {
             query_identical_rc: false,
             ref_class: Some(RefClass::SamePositionSameAln),
             query_junctions_identical: Some(true),
-            ref_same_position_same_junctions: Some(true),
         });
         // One both-mapped read whose alignment genuinely differs.
         s.observe(&ReadClass {
@@ -825,7 +756,6 @@ mod tests {
             query_identical_rc: false,
             ref_class: Some(RefClass::SamePositionDiffAln),
             query_junctions_identical: Some(false),
-            ref_same_position_same_junctions: Some(false),
         });
         // Two neither-mapped reads — query_identical per classify()'s new
         // branch, but not via the reverse-complement sub-bucket.
@@ -836,7 +766,6 @@ mod tests {
                 query_identical_rc: false,
                 ref_class: None,
                 query_junctions_identical: None,
-                ref_same_position_same_junctions: None,
             });
         }
 
@@ -853,33 +782,30 @@ mod tests {
     #[test]
     fn compare_summary_rows_include_junction_counters() {
         let mut s = CompareSummary::default();
-        // Read 1: both mapped, query-junctions identical, ref same-position-same-junctions.
+        // Read 1: both mapped, query-junctions identical.
         s.observe(&ReadClass {
             map_status: MapStatus::BothMapped,
             query_identical: true,
             query_identical_rc: false,
             ref_class: Some(RefClass::SamePositionSameAln),
             query_junctions_identical: Some(true),
-            ref_same_position_same_junctions: Some(true),
         });
-        // Read 2: both mapped, junctions differ on both axes.
+        // Read 2: both mapped, query junctions differ.
         s.observe(&ReadClass {
             map_status: MapStatus::BothMapped,
             query_identical: false,
             query_identical_rc: false,
             ref_class: Some(RefClass::SamePositionDiffAln),
             query_junctions_identical: Some(false),
-            ref_same_position_same_junctions: Some(false),
         });
 
         let rows: HashMap<String, u64> = s.rows().into_iter().collect();
         assert_eq!(rows["aligned_both"], 2);
         assert_eq!(rows["query_junctions_identical"], 1);
         assert_eq!(rows["query_junctions_not_identical"], 1);
-        assert_eq!(rows["ref_same_position_same_junctions"], 1);
-        // ref_same_position_diff_junctions denominator is same_position (both
-        // reads here), not aligned_both — both are same_position, one same_junctions.
-        assert_eq!(rows["ref_same_position_diff_junctions"], 1);
+        // Genomic junction-set rows belong to `toolkit genomic-junction-compare`.
+        assert!(!rows.contains_key("ref_same_position_same_junctions"));
+        assert!(!rows.contains_key("ref_same_position_diff_junctions"));
     }
 
     #[test]

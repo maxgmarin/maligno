@@ -395,7 +395,7 @@ Which coordinate space defines a difference:
 | Value | A read is identical when |
 |---|---|
 | `query` (default) | it is `query_identical`: same query span and same alignment relative to the read; a reverse-complement match counts as identical (see [Classification](#classification)) |
-| `reference` | it is reference-identical: same `target_name` / `strand` / `target_start` and same alignment content (per `--compare-by`). Strict and literal: no reverse-complement accommodation. |
+| `reference` | it is reference-identical: same `target_name` / `strand` / `target_start` and same `cs` (motif-blind). Strict and literal: no reverse-complement accommodation. Only with `--compare-by all`. |
 
 ### `--compare-by`
 
@@ -406,7 +406,7 @@ mapped on only one side are always differences (`diff_aln_only_A` /
 | Value | `--space query` | `--space reference` |
 |---|---|---|
 | `all` (default) | the full `cs` tag matches (motif-blind) | same position **and** same `cs` (motif-blind) |
-| `junctions` | the query-space splice-junction set matches | same position **and** same genomic-coordinate junction set |
+| `junctions` | the query-space splice-junction set matches | not supported: the command stops with an error. Use [`toolkit genomic-junction-compare`](#toolkit-genomic-junction-compare) to compare genomic junction sets. |
 
 Under `junctions`, mismatches, indels and soft-clips that don't move a splice
 junction don't count. Under both modes, comparison is motif-blind: a
@@ -423,14 +423,14 @@ other. Read and region tables are gzipped unless `--no-gzip` is given.
 
 | File (`--space query --compare-by all`) | Contents |
 |---|---|
-| `{prefix}.query_diff_reads.tsv.gz` | one row per differing read, with its category and 8 classification flags; see [query-diff-reads.md](output-tables/query-diff-reads.md) |
+| `{prefix}.query_diff_reads.tsv.gz` | one row per differing read, with its category and 7 classification flags; see [query-diff-reads.md](output-tables/query-diff-reads.md) |
 | `{prefix}.query_diff_regions.A.bed.gz`, `.B.bed.gz` | merged loci of the differing reads, per side; see [query-diff-regions.md](output-tables/query-diff-regions.md) |
 | `{prefix}.query_diff_summary.tsv` | the [summary schema](output-tables/compare-summary.md), with `space` and `compare_by` rows after `label_A` / `label_B`; never gzipped |
 | `{prefix}.query_identical_reads.tsv.gz` | with `--emit-identical-reads` only: the complementary set of identical reads, same layout as the diff-reads table except column 2 is named `category` |
 
 Examples of other modes' names: `{prefix}.reference_diff_reads.tsv.gz`,
 `{prefix}.query_diff_reads.junctions.tsv.gz`,
-`{prefix}.reference_diff_regions.A.junctions.bed.gz`.
+`{prefix}.reference_diff_regions.A.bed.gz`.
 
 The summary counts don't depend on the mode. The number of rows in the
 diff-reads file is printed on stderr. To get it from the summary, add the
@@ -641,48 +641,51 @@ The four combinations are `ref_same_position_same_aln` (reference-identical),
 `ref_same_position_diff_aln`, `ref_diff_position_same_aln` (relocated) and
 `ref_diff_position_diff_aln`.
 
-**Junction-set identity.** This is a looser test, for reads mapped in both
-sets, that compares only the deduplicated splice-junction sets and ignores
-mismatches, indels and soft-clips:
+These compare positions on each side's own reference, so when A and B were
+aligned to different references (another assembly, or a reverse-complemented
+one) every read is a different position.
 
-- **query space:** the `query_junctions` sets match → `query_junctions_identical`
-  (otherwise `query_junctions_not_identical`).
-- **genomic space:** among same-position reads, the `genomic_junctions` sets
-  also match → `ref_same_position_same_junctions` (otherwise
-  `ref_same_position_diff_junctions`).
+**Junction-set identity.** This is a looser test, for reads mapped in both
+sets: the deduplicated `query_junctions` sets match → `query_junctions_identical`
+(otherwise `query_junctions_not_identical`). Mismatches, indels and soft-clips
+are ignored. Genomic junction sets are not part of the classification; they
+are compared by [`toolkit genomic-junction-compare`](#toolkit-genomic-junction-compare).
 
 ---
 
 ## Junction comparison
 
-Splice junctions are compared as **sets** (deduplicated on each side), in two
-coordinate spaces. These columns are always present in the comparison table;
-see [compare.md](output-tables/compare.md).
+The comparison table compares splice junctions as **sets** (deduplicated on
+each side) in **query space**: each junction is its position in the read, so
+the comparison doesn't depend on the reference. See
+[compare.md](output-tables/compare.md).
 
-| Query space (`query_junctions`) | Genomic space (`genomic_junctions`) | Meaning |
-|---|---|---|
-| `n_query_junctions_shared` | `n_genomic_junctions_shared` | junctions in both, \|A ∩ B\| |
-| `n_query_junctions_only_A` | `n_genomic_junctions_only_A` | only in A, \|A \ B\| |
-| `n_query_junctions_only_B` | `n_genomic_junctions_only_B` | only in B, \|B \ A\| |
-| `n_query_junctions_not_shared` | `n_genomic_junctions_not_shared` | in exactly one side (`only_A + only_B`) |
-| `query_junctions_only_A` / `query_junctions_only_B` | `genomic_junctions_only_A` / `genomic_junctions_only_B` | the unmatched junctions themselves |
+| Column | Meaning |
+|---|---|
+| `n_query_junctions_shared` | junctions in both, \|A ∩ B\| |
+| `n_query_junctions_only_A` | only in A, \|A \ B\| |
+| `n_query_junctions_only_B` | only in B, \|B \ A\| |
+| `n_query_junctions_not_shared` | in exactly one side (`only_A + only_B`) |
+| `query_junctions_only_A` / `query_junctions_only_B` | the unmatched junctions themselves |
 
-`n_query_junctions_shared + n_query_junctions_only_A` equals A's junction count, and
-likewise for B. The same holds for the genomic columns.
+`n_query_junctions_shared + n_query_junctions_only_A` equals A's number of
+distinct junctions, and likewise for B.
+
+Junctions in **genomic** (reference) coordinates are kept per side in
+`genomic_junctions_A` / `genomic_junctions_B`; comparing them between A and B
+is done by [`toolkit genomic-junction-compare`](#toolkit-genomic-junction-compare).
 
 **Format.** Junction lists are written as Python tuples-of-tuples with
 0-based half-open coordinates, e.g. `((1200, 1201), (3400, 3401))`, and parse
 with `ast.literal_eval`. An empty set is `()`. `genomic_junctions` tuples are
 `(start, end)` on the reference; the chromosome is in the row's `target_name`.
-When genomic junctions are compared, each side's tuples are paired with that
-side's own `target_name`, so junctions on different contigs never match.
 
 ---
 
 ## TSV and Parquet
 
 The comparison table can be written as Parquet (`compare`'s default), gzipped
-TSV, or both, with the same 101 columns, names and order (`pd.read_parquet` is
+TSV, or both, with the same 95 columns, names and order (`pd.read_parquet` is
 a drop-in for `pd.read_csv`). Parquet is much faster to read when you only need
 a few columns. `toolkit summary` and `toolkit find-aln-diff` read either form;
 `toolkit query-junction-diff` reads Parquet only.
@@ -744,9 +747,8 @@ CMP=results/AvsB.compare.tsv.gz
 # Column number → name
 gzip -dc < "$CMP" | head -1 | tr '\t' '\n' | nl
 
-# Distribution of unmatched junctions, query space then genomic space
-tsvcut "$CMP" n_query_junctions_not_shared         | tail -n +2 | sort | uniq -c
-tsvcut "$CMP" n_genomic_junctions_not_shared | tail -n +2 | sort | uniq -c
+# Distribution of unmatched query-space junctions per read
+tsvcut "$CMP" n_query_junctions_not_shared | tail -n +2 | sort | uniq -c
 
 # Reads whose query-space junction sets disagree: count, then the junctions themselves
 tsvwhere "$CMP" n_query_junctions_not_shared pos | tail -n +2 | wc -l
@@ -755,7 +757,7 @@ tsvwhere "$CMP" n_query_junctions_not_shared pos \
                 {print $h["query_name"]"\t"$h["n_query_junctions_A"]"\t"$h["n_query_junctions_B"]"\t"$h["query_junctions_only_A"]"\t"$h["query_junctions_only_B"]}' \
   | column -t -s $'\t' | less -S
 
-# Check column counts (alninfo 37, readinfo 37, comparison table 101)
+# Check column counts (alninfo 37, readinfo 37, comparison table 95)
 gzip -dc < "$CMP" | awk -F'\t' '{print NF}' | sort | uniq -c
 ```
 

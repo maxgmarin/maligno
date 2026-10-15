@@ -28,15 +28,14 @@
 use std::io::Write;
 
 use crate::columns::{
-    compare_header, index_of, AS_SCORE, COMPARE_SIDE_COLS, GENOMIC_JUNCTIONS, QUERY_JUNCTIONS, MS_SCORE, N_DELETION_BASES, N_INSERTION_BASES, N_SOFTCLIP_BASES_END,
-    N_SOFTCLIP_BASES_START, N_SUBSTITUTION_BASES, QUERY_ALN_COV, QUERY_ALN_LEN,
-    ALN_IDENTITY, STRAND, TARGET_NAME,
+    compare_header, index_of, AS_SCORE, COMPARE_SIDE_COLS, QUERY_JUNCTIONS, MS_SCORE,
+    N_DELETION_BASES, N_INSERTION_BASES, N_SOFTCLIP_BASES_END, N_SOFTCLIP_BASES_START,
+    N_SUBSTITUTION_BASES, QUERY_ALN_COV, QUERY_ALN_LEN, ALN_IDENTITY, STRAND,
 };
 use crate::io_utils::{escape_tsv_field, fmt_float};
 use crate::junction::{
-    format_genomic_junction_tuple, format_junction_tuple, genomic_junction_set_diffs,
-    genomic_junction_set_stats, junction_distance, junction_set_diffs, junction_set_stats,
-    parse_genomic_junction_str, parse_junction_str,
+    format_junction_tuple, junction_distance, junction_set_diffs, junction_set_stats,
+    parse_junction_str,
 };
 
 // ── Column indices ───────────────────────────────────────────────────────────
@@ -45,10 +44,8 @@ use crate::junction::{
 /// array and the header loop are provably the same length.
 const N_SIDE_COLS: usize = COMPARE_SIDE_COLS.len();
 
-const I_TARGET_CHR: usize = index_of(&COMPARE_SIDE_COLS, TARGET_NAME);
 const I_STRAND: usize = index_of(&COMPARE_SIDE_COLS, STRAND);
 const I_JUNCTIONS: usize = index_of(&COMPARE_SIDE_COLS, QUERY_JUNCTIONS);
-const I_GENOMIC_JUNCTIONS: usize = index_of(&COMPARE_SIDE_COLS, GENOMIC_JUNCTIONS);
 
 // ── Ratio helpers ────────────────────────────────────────────────────────────
 
@@ -131,17 +128,11 @@ impl<'r> AlignmentRow<'r> {
         &self.raw
     }
 
-    fn target_chr(&self) -> &'r str {
-        self.raw[I_TARGET_CHR]
-    }
     fn strand(&self) -> &'r str {
         self.raw[I_STRAND]
     }
     fn junctions(&self) -> &'r str {
         self.raw[I_JUNCTIONS]
-    }
-    fn genomic_junctions(&self) -> &'r str {
-        self.raw[I_GENOMIC_JUNCTIONS]
     }
 }
 
@@ -175,14 +166,8 @@ pub(crate) struct AlignmentDiff {
     pub(crate) n_junctions_only_a: u64,
     pub(crate) n_junctions_only_b: u64,
     pub(crate) junction_distance: u64,
-    pub(crate) genomic_n_matched_junctions: u64,
-    pub(crate) genomic_n_unmatched_junctions: u64,
-    pub(crate) genomic_n_junctions_only_a: u64,
-    pub(crate) genomic_n_junctions_only_b: u64,
     pub(crate) junctions_only_a: String,
     pub(crate) junctions_only_b: String,
-    pub(crate) genomic_junctions_only_a: String,
-    pub(crate) genomic_junctions_only_b: String,
 }
 
 impl AlignmentDiff {
@@ -194,23 +179,6 @@ impl AlignmentDiff {
         let juncs_b = parse_junction_str(b.junctions());
         let (n_matched, n_only_a, n_only_b) = junction_set_stats(&juncs_a, &juncs_b);
         let (j_only_a_vec, j_only_b_vec) = junction_set_diffs(&juncs_a, &juncs_b);
-
-        // Genomic-space junction sets. The chrom is reattached to every pair (the
-        // stored tuples don't include it) so that junctions on different
-        // contigs cannot match; `format_genomic_junction_tuple` drops it again on the
-        // way out. Do not unify those two behaviours.
-        let chrom_a = a.target_chr().to_string();
-        let chrom_b = b.target_chr().to_string();
-        let gj_a: Vec<(String, u64, u64)> = parse_genomic_junction_str(a.genomic_junctions())
-            .into_iter()
-            .map(|(s, e)| (chrom_a.clone(), s, e))
-            .collect();
-        let gj_b: Vec<(String, u64, u64)> = parse_genomic_junction_str(b.genomic_junctions())
-            .into_iter()
-            .map(|(s, e)| (chrom_b.clone(), s, e))
-            .collect();
-        let (g_matched, g_only_a, g_only_b) = genomic_junction_set_stats(&gj_a, &gj_b);
-        let (gj_only_a_vec, gj_only_b_vec) = genomic_junction_set_diffs(&gj_a, &gj_b);
 
         Self {
             strand_match: a.strand() == b.strand(),
@@ -234,14 +202,8 @@ impl AlignmentDiff {
             n_junctions_only_a: n_only_a,
             n_junctions_only_b: n_only_b,
             junction_distance: junction_distance(&juncs_a, &juncs_b),
-            genomic_n_matched_junctions: g_matched,
-            genomic_n_unmatched_junctions: g_only_a + g_only_b,
-            genomic_n_junctions_only_a: g_only_a,
-            genomic_n_junctions_only_b: g_only_b,
             junctions_only_a: format_junction_tuple(&j_only_a_vec),
             junctions_only_b: format_junction_tuple(&j_only_b_vec),
-            genomic_junctions_only_a: format_genomic_junction_tuple(&gj_only_a_vec),
-            genomic_junctions_only_b: format_genomic_junction_tuple(&gj_only_b_vec),
         }
     }
 }
@@ -263,7 +225,7 @@ pub(crate) enum DiffValue<'a> {
 }
 
 impl AlignmentDiff {
-    /// The 29 comparison values in `COMPARE_DIFF_COLS` order.
+    /// The 23 comparison values in `COMPARE_DIFF_COLS` order.
     pub(crate) fn values(&self) -> Vec<DiffValue<'_>> {
         use DiffValue::*;
         vec![
@@ -292,16 +254,9 @@ impl AlignmentDiff {
             U64(self.n_junctions_only_a),
             U64(self.n_junctions_only_b),
             U64(self.junction_distance),
-            // Genomic-space junction set comparison.
-            U64(self.genomic_n_matched_junctions),
-            U64(self.genomic_n_unmatched_junctions),
-            U64(self.genomic_n_junctions_only_a),
-            U64(self.genomic_n_junctions_only_b),
             // Object lists last.
             Str(&self.junctions_only_a),
             Str(&self.junctions_only_b),
-            Str(&self.genomic_junctions_only_a),
-            Str(&self.genomic_junctions_only_b),
         ]
     }
 }
@@ -338,8 +293,8 @@ impl<'r> ComparisonRow<'r> {
     /// Write the row. Field order here is checked against the header by
     /// `header_and_row_field_counts_agree`.
     ///
-    /// Escaping: the 66 per-side fields and
-    /// the 4 object-list fields are escaped; `query_name` and the two labels are
+    /// Escaping: the 68 per-side fields and
+    /// the 2 object-list fields are escaped; `query_name` and the two labels are
     /// **not** (labels are validated by `validate_set_label` instead). Note the
     /// per-side values were already escaped once when the readinfo row was written,
     /// so this is a second pass over them — `escape_tsv_field` is not idempotent,
@@ -393,23 +348,12 @@ impl<'r> ComparisonRow<'r> {
             d.n_junctions_only_b,
             d.junction_distance,
         )?;
-        // Genomic-space junction set comparison.
-        write!(
-            out,
-            "\t{}\t{}\t{}\t{}",
-            d.genomic_n_matched_junctions,
-            d.genomic_n_unmatched_junctions,
-            d.genomic_n_junctions_only_a,
-            d.genomic_n_junctions_only_b,
-        )?;
         // Object lists last.
         write!(
             out,
-            "\t{}\t{}\t{}\t{}",
+            "\t{}\t{}",
             escape_tsv_field(&d.junctions_only_a),
             escape_tsv_field(&d.junctions_only_b),
-            escape_tsv_field(&d.genomic_junctions_only_a),
-            escape_tsv_field(&d.genomic_junctions_only_b),
         )?;
         writeln!(out)
     }
@@ -456,7 +400,7 @@ mod tests {
         AlignmentDiff::compute(&side(a), &side(b))
     }
 
-    /// Render one full row and split it into its 101 fields.
+    /// Render one full row and split it into its 95 fields.
     fn render(a: &[(&str, &'static str)], b: &[(&str, &'static str)]) -> Vec<String> {
         let mut buf: Vec<u8> = Vec::new();
         ComparisonRow::build("read1", 100, "SetA", "SetB", |c| lookup(a, c), |c| lookup(b, c))
@@ -475,7 +419,7 @@ mod tests {
         s.trim_end_matches('\n').split('\t').map(String::from).collect()
     }
 
-    /// Index of an output column in the 101-column header.
+    /// Index of an output column in the 95-column header.
     fn col(name: &str) -> usize {
         header_fields()
             .iter()
@@ -489,7 +433,7 @@ mod tests {
     fn header_and_row_field_counts_agree() {
         let h = header_fields();
         let r = render(&[], &[]);
-        assert_eq!(h.len(), 101, "header should have 101 columns");
+        assert_eq!(h.len(), 95, "header should have 95 columns");
         assert_eq!(
             r.len(),
             h.len(),
@@ -499,7 +443,7 @@ mod tests {
         );
         assert_eq!(
             4 + 2 * COMPARE_SIDE_COLS.len() + COMPARE_DIFF_COLS.len(),
-            101
+            95
         );
     }
 
@@ -514,7 +458,7 @@ mod tests {
         assert_eq!(h[40], "transcript_strand_B");
         assert_eq!(h[71], "cs_B");
         assert_eq!(h[72], "strand_match");
-        assert_eq!(h[100], "genomic_junctions_only_B");
+        assert_eq!(h[94], "query_junctions_only_B");
         // The alignment-type counts sit directly after n_alns on each side.
         for side in ["A", "B"] {
             let n = col(&format!("n_alns_{side}"));
@@ -540,7 +484,7 @@ mod tests {
         let a = [("cs", "a\tb")];
         let r = render(&a, &[]);
         assert_eq!(r[col("cs_A")], "a\\tb");
-        assert_eq!(r.len(), 101, "an embedded tab must not add a field");
+        assert_eq!(r.len(), 95, "an embedded tab must not add a field");
     }
 
     #[test]
@@ -727,29 +671,5 @@ mod tests {
         );
         assert_eq!(d.junctions_only_a, "(10,)");
         assert_eq!(d.junctions_only_b, "(40,)");
-    }
-
-    #[test]
-    fn genomic_junctions_on_different_contigs_never_match() {
-        // The chrom is reattached before the set comparison, so identical coordinate
-        // pairs on different contigs must not overlap.
-        let a = [("target_name", "chr1"), ("genomic_junctions", "((100, 200),)")];
-        let b = [("target_name", "chr2"), ("genomic_junctions", "((100, 200),)")];
-        let d = diff_of(&a, &b);
-        assert_eq!(d.genomic_n_matched_junctions, 0);
-        assert_eq!(d.genomic_n_junctions_only_a, 1);
-        assert_eq!(d.genomic_n_junctions_only_b, 1);
-        // ...but the rendered tuples drop the chrom again.
-        assert_eq!(d.genomic_junctions_only_a, "((100, 200),)");
-    }
-
-    #[test]
-    fn same_contig_genomic_junctions_match() {
-        let a = [("target_name", "chr1"), ("genomic_junctions", "((100, 200),)")];
-        let b = [("target_name", "chr1"), ("genomic_junctions", "((100, 200),)")];
-        let d = diff_of(&a, &b);
-        assert_eq!(d.genomic_n_matched_junctions, 1);
-        assert_eq!(d.genomic_n_unmatched_junctions, 0);
-        assert_eq!(d.genomic_junctions_only_a, "()");
     }
 }

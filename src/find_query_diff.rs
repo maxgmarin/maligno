@@ -11,8 +11,7 @@
 //!     Reverse-complement matches count as **identical** (not a difference).
 //!   - `reference` — compares each side's placement **on the reference
 //!     genome**: same `target_name`/`strand`/`target_start` and same alignment
-//!     (`cs`, or the genomic-coordinate junction set under `--compare-by
-//!     junctions`). Strict and literal — no reverse-complement accommodation,
+//!     (`cs`). Strict and literal — no reverse-complement accommodation,
 //!     so a real strand difference always means a different position. A
 //!     difference is `reference_diff` (mapped both sides, not
 //!     reference-identical), `diff_aln_only_A`, or `diff_aln_only_B`.
@@ -25,25 +24,26 @@
 //!     motif at the same intron position/length is not by itself a
 //!     difference); any other mismatch/indel/soft-clip/junction-position
 //!     difference counts.
-//!   - `junctions` — only the splice-junction set must match (query-space
-//!     under `--space query`, genomic-coordinate under `--space reference`);
+//!   - `junctions` — only the query-space splice-junction set must match;
 //!     reads with identical junctions but differing mismatches/indels/
 //!     soft-clips count as the same. Reads aligned in only one set are still
 //!     reported as differences (they have no junctions to compare on the
-//!     missing side).
+//!     missing side). `--space query` only: genomic junction sets are
+//!     compared by `toolkit genomic-junction-compare`, so
+//!     `--space reference --compare-by junctions` is rejected.
 //!
 //! Outputs (to `--outdir`, `--prefix`-named; `query_diff`/`query_identical` or
 //! `reference_diff`/`reference_identical` depending on `--space`; gzipped by
 //! default, `--no-gzip` to opt out):
 //!   1. `{prefix}.{stem}_reads.tsv[.gz]`      — one row per differing read:
-//!      `query_name`, `outcome`, plus 8 classification booleans (`1`/`0`)
+//!      `query_name`, `outcome`, plus 7 classification booleans (`1`/`0`)
 //!      computed the same way regardless of `--space`/`--compare-by` —
 //!      `query_identical_same_strand`, `query_identical_revcomp`,
 //!      `query_junctions_identical`, `ref_same_position_same_aln`,
 //!      `ref_same_position_diff_aln`, `ref_diff_position_same_aln`,
-//!      `ref_diff_position_diff_aln`, `ref_same_position_same_junctions`.
+//!      `ref_diff_position_diff_aln`.
 //!      `{prefix}.{identical_stem}_reads.tsv[.gz]` (`--emit-identical-reads`)
-//!      carries the same 8 columns for the complementary read set.
+//!      carries the same 7 columns for the complementary read set.
 //!   2. `{prefix}.{stem}_regions.A.bed[.gz]`  — merged A-coordinate loci
 //!   3. `{prefix}.{stem}_regions.B.bed[.gz]`  — merged B-coordinate loci
 //!   4. `{prefix}.{stem}_summary.tsv`         — the same category-tally schema
@@ -62,7 +62,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::columns::{
     CLASSIFICATION_COLS, CLASSIFY_SIDE_COLS, LABEL_A, LABEL_B, QUERY_NAME, SIDE_A, SIDE_B, STRAND,
@@ -84,8 +84,8 @@ pub enum CompareBy {
     /// Flag any difference across the whole alignment (compares the full cs tag,
     /// motif-blind: intron donor/acceptor letters are ignored).
     All,
-    /// Flag only reads whose splice-junction set differs — the query-space set
-    /// under `--space query`, the genomic-coordinate set under `--space reference`.
+    /// Flag only reads whose query-space splice-junction set differs.
+    /// `--space query` only.
     Junctions,
 }
 
@@ -139,10 +139,10 @@ pub struct FindAlnDiffArgs {
     /// What defines a difference: `all` (default) compares the full cs tag,
     /// motif-blind (intron donor/acceptor letters ignored) — any other
     /// mismatch/indel/soft-clip/junction-position difference counts; `junctions`
-    /// compares only the splice-junction set (query-space or genomic-coordinate,
-    /// depending on `--space`; reads with identical junctions but differing
-    /// mismatches/indels/soft-clips count as the same). In `junctions` mode the
-    /// outputs gain a `.junctions` filename segment.
+    /// compares only the query-space splice-junction set (reads with identical
+    /// junctions but differing mismatches/indels/soft-clips count as the same),
+    /// with `--space query` only. In `junctions` mode the outputs gain a
+    /// `.junctions` filename segment.
     #[arg(long = "compare-by", value_enum, default_value = "all")]
     compare_by: CompareBy,
 
@@ -232,7 +232,7 @@ fn build_ivl<'a>(
 }
 
 /// Header of the reads tables: the read name, the `second` column (`outcome` or
-/// `category`), then the 8 classification booleans, which are computed the same
+/// `category`), then the 7 classification booleans, which are computed the same
 /// way regardless of `--space`/`--compare-by` (see the module doc comment).
 fn reads_header(second: &str) -> String {
     format!("{}\t{second}\t{}", QUERY_NAME.name, CLASSIFICATION_COLS.join("\t"))
@@ -266,6 +266,7 @@ pub(crate) struct AlnDiffAccumulator {
 
 impl AlnDiffAccumulator {
     pub(crate) fn new(reads_out: &str, space: DiffSpace, compare_by: CompareBy) -> Result<Self> {
+        check_mode(space, compare_by)?;
         let mut reads_w = open_output(Some(reads_out))?;
         writeln!(reads_w, "{}", reads_header("outcome"))?;
         Ok(Self {
@@ -292,11 +293,11 @@ impl AlnDiffAccumulator {
         get_b: impl Fn(&str) -> &'a str,
         base: &ReadClass,
     ) -> Result<ReadClass> {
-        // The 8 classification booleans, computed unconditionally (independent
+        // The 7 classification booleans, computed unconditionally (independent
         // of `--space`/`--compare-by`) so every emitted row carries the full
         // picture regardless of which mode selected it.
         let bool_cols = format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
             (base.query_identical && !base.query_identical_rc) as u8,
             (base.query_identical && base.query_identical_rc) as u8,
             base.query_junctions_identical.unwrap_or(false) as u8,
@@ -304,7 +305,6 @@ impl AlnDiffAccumulator {
             matches!(base.ref_class, Some(RefClass::SamePositionDiffAln)) as u8,
             matches!(base.ref_class, Some(RefClass::DiffPositionSameAln)) as u8,
             matches!(base.ref_class, Some(RefClass::DiffPositionDiffAln)) as u8,
-            base.ref_same_position_same_junctions.unwrap_or(false) as u8,
         );
 
         let (identical, identical_rc) = match (self.space, self.compare_by) {
@@ -312,12 +312,11 @@ impl AlnDiffAccumulator {
             (DiffSpace::Query, CompareBy::Junctions) => {
                 (base.query_junctions_identical.unwrap_or(false), false)
             }
-            (DiffSpace::Reference, compare_by) => {
+            // `check_mode` rejects `--compare-by junctions` here, so reference
+            // space always compares position and the full alignment.
+            (DiffSpace::Reference, _) => {
                 let same_position = base.ref_class.map(|rc| rc.same_position()).unwrap_or(false);
-                let same_aln = match compare_by {
-                    CompareBy::All => base.ref_class.map(|rc| rc.same_aln()).unwrap_or(false),
-                    CompareBy::Junctions => base.ref_same_position_same_junctions.unwrap_or(false),
-                };
+                let same_aln = base.ref_class.map(|rc| rc.same_aln()).unwrap_or(false);
                 (same_position && same_aln, false)
             }
         };
@@ -327,7 +326,6 @@ impl AlnDiffAccumulator {
             query_identical_rc: identical_rc,
             ref_class: base.ref_class,
             query_junctions_identical: base.query_junctions_identical,
-            ref_same_position_same_junctions: base.ref_same_position_same_junctions,
         };
 
         // Select differing reads and their placement(s).
@@ -391,7 +389,20 @@ impl AlnDiffAccumulator {
     }
 }
 
+/// Reject `--space`/`--compare-by` combinations this command no longer
+/// supports, before any input is read or output created.
+fn check_mode(space: DiffSpace, compare_by: CompareBy) -> Result<()> {
+    if space == DiffSpace::Reference && compare_by == CompareBy::Junctions {
+        bail!(
+            "`--compare-by junctions` with `--space reference` is no longer supported: \
+             genomic junction sets are compared by `maligno toolkit genomic-junction-compare`"
+        );
+    }
+    Ok(())
+}
+
 pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
+    check_mode(args.space, args.compare_by)?;
     let outdir = Path::new(&args.outdir);
     fs::create_dir_all(outdir)
         .with_context(|| format!("cannot create --outdir '{}'", args.outdir))?;
@@ -422,13 +433,13 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
     let summary_out = path(format!("{}.{}_summary{}.tsv", args.prefix, stem, tag));
     let identical_out = path(format!("{}.{}_reads{}.tsv{}", args.prefix, identical_stem, tag, ext));
 
-    // `junctions`/`genomic_junctions` are only read by `--compare-by junctions`,
-    // but required unconditionally: they're always present in the comparison
-    // table, so demanding them up front turns a mid-stream surprise into an
-    // early, clear error.
+    // `query_junctions` is only read by `--compare-by junctions`, but required
+    // unconditionally: it's always present in the comparison table, so
+    // demanding it up front turns a mid-stream surprise into an early, clear
+    // error.
     //
     // For a Parquet input, project down to just the columns this command reads
-    // (21 of the comparison table's 101) — Parquet skips decoding the rest, which
+    // (19 of the comparison table's 95) — Parquet skips decoding the rest, which
     // is where its per-column storage actually pays off.
     let wanted = wanted_columns(&[QUERY_NAME, LABEL_A, LABEL_B], &CLASSIFY_SIDE_COLS);
     let wanted_refs: Vec<&str> = wanted.iter().map(String::as_str).collect();
@@ -493,7 +504,7 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
                 // same-strand-identical here.
                 let both_mapped = base.map_status == MapStatus::BothMapped;
                 let bool_cols = format!(
-                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}",
                     (both_mapped && base.query_identical && !base.query_identical_rc) as u8,
                     (both_mapped && base.query_identical && base.query_identical_rc) as u8,
                     base.query_junctions_identical.unwrap_or(false) as u8,
@@ -501,7 +512,6 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
                     matches!(base.ref_class, Some(RefClass::SamePositionDiffAln)) as u8,
                     matches!(base.ref_class, Some(RefClass::DiffPositionSameAln)) as u8,
                     matches!(base.ref_class, Some(RefClass::DiffPositionDiffAln)) as u8,
-                    base.ref_same_position_same_junctions.unwrap_or(false) as u8,
                 );
                 let cat = if class.map_status == MapStatus::NeitherMapped {
                     "neither_mapped"

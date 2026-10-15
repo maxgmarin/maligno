@@ -130,10 +130,10 @@ A `compare` run can write the following files in the user defined output directo
 |------|------|----------|
 | `{prefix}.{label}.alninfo.tsv.gz` | 37 | **per-alignment** table: one row per PAF alignment (every alignment, per set); opt-in via `--emit-alninfo` |
 | `{prefix}.{label}.readinfo.tsv.gz` | 37 | **per-read** table: the chosen best alignment for each read (per set); opt-in via `--emit-readinfo` |
-| `{prefix}.compare.parquet` | 101 | the **comparison** table (unless `--format tsv`) |
-| `{prefix}.compare.tsv.gz` | 101 | the same table as gzipped TSV (only with `--format tsv` or `both`) |
+| `{prefix}.compare.parquet` | 95 | the **comparison** table (unless `--format tsv`) |
+| `{prefix}.compare.tsv.gz` | 95 | the same table as gzipped TSV (only with `--format tsv` or `both`) |
 | `{prefix}.compare.summary.tsv` | 2 | **aggregate summary statistics** (see below) |
-| `{prefix}.query_diff_reads.tsv.gz` | 10 | table of all reads with difference in alignment between set A and B  |
+| `{prefix}.query_diff_reads.tsv.gz` | 9 | table of all reads with difference in alignment between set A and B  |
 | `{prefix}.query_diff_regions.{A,B}.bed.gz` | 10 | genomic regions where differing reads cluster, per set |
 
 Separately, **`toolkit query-junction-diff`** takes an existing
@@ -179,7 +179,7 @@ maligno compare \
 # Inspect a comparison header (column number → name).
 zcat < test_data/test_results/Splice_vs_SpliceHQ.compare.tsv.gz | head -1 | tr '\t' '\n' | nl
 
-# Sanity-check column counts (expect 37 for alninfo and readinfo, 101 for compare, 10 for query_diff_reads).
+# Sanity-check column counts (expect 37 for alninfo and readinfo, 95 for compare, 9 for query_diff_reads).
 for f in test_data/test_results/Splice_vs_SpliceHQ.*.tsv.gz; do
   printf '%s\t' "$f"; zcat < "$f" | awk -F'\t' '{print NF}' | sort -u | paste -sd, -
 done
@@ -212,10 +212,10 @@ The full manual lives in **[`docs/REFERENCE.md`](docs/REFERENCE.md)**:
 
 #### The alignment comparison table (`{prefix}.compare.parquet` or `{prefix}.compare.tsv.gz`)
 
-One row per read, 101 columns: the representative alignment's stats for set A and
+One row per read, 95 columns: the representative alignment's stats for set A and
 for set B (suffixed `_A` / `_B`), plus a block of columns comparing how those two
 alignments differ (score, coverage, indels, soft-clipping, and junction agreement
-in both query and genomic space). Each side also carries the aligner's
+in query space, i.e. positions in the read). Each side also carries the aligner's
 `transcript_strand`, read from minimap2's `ts:A` or STAR's `XS:A` (see
 [REFERENCE.md](docs/REFERENCE.md#transcript-strand)).
 
@@ -243,7 +243,6 @@ The headline is the **per-read alignment status**, followed by **identity** stat
 | `ref_same_position_diff_aln` | same reference position, different alignment (e.g. a different indel placement at the same site) |
 | `ref_diff_position_same_aln` | same alignment, different reference position |
 | `ref_diff_position_diff_aln` | both reference position and alignment differ |
-| `ref_same_position_same_junctions` / `ref_same_position_diff_junctions` | among same-position reads, whether the **genomic-coordinate splice-junction set** also matches |
 | `present_only_in_A_by_id` / `present_only_in_B_by_id` | sequences found in only one set's PAF (will be 0 unless `--allow-id-mismatch` is used) |
 
 To get the same summary from an existing comparison table, use

@@ -1,7 +1,7 @@
 # `compare` table
 
 `{prefix}.compare.parquet` (default) and/or `{prefix}.compare.tsv.gz` — one row per
-read, 101 columns: both sides' representative-alignment stats plus a computed
+read, 95 columns: both sides' representative-alignment stats plus a computed
 A-vs-B comparison block. This is the **primary output** of `compare` (and of
 `toolkit merge-readinfo`, which produces the identical table from
 readinfo TSVs directly).
@@ -14,8 +14,8 @@ Columns are organized in groups, left to right:
 | **Set labels** | 3–4 | `label_A`, `label_B`: the `--label-a` / `--label-b` values, repeated on every row |
 | **Per-side data, A** | 5–38 | the representative alignment's stats for set A, each column suffixed `_A` |
 | **Per-side data, B** | 39–72 | the same 34 columns for set B, suffixed `_B` |
-| **Comparison metrics** | 73–97 | A-vs-B differences and ratios: `strand_match`, `aln_identity_diff`, coverage/length diffs, score diffs (`as_score_diff`, `ms_score_diff`, …), indel/soft-clip diffs, and junction-set counts in both query and genomic space |
-| **Non-overlap objects** | 98–101 | the junctions that failed to overlap: `query_junctions_only_A/B` and `genomic_junctions_only_A/B` |
+| **Comparison metrics** | 73–93 | A-vs-B differences and ratios: `strand_match`, `aln_identity_diff`, coverage/length diffs, score diffs (`as_score_diff`, `ms_score_diff`, …), indel/soft-clip diffs, and query-space junction-set counts |
+| **Non-overlap objects** | 94–95 | the query-space junctions that failed to overlap: `query_junctions_only_A/B` |
 
 Within each per-side block the columns are grouped by topic: locus and span,
 alignment selection and score (including the per-type alignment counts
@@ -92,11 +92,16 @@ do **not** appear here. An unmapped side has `target_name_* == "*"`, an empty
 | 37 / 71 | `genomic_junctions` | Splice junctions in absolute reference coordinates (Python tuple-of-tuples string; chrom is the sibling `target_name` column) |
 | 38 / 72 | `cs` | Compact alignment string |
 
-## Comparison block (columns 73–101)
+## Comparison block (columns 73–95)
 
 A-vs-B metrics computed from the two per-side blocks above. **Sign
 convention**: every `*_diff` is **B − A**, every `*_ratio` is **B / A**
 (`NaN` when the A-side denominator is `0`).
+
+Junctions are compared here in **query space** only, which doesn't depend on
+the reference. Comparing genomic (reference-coordinate) junction sets between
+A and B is done by
+[`toolkit genomic-junction-compare`](../REFERENCE.md#toolkit-genomic-junction-compare).
 
 | # | Column | Description |
 |---|---|---|
@@ -121,28 +126,21 @@ convention**: every `*_diff` is **B − A**, every `*_ratio` is **B / A**
 | 91 | `n_query_junctions_only_A` | Query-space junctions found only in A, `\|A \ B\|` |
 | 92 | `n_query_junctions_only_B` | Query-space junctions found only in B, `\|B \ A\|` |
 | 93 | `query_junction_pos_distance` | Sum of absolute differences between A's and B's query-space junction positions, paired in order (stops at the shorter list) |
-| 94 | `n_genomic_junctions_shared` | Genomic-coordinate junction sets: size of the overlap (always emitted; meaningful when both sides map to the same reference) |
-| 95 | `n_genomic_junctions_not_shared` | Genomic-coordinate: symmetric difference |
-| 96 | `n_genomic_junctions_only_A` | Genomic-coordinate junctions found only in A |
-| 97 | `n_genomic_junctions_only_B` | Genomic-coordinate junctions found only in B |
-| 98 | `query_junctions_only_A` | The actual query-space junction coordinates present only in A (Python tuple string) |
-| 99 | `query_junctions_only_B` | The actual query-space junction coordinates present only in B |
-| 100 | `genomic_junctions_only_A` | The actual genomic-space junction coordinates present only in A (Python tuple-of-tuples string) |
-| 101 | `genomic_junctions_only_B` | The actual genomic-space junction coordinates present only in B |
+| 94 | `query_junctions_only_A` | The actual query-space junction coordinates present only in A (Python tuple string) |
+| 95 | `query_junctions_only_B` | The actual query-space junction coordinates present only in B |
 
 **Notes**
-- **Junctions are compared as sets**, deduplicated per side. Query-space
-  comparison uses the `query_junctions` columns; genomic-space comparison
-  reattaches each side's `target_name` to its `genomic_junctions` pairs first,
-  so junctions on different contigs can never falsely match.
+- **Junctions are compared as sets** of query-space positions (the
+  `query_junctions` columns), deduplicated per side.
 - The `query_junctions` / `genomic_junctions` columns and the trailing
-  `*_only_A/B` object lists use a Python tuple-of-tuples format; parse them in
+  `query_junctions_only_A/B` object lists use a Python tuple (or tuple-of-tuples)
+  format; parse them in
   Python with `ast.literal_eval`. See
   [REFERENCE.md](../REFERENCE.md#junction-comparison) for the format.
 - **Nulls mean undefined, not zero.** An unmapped side has a null `cs` and a
   null `aln_identity`; a ratio over a zero denominator is null. A real `0` stays
   `0`, and `target_name` stays `*` for unmapped (it's the mapping indicator).
-- Parquet uses the same 101 columns, same names, same order as the TSV — see
+- Parquet uses the same 95 columns, same names, same order as the TSV — see
   [REFERENCE.md](../REFERENCE.md#tsv-and-parquet) for the TSV↔Parquet null/escaping mapping.
 - Select columns by header name, not by position: positions can change when
   columns are added.

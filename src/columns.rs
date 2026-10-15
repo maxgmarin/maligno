@@ -271,22 +271,17 @@ pub(crate) const N_QUERY_JUNCTIONS_NOT_SHARED: Col = col("n_query_junctions_not_
 pub(crate) const N_QUERY_JUNCTIONS_ONLY_A: Col = col("n_query_junctions_only_A", U64);
 pub(crate) const N_QUERY_JUNCTIONS_ONLY_B: Col = col("n_query_junctions_only_B", U64);
 pub(crate) const QUERY_JUNCTION_POS_DISTANCE: Col = col("query_junction_pos_distance", U64);
-pub(crate) const N_GENOMIC_JUNCTIONS_SHARED: Col = col("n_genomic_junctions_shared", U64);
-pub(crate) const N_GENOMIC_JUNCTIONS_NOT_SHARED: Col = col("n_genomic_junctions_not_shared", U64);
-pub(crate) const N_GENOMIC_JUNCTIONS_ONLY_A: Col = col("n_genomic_junctions_only_A", U64);
-pub(crate) const N_GENOMIC_JUNCTIONS_ONLY_B: Col = col("n_genomic_junctions_only_B", U64);
 pub(crate) const QUERY_JUNCTIONS_ONLY_A: Col = col("query_junctions_only_A", Str);
 pub(crate) const QUERY_JUNCTIONS_ONLY_B: Col = col("query_junctions_only_B", Str);
-pub(crate) const GENOMIC_JUNCTIONS_ONLY_A: Col = col("genomic_junctions_only_A", Str);
-pub(crate) const GENOMIC_JUNCTIONS_ONLY_B: Col = col("genomic_junctions_only_B", Str);
 
 /// The A-vs-B comparison columns, emitted after both per-side blocks. Grouped to
 /// mirror [`COMPARE_SIDE_COLS`]: orientation/identity, score, event diffs,
-/// query-space junctions, genomic-space junctions, then the object lists.
+/// query-space junctions, then the object lists. Genomic junction sets are
+/// compared by `toolkit genomic-junction-compare`, not here.
 ///
 /// `AlignmentDiff::values()` and `write_tsv_row` both emit in this order; the
 /// Parquet round-trip test in `parquet_out.rs` checks them against each other.
-pub(crate) const COMPARE_DIFF_COLS: [Col; 29] = [
+pub(crate) const COMPARE_DIFF_COLS: [Col; 23] = [
     // Orientation & identity.
     STRAND_MATCH,
     ALN_IDENTITY_DIFF,
@@ -312,17 +307,10 @@ pub(crate) const COMPARE_DIFF_COLS: [Col; 29] = [
     N_QUERY_JUNCTIONS_ONLY_A,
     N_QUERY_JUNCTIONS_ONLY_B,
     QUERY_JUNCTION_POS_DISTANCE,
-    // Genomic-space junction set comparison.
-    N_GENOMIC_JUNCTIONS_SHARED,
-    N_GENOMIC_JUNCTIONS_NOT_SHARED,
-    N_GENOMIC_JUNCTIONS_ONLY_A,
-    N_GENOMIC_JUNCTIONS_ONLY_B,
     // Object columns at the very end (the actual non-overlapping junctions, as
     // opposed to just their counts above).
     QUERY_JUNCTIONS_ONLY_A,
     QUERY_JUNCTIONS_ONLY_B,
-    GENOMIC_JUNCTIONS_ONLY_A,
-    GENOMIC_JUNCTIONS_ONLY_B,
 ];
 
 /// Number of columns in the comparison table.
@@ -342,7 +330,7 @@ pub(crate) fn compare_header() -> Vec<String> {
 /// The per-side columns the read classifier (`compare_summary::classify`) and
 /// `find-aln-diff`'s interval builder read. `toolkit summary` and
 /// `find-aln-diff` resolve exactly these, per side, from a comparison table.
-pub(crate) const CLASSIFY_SIDE_COLS: [Col; 9] = [
+pub(crate) const CLASSIFY_SIDE_COLS: [Col; 8] = [
     TARGET_NAME,
     STRAND,
     CS,
@@ -351,7 +339,6 @@ pub(crate) const CLASSIFY_SIDE_COLS: [Col; 9] = [
     TARGET_START,
     TARGET_END,
     QUERY_JUNCTIONS,
-    GENOMIC_JUNCTIONS,
 ];
 
 // ── Classification columns ───────────────────────────────────────────────────
@@ -363,11 +350,10 @@ pub(crate) const REF_SAME_POSITION_SAME_ALN: &str = "ref_same_position_same_aln"
 pub(crate) const REF_SAME_POSITION_DIFF_ALN: &str = "ref_same_position_diff_aln";
 pub(crate) const REF_DIFF_POSITION_SAME_ALN: &str = "ref_diff_position_same_aln";
 pub(crate) const REF_DIFF_POSITION_DIFF_ALN: &str = "ref_diff_position_diff_aln";
-pub(crate) const REF_SAME_POSITION_SAME_JUNCTIONS: &str = "ref_same_position_same_junctions";
 
-/// The 8 classification booleans: columns of `find-aln-diff`'s reads tables, and
+/// The 7 classification booleans: columns of `find-aln-diff`'s reads tables, and
 /// (under the same names) rows of the summary tables.
-pub(crate) const CLASSIFICATION_COLS: [&str; 8] = [
+pub(crate) const CLASSIFICATION_COLS: [&str; 7] = [
     QUERY_IDENTICAL_SAME_STRAND,
     QUERY_IDENTICAL_REVCOMP,
     QUERY_JUNCTIONS_IDENTICAL,
@@ -375,7 +361,6 @@ pub(crate) const CLASSIFICATION_COLS: [&str; 8] = [
     REF_SAME_POSITION_DIFF_ALN,
     REF_DIFF_POSITION_SAME_ALN,
     REF_DIFF_POSITION_DIFF_ALN,
-    REF_SAME_POSITION_SAME_JUNCTIONS,
 ];
 
 // ── Summary tables ───────────────────────────────────────────────────────────
@@ -474,7 +459,7 @@ mod tests {
     fn compare_header_is_keys_then_a_then_b_then_diff() {
         let h = compare_header();
         assert_eq!(h.len(), N_COMPARE_COLS);
-        assert_eq!(h.len(), 101);
+        assert_eq!(h.len(), 95);
         assert_eq!(h[4], sided(TARGET_NAME, SIDE_A));
         assert_eq!(h[4 + COMPARE_SIDE_COLS.len()], sided(TARGET_NAME, SIDE_B));
     }

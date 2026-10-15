@@ -28,22 +28,24 @@ Every `category` below is one **row** in the file, in this order:
 | `ref_same_position_diff_aln` | Same position, different `cs` |
 | `ref_diff_position_same_aln` | Same `cs`, different position — relocated |
 | `ref_diff_position_diff_aln` | Both position and `cs` differ |
-| `ref_same_position_same_junctions` | Among same-position reads, **genomic-coordinate** junction sets also match |
-| `ref_same_position_diff_junctions` | Among same-position reads, genomic-coordinate junction sets differ |
 | `present_only_in_A_by_id` | Read present only in input A (`compare` and `toolkit merge-readinfo` only; `0` unless `--allow-id-mismatch`) |
 | `present_only_in_B_by_id` | Read present only in input B |
 
 **Notes**
 - Classification is computed from each side's **representative (best)
   alignment** using `target_name`, `strand`, `cs`, `query_start`/`query_end`,
-  `target_start`/`target_end`, `query_junctions`, `genomic_junctions` — the same
-  columns from the [compare table](compare.md).
+  `target_start`/`target_end` and `query_junctions` — the same columns from the
+  [compare table](compare.md).
 - Reference-space classification is strict and literal: no
   reverse-complement accommodation, so a real strand difference always
-  counts as a different position.
-- `query_junctions_identical`/`ref_same_position_same_junctions` are looser,
-  complementary axes to the `query_identical`/`ref_*_aln` categories —
-  `None`/not-counted unless both sides are mapped.
+  counts as a different position. The four `ref_*` rows compare positions on
+  each side's reference, so when A and B were aligned to different references
+  they report every read as a different position.
+- `query_junctions_identical` is a looser, complementary axis to
+  `query_identical` — not counted unless both sides are mapped.
+- Genomic (reference-coordinate) junction sets are compared by
+  [`toolkit genomic-junction-compare`](../REFERENCE.md#toolkit-genomic-junction-compare),
+  not here.
 - `query_identical = query_identical_same_strand + query_identical_revcomp +
   aligned_neither` always holds — `aligned_neither`'s full count is folded
   into `query_identical` without a dedicated sub-category row of its own

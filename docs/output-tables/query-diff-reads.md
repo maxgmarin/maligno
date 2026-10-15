@@ -1,15 +1,16 @@
 # `query_diff_reads.tsv`
 
 `{prefix}.query_diff_reads.tsv.gz` — one row per read whose alignment
-**differs** between set A and set B, plus 8 classification booleans.
+**differs** between set A and set B, plus 7 classification booleans.
 Written by `compare` by default (fused into its single merge pass, fixed at
 `--space query --compare-by all`; `--skip-find-aln-diff` opts out) and by
-standalone `toolkit find-aln-diff` (any `--space`/`--compare-by`
-combination — filenames gain a `.junctions`/`reference_diff` segment
+standalone `toolkit find-aln-diff` (`--space query` or `reference`, and
+`--compare-by all`, or `junctions` with `--space query` — filenames gain a
+`.junctions`/`reference_diff` segment
 accordingly; see [REFERENCE.md](../REFERENCE.md#--compare-by)
 for the full mode matrix).
 
-10 columns.
+9 columns.
 
 | # | Column | Description |
 |---|---|---|
@@ -22,12 +23,11 @@ for the full mode matrix).
 | 7 | `ref_same_position_diff_aln` | `1` if same position, different `cs` |
 | 8 | `ref_diff_position_same_aln` | `1` if same `cs`, different position (relocated) |
 | 9 | `ref_diff_position_diff_aln` | `1` if both position and `cs` differ |
-| 10 | `ref_same_position_same_junctions` | `1` if both mapped, same position, and the **genomic-coordinate** junction sets also match — computed unconditionally |
 
 **Notes**
-- Columns 3–10 are computed **the same way regardless of the active
+- Columns 3–9 are computed **the same way regardless of the active
   `--space`/`--compare-by`** — so one run can show, e.g., a read that's
-  query-different but reference-identical, without a second run. All 8 are
+  query-different but reference-identical, without a second run. All 7 are
   `0` for a read mapped on only one side.
 - For a both-mapped read, exactly one of columns 6–9 is `1` (they partition
   the four reference-space outcomes).
@@ -39,8 +39,8 @@ for the full mode matrix).
   table either. See the complementary, opt-in
   `{prefix}.query_identical_reads.tsv.gz`, produced only by standalone
   `find-aln-diff --emit-identical-reads`, never by `compare`; it carries the
-  same 10-column schema for the complementary read set, plus a third
-  `category` value, `neither_mapped`, for these reads (columns 3–10 all `0`,
+  same 9-column schema for the complementary read set, plus a third
+  `category` value, `neither_mapped`, for these reads (columns 3–9 all `0`,
   since none of them are a "both mapped" concept).
 - Every genomic locus this table's reads cluster into is summarized in
   [query-diff-regions.md](query-diff-regions.md).
