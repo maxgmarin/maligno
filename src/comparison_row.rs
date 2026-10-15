@@ -10,21 +10,20 @@
 //!
 //! The split here is deliberate, and it is about what each layer is *for*:
 //!
-//! - [`AlignmentMetrics`] — the 11 values per side that the comparison math needs,
+//! - [`AlignmentMetrics`] — the 10 values per side that the comparison math needs,
 //!   parsed once. No lifetime, `Copy`; this is what [`AlignmentDiff::compute`] is
 //!   tested against.
-//! - [`AlignmentRow`] — one side's 33 columns exactly as read (`&str`), plus the
+//! - [`AlignmentRow`] — one side's 34 columns exactly as read (`&str`), plus the
 //!   parsed view. The raw strings are what the TSV writer emits.
 //! - [`AlignmentDiff`] — the computed A-vs-B block, owned.
 //!
 //! **The per-side columns are transported as `&str`, not re-rendered from parsed
 //! values.** That is load-bearing for two reasons. First, the writer loops over
 //! `COMPARE_SIDE_COLS` exactly as the header does, so the two cannot drift apart.
-//! Second, `toolkit merge-readinfo` accepts arbitrary user TSVs: re-rendering would turn
-//! `1e-05` into `0.00001`, `+5` into `5`, and — because a missing column yields
-//! `""` from the accessors — would fabricate `0` where today an empty cell passes
-//! through. 14 of these columns feed no computation at all; parsing them would be a
-//! lossy operation performed for looks.
+//! Second, `toolkit merge-readinfo` accepts user-written TSVs: re-rendering would turn
+//! `1e-05` into `0.00001`, `+5` into `5`, and would fabricate `0` where an empty
+//! cell passes through today. Most of these columns feed no computation at all;
+//! parsing them would be a lossy operation performed for looks.
 
 use std::io::Write;
 
@@ -97,7 +96,7 @@ pub(crate) struct AlignmentMetrics {
 
 /// One side of the comparison: the raw transport columns plus the parsed view.
 pub(crate) struct AlignmentRow<'r> {
-    /// The 33 per-side columns in `COMPARE_SIDE_COLS` order, exactly as read.
+    /// The 34 per-side columns in `COMPARE_SIDE_COLS` order, exactly as read.
     raw: [&'r str; N_SIDE_COLS],
     pub(crate) metrics: AlignmentMetrics,
 }
@@ -126,7 +125,7 @@ impl<'r> AlignmentRow<'r> {
         Self { raw, metrics }
     }
 
-    /// The 33 per-side columns in `COMPARE_SIDE_COLS` order, exactly as read.
+    /// The 34 per-side columns in `COMPARE_SIDE_COLS` order, exactly as read.
     /// The Parquet writer walks this in step with the column list.
     pub(crate) fn raw(&self) -> &[&'r str; N_SIDE_COLS] {
         &self.raw
@@ -457,7 +456,7 @@ mod tests {
         AlignmentDiff::compute(&side(a), &side(b))
     }
 
-    /// Render one full row and split it into its 99 fields.
+    /// Render one full row and split it into its 101 fields.
     fn render(a: &[(&str, &'static str)], b: &[(&str, &'static str)]) -> Vec<String> {
         let mut buf: Vec<u8> = Vec::new();
         ComparisonRow::build("read1", 100, "SetA", "SetB", |c| lookup(a, c), |c| lookup(b, c))
@@ -476,7 +475,7 @@ mod tests {
         s.trim_end_matches('\n').split('\t').map(String::from).collect()
     }
 
-    /// Index of an output column in the 99-column header.
+    /// Index of an output column in the 101-column header.
     fn col(name: &str) -> usize {
         header_fields()
             .iter()
@@ -490,7 +489,7 @@ mod tests {
     fn header_and_row_field_counts_agree() {
         let h = header_fields();
         let r = render(&[], &[]);
-        assert_eq!(h.len(), 99, "header should have 99 columns");
+        assert_eq!(h.len(), 101, "header should have 101 columns");
         assert_eq!(
             r.len(),
             h.len(),
@@ -500,7 +499,7 @@ mod tests {
         );
         assert_eq!(
             4 + 2 * COMPARE_SIDE_COLS.len() + COMPARE_DIFF_COLS.len(),
-            99
+            101
         );
     }
 
@@ -509,11 +508,13 @@ mod tests {
         let h = header_fields();
         assert_eq!(&h[..4], &["query_name", "query_len", "label_A", "label_B"]);
         assert_eq!(h[4], "target_name_A");
-        assert_eq!(h[36], "cs_A");
-        assert_eq!(h[37], "target_name_B");
-        assert_eq!(h[69], "cs_B");
-        assert_eq!(h[70], "strand_match");
-        assert_eq!(h[98], "genomic_junctions_only_B");
+        assert_eq!(h[6], "transcript_strand_A");
+        assert_eq!(h[37], "cs_A");
+        assert_eq!(h[38], "target_name_B");
+        assert_eq!(h[40], "transcript_strand_B");
+        assert_eq!(h[71], "cs_B");
+        assert_eq!(h[72], "strand_match");
+        assert_eq!(h[100], "genomic_junctions_only_B");
         // The alignment-type counts sit directly after n_alns on each side.
         for side in ["A", "B"] {
             let n = col(&format!("n_alns_{side}"));
@@ -539,7 +540,7 @@ mod tests {
         let a = [("cs", "a\tb")];
         let r = render(&a, &[]);
         assert_eq!(r[col("cs_A")], "a\\tb");
-        assert_eq!(r.len(), 99, "an embedded tab must not add a field");
+        assert_eq!(r.len(), 101, "an embedded tab must not add a field");
     }
 
     #[test]

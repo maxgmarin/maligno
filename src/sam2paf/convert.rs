@@ -258,6 +258,10 @@ fn process_record<W: Write>(
     }
     if let Some(a) = tags.r#as { write!(out, "\tAS:i:{a}")?; }
     if let Some(m) = tags.ms  { write!(out, "\tms:i:{m}")?; }
+    // Transcript-strand tags, copied verbatim: minimap2's `ts:A` and the
+    // Cufflinks-style `XS:A` (STAR, HISAT2). Not part of paftools' output.
+    if let Some(t) = tags.ts  { write!(out, "\tts:A:{}", t as char)?; }
+    if let Some(x) = tags.xs  { write!(out, "\tXS:A:{}", x as char)?; }
     write!(out, "\tgn:i:{}\tgo:i:{}\tcg:Z:",
            cs_stats.i_bases + cs_stats.d_bases,
            cs_stats.i_count + cs_stats.d_count)?;
@@ -281,6 +285,10 @@ struct SamTags<'a> {
     cs: Option<&'a str>,
     r#as: Option<i64>,
     ms: Option<i64>,
+    /// minimap2 transcript strand, relative to the read (`ts:A`).
+    ts: Option<u8>,
+    /// Transcript strand relative to the reference (`XS:A`; STAR, HISAT2).
+    xs: Option<u8>,
 }
 
 /// Parse optional SAM tags from the raw tag substring (already past QUAL).
@@ -298,6 +306,8 @@ fn parse_tags(raw: &str) -> SamTags<'_> {
             b"cs:Z:" => { t.cs  = Some(&field[5..]); }
             b"AS:i:" => { t.r#as = parse_int(&b[5..]); }
             b"ms:i:" => { t.ms  = parse_int(&b[5..]); }
+            b"ts:A:" => { t.ts  = Some(b[5]); }
+            b"XS:A:" => { t.xs  = Some(b[5]); }
             _ => {}
         }
     }
@@ -406,5 +416,27 @@ mod tests {
         let recs = "r1\t0\tchrX\t101\t60\t10M\t*\t0\t0\t*\t*\tcs:Z::10\n\
                     r2\t0\tchr1\t101\t60\t10M\t*\t0\t0\t*\t*\tNM:i:0\tcs:Z::10\n";
         assert!(run(recs, &Options::default()).unwrap().starts_with("r2\t"));
+    }
+
+    #[test]
+    fn transcript_strand_tags_are_copied_when_present() {
+        let base = "r1\t16\tchr1\t101\t60\t10M\t*\t0\t0\t*\t*\tNM:i:0";
+        let line = |tags: &str| run(&format!("{base}{tags}\tcs:Z::10\n"), &Options::default()).unwrap();
+        let ts = line("\tts:A:-");
+        assert!(ts.contains("\tts:A:-\t") && !ts.contains("XS:A"), "{ts}");
+        let xs = line("\tXS:A:+");
+        assert!(xs.contains("\tXS:A:+\t") && !xs.contains("ts:A"), "{xs}");
+        let both = line("\tXS:A:+\tts:A:-");
+        assert!(both.contains("\tts:A:-\tXS:A:+\t"), "{both}");
+        let none = line("");
+        assert!(!none.contains("ts:A") && !none.contains("XS:A"), "{none}");
+        assert!(both.ends_with("\tcs:Z::10\n"), "cs stays the last tag: {both}");
+    }
+
+    #[test]
+    fn unmapped_records_carry_no_strand_tags() {
+        let rec = "r2\t4\t*\t0\t0\t*\t*\t0\t0\tACGTA\t*\tts:A:+\tXS:A:-\n";
+        let opts = Options { convert_unaligned: true, ..Options::default() };
+        assert_eq!(run(rec, &opts).unwrap(), "r2\t5\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0\n");
     }
 }

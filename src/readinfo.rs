@@ -14,6 +14,7 @@ const COL_QUERY_LEN: usize = index_of(&ALNINFO_COLS, QUERY_LEN);
 const COL_QUERY_START: usize = index_of(&ALNINFO_COLS, QUERY_START);
 const COL_QUERY_END: usize = index_of(&ALNINFO_COLS, QUERY_END);
 const COL_STRAND: usize = index_of(&ALNINFO_COLS, STRAND);
+const COL_TRANSCRIPT_STRAND: usize = index_of(&ALNINFO_COLS, TRANSCRIPT_STRAND);
 const COL_MQ: usize = index_of(&ALNINFO_COLS, MAPQ);
 const COL_TARGET_NAME: usize = index_of(&ALNINFO_COLS, TARGET_NAME);
 const COL_TARGET_START: usize = index_of(&ALNINFO_COLS, TARGET_START);
@@ -59,6 +60,8 @@ pub struct ReadInfoRow {
     pub read_len: u64,
     pub target_chr: String,
     pub strand: char,
+    /// Representative alignment's transcript strand, relative to the read.
+    pub transcript_strand: char,
     pub mapq_best: u32,
     pub aln_score: i64,
     pub ms: i64,
@@ -173,6 +176,7 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
     let read_len: u64 = bf[COL_QUERY_LEN].parse().unwrap_or(0);
     let target_chr = bf[COL_TARGET_NAME].clone();
     let strand: char = bf[COL_STRAND].chars().next().unwrap_or('*');
+    let transcript_strand: char = bf[COL_TRANSCRIPT_STRAND].chars().next().unwrap_or('*');
     let mapq_best: u32 = best.mapq;
     // Best alignment's query span on the read and target span on the reference
     // (both 0-based half-open per PAF).
@@ -242,6 +246,7 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
     let raw_fields: Vec<String> = vec![
         target_chr.clone(),
         strand.to_string(),
+        transcript_strand.to_string(),
         mapq_best.to_string(),
         aln_score.to_string(),
         ms.to_string(),
@@ -281,6 +286,7 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
         read_len,
         target_chr,
         strand,
+        transcript_strand,
         mapq_best,
         aln_score,
         ms,
@@ -438,14 +444,15 @@ fn flush_group<W: Write + ?Sized>(group: &mut Vec<AlnRow>, out: &mut W) -> Resul
 mod tests {
     use super::*;
 
-    /// A 36-column alninfo row for read `r1`: zeros everywhere except the fields
+    /// A full alninfo row for read `r1`: zeros everywhere except the fields
     /// `collapse_group` keys on. `target` "*" makes an unmapped placeholder; `tp`
-    /// "" drops the tp_tag column entirely (an older 35-column alninfo row).
+    /// "" drops the tp_tag column entirely (an older alninfo row without it).
     fn row(target: &str, ms: i64, aln_score: i64, mapq: u32, tp: &str) -> AlnRow {
         let mut f = vec!["0".to_string(); COL_TP_TAG + 1];
         f[COL_QUERY_NAME] = "r1".into();
         f[COL_QUERY_LEN] = "100".into();
         f[COL_STRAND] = if target == "*" { "*" } else { "+" }.into();
+        f[COL_TRANSCRIPT_STRAND] = "*".into();
         f[COL_TARGET_NAME] = target.into();
         f[COL_MS] = ms.to_string();
         f[COL_AS] = aln_score.to_string();
@@ -477,8 +484,8 @@ mod tests {
     fn header_ends_with_the_type_counts_and_matches_the_row_width() {
         let header = readinfo_header();
         let cols: Vec<&str> = header.split('\t').collect();
-        assert_eq!(cols.len(), 36);
-        assert_eq!(&cols[33..], &["tp_tag", "n_alns_tp_p", "n_alns_tp_s"]);
+        assert_eq!(cols.len(), 37);
+        assert_eq!(&cols[34..], &["tp_tag", "n_alns_tp_p", "n_alns_tp_s"]);
         let ri = collapse_group(&mut [row("chr1", 50, 50, 60, "P")]);
         assert_eq!(2 + ri.raw_fields.len(), cols.len());
     }
@@ -561,9 +568,9 @@ mod tests {
     fn raw_fields_follow_the_readinfo_columns() {
         // One alignment whose every field holds a distinct value, so a field
         // emitted in the wrong position cannot match by accident.
-        let vals: [(Col, &str); 36] = [
+        let vals: [(Col, &str); 37] = [
             (QUERY_NAME, "r9"), (QUERY_LEN, "101"), (QUERY_START, "2"), (QUERY_END, "99"),
-            (STRAND, "-"), (TARGET_NAME, "chr9"), (TARGET_LEN, "5000"),
+            (STRAND, "-"), (TRANSCRIPT_STRAND, "+"), (TARGET_NAME, "chr9"), (TARGET_LEN, "5000"),
             (TARGET_START, "200"), (TARGET_END, "1300"), (N_RESIDUE_MATCHES, "90"),
             (ALN_BLOCK_LEN, "95"), (MAPQ, "42"), (MS_SCORE, "77"), (AS_SCORE, "66"), (CS, ":10"),
             (N_MATCH_EVENTS, "11"), (N_MATCH_BASES, "12"), (N_SUBSTITUTION_EVENTS, "13"),
@@ -581,8 +588,8 @@ mod tests {
         }
         let ri = collapse_group(&mut [parse_aln_row(&f.join("\t")).unwrap()]);
 
-        let expected: [(Col, &str); 34] = [
-            (TARGET_NAME, "chr9"), (STRAND, "-"), (MAPQ, "42"), (AS_SCORE, "66"),
+        let expected: [(Col, &str); 35] = [
+            (TARGET_NAME, "chr9"), (STRAND, "-"), (TRANSCRIPT_STRAND, "+"), (MAPQ, "42"), (AS_SCORE, "66"),
             (MS_SCORE, "77"), (QUERY_ALN_COV, "0.25"), (QUERY_ALN_LEN, "97"),
             (ALN_IDENTITY, "0.5"), (QUERY_JUNCTIONS, "(5, 6, 7)"), (N_ALNS, "1"),
             (N_ALNS_TIED_TOP_SCORE, "1"), (N_QUERY_JUNCTIONS, "3"),
@@ -607,13 +614,15 @@ mod tests {
     #[test]
     fn scores_identity_and_coverage_come_from_the_representative() {
         // The representative wins on ms. A second alignment scores higher on AS,
-        // identity, coverage and aligned length; none of those may leak into the
+        // identity, coverage and aligned length, and has the other transcript
+        // strand; none of those may leak into the
         // readinfo row, which describes the representative alone.
         let aln = |target: &str, ms: i64, aln_score: i64, seqid: &str, len: &str, cov: &str| {
             let mut f = vec!["0".to_string(); ALNINFO_COLS.len()];
             f[COL_QUERY_NAME] = "r1".into();
             f[COL_QUERY_LEN] = "100".into();
             f[COL_STRAND] = "+".into();
+            f[COL_TRANSCRIPT_STRAND] = if target == "chr1" { "-" } else { "+" }.into();
             f[COL_TARGET_NAME] = target.into();
             f[COL_MS] = ms.to_string();
             f[COL_AS] = aln_score.to_string();
@@ -630,10 +639,12 @@ mod tests {
         assert_eq!(ri.target_chr, "chr1");
         assert_eq!((ri.ms, ri.aln_score, ri.query_aln_len), (50, 60, 60));
         assert_eq!((ri.seqid, ri.query_aln_cov), (0.9, 0.6));
+        assert_eq!(ri.transcript_strand, '-');
         let at = |c: Col| ri.raw_fields[index_of(&READINFO_COLS, c) - 2].as_str();
         assert_eq!(
-            [at(AS_SCORE), at(MS_SCORE), at(ALN_IDENTITY), at(QUERY_ALN_COV), at(QUERY_ALN_LEN)],
-            ["60", "50", "0.9", "0.6", "60"]
+            [at(AS_SCORE), at(MS_SCORE), at(ALN_IDENTITY), at(QUERY_ALN_COV), at(QUERY_ALN_LEN),
+             at(TRANSCRIPT_STRAND)],
+            ["60", "50", "0.9", "0.6", "60", "-"]
         );
         assert_eq!((ri.num_aln, ri.num_aln_maxscore), (2, 1));
     }

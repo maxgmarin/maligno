@@ -2,7 +2,8 @@
 //!
 //! A high-performance Rust port of the `sam2paf` sub-command from
 //! paftools.MGM.js. Reads a SAM or BAM file (or SAM on stdin) and writes PAF records to
-//! stdout. Output is byte-for-byte compatible with paftools.js sam2paf.
+//! stdout. Output is byte-for-byte compatible with paftools.js sam2paf, except
+//! that maligno also copies the transcript-strand tags `ts:A` and `XS:A`.
 //!
 //! A standalone utility; `compare` also runs this converter internally on SAM/BAM
 //! inputs:

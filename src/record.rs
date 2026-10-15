@@ -23,6 +23,8 @@ pub struct AlnInfo {
     pub query_start:         u64,
     pub query_end:           u64,
     pub strand:              char,
+    /// Transcript strand relative to the read (`ts:A` / `XS:A`); '*' if unknown.
+    pub transcript_strand:   char,
     pub target_name:         String,
     pub target_len:          u64,
     pub target_start:        u64,
@@ -154,6 +156,7 @@ impl AlnInfo {
             query_start:         rec.query_start,
             query_end:           rec.query_end,
             strand:              rec.strand,
+            transcript_strand:   rec.transcript_strand,
             target_name:         rec.target_name.to_owned(),
             target_len:          rec.target_len,
             target_start:        rec.target_start,
@@ -198,10 +201,10 @@ impl AlnInfo {
     pub fn write_row<W: Write>(&self, w: &mut W) -> std::io::Result<()> {
         let escaped_cs = escape_tsv_field(&self.cs);
         write!(w,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
              {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t",
             self.query_name,
-            self.query_len, self.query_start, self.query_end, self.strand,
+            self.query_len, self.query_start, self.query_end, self.strand, self.transcript_strand,
             self.target_name,
             self.target_len, self.target_start, self.target_end,
             self.num_residue_matches, self.aln_block_len, self.mapq,
@@ -427,7 +430,7 @@ mod tests {
         // position cannot match by accident.
         let a = AlnInfo {
             query_name: "read7".into(), query_len: 101, query_start: 2, query_end: 99,
-            strand: '-', target_name: "chr9".into(), target_len: 5000,
+            strand: '-', transcript_strand: '+', target_name: "chr9".into(), target_len: 5000,
             target_start: 200, target_end: 1300, num_residue_matches: 90,
             aln_block_len: 95, mapq: 42, ms: 77, aln_score: 66, cs: ":10".into(),
             n_match_events: 11, n_match_bases: 12, n_substitution_events: 13,
@@ -439,9 +442,9 @@ mod tests {
             seqid: 0.5, query_aln_len: 97, query_aln_cov: 0.25,
             genomic_junctions: vec![("chr9".into(), 300, 400)], tp_tag: 'S',
         };
-        let expected: [(Col, &str); 36] = [
+        let expected: [(Col, &str); 37] = [
             (QUERY_NAME, "read7"), (QUERY_LEN, "101"), (QUERY_START, "2"), (QUERY_END, "99"),
-            (STRAND, "-"), (TARGET_NAME, "chr9"), (TARGET_LEN, "5000"),
+            (STRAND, "-"), (TRANSCRIPT_STRAND, "+"), (TARGET_NAME, "chr9"), (TARGET_LEN, "5000"),
             (TARGET_START, "200"), (TARGET_END, "1300"), (N_RESIDUE_MATCHES, "90"),
             (ALN_BLOCK_LEN, "95"), (MAPQ, "42"), (MS_SCORE, "77"), (AS_SCORE, "66"), (CS, ":10"),
             (N_MATCH_EVENTS, "11"), (N_MATCH_BASES, "12"), (N_SUBSTITUTION_EVENTS, "13"),

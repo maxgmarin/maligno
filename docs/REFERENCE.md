@@ -18,6 +18,7 @@ see [`docs/output-tables/`](output-tables/README.md).
   - [`toolkit query-junction-diff`](#toolkit-query-junction-diff): comparison table → per-read splice-junction diff
 - Shared definitions
   - [Representative alignment](#representative-alignment)
+  - [Transcript strand](#transcript-strand)
   - [Classification](#classification)
   - [Junction comparison](#junction-comparison)
   - [TSV and Parquet](#tsv-and-parquet)
@@ -212,7 +213,10 @@ maligno sam2paf [options] <in.sam|in.bam|->  > out.paf
 ```
 
 Converts SAM or BAM to PAF on stdout. Its output is byte-for-byte compatible
-with the `sam2paf` command of minimap2's `paftools.js`. The input format is
+with the `sam2paf` command of minimap2's `paftools.js`, with one addition: the
+transcript-strand tags `ts:A` (minimap2) and `XS:A` (STAR, HISAT2) are copied
+to the PAF record when present, so [`transcript_strand`](#transcript-strand)
+survives conversion. The input format is
 detected automatically; `-` reads SAM text from stdin. `maligno sam2paf in.bam`
 gives the same bytes as `samtools view -h in.bam | maligno sam2paf -`.
 
@@ -255,14 +259,14 @@ maligno toolkit paf2tables -i <in.paf[.gz]|-> [--alninfo <alninfo.tsv[.gz]>] [--
 Turns a PAF into maligno's tables, writing either or both in a single pass
 over the PAF. At least one output must be given.
 
-- **`--alninfo`** writes one row per PAF record (36 columns; see
+- **`--alninfo`** writes one row per PAF record (37 columns; see
   [alninfo.md](output-tables/alninfo.md)). Each record's `cs` tag is walked to
   count matches, substitutions, insertions, deletions and splice junctions;
   soft-clip lengths, junction coordinates and identity/coverage are derived
   from it. Rows are written in input order with constant memory, and input
   order doesn't matter. Unmapped records (`target_name == "*"`) get a row with
   zeroed statistics.
-- **`--readinfo`** writes one row per read (36 columns; see
+- **`--readinfo`** writes one row per read (37 columns; see
   [readinfo.md](output-tables/readinfo.md)): the read's
   [representative alignment](#representative-alignment) plus per-read
   aggregates.
@@ -517,7 +521,7 @@ used by `compare` and `toolkit paf2tables --readinfo`.
   (`AS:i`), then highest `mapq`. Full ties keep the first in input order,
   usually the aligner's own order.
 - **Every per-alignment value comes from the representative alone:**
-  `target_name`, `strand`, `mapq`, `as_score`, `ms_score`, `aln_identity`,
+  `target_name`, `strand`, `transcript_strand`, `mapq`, `as_score`, `ms_score`, `aln_identity`,
   `query_aln_cov`, `query_aln_len`, `cs`, `query_junctions`,
   `genomic_junctions`, the event counts, and the spans `query_start` /
   `query_end` and `target_start` / `target_end`. So every per-side value in
@@ -540,6 +544,52 @@ used by `compare` and `toolkit paf2tables --readinfo`.
   values are 255 (unique), 3 (2 loci), 1 (3 loci) and 0 (more than 3). A
   difference between sides points to reads where the two runs disagree on how
   unique the mapping is.
+
+---
+
+## Transcript strand
+
+`transcript_strand` records which way the read runs relative to the transcript
+it came from, as inferred by the aligner from the splice signals. It is a
+column of alninfo, readinfo (the representative alignment's value) and both
+per-side blocks of the comparison table (`transcript_strand_A` /
+`transcript_strand_B`).
+
+| Value | Meaning |
+|---|---|
+| `+` | the read is in the transcript's sense orientation |
+| `-` | the read is antisense to the transcript |
+| `*` | unknown: no strand tag, or the record is unmapped |
+
+**It is relative to the read, not the reference.** The same read keeps the
+same value whichever reference, or reference orientation, it is aligned to.
+For example, aligned to HG38 a read maps to `strand` `+`; aligned to the
+reverse-complemented HG38 it maps to `strand` `-`, and its `transcript_strand`
+is the same in both. This keeps it comparable between two alignments to
+different references, like the query-space junctions.
+
+**Where it comes from.** maligno reads one of two SAM/PAF tags:
+
+| Aligner | Tag | Tag's convention | `transcript_strand` |
+|---|---|---|---|
+| minimap2, splice presets (`-x splice`, `splice:hq`, `splice:sr`) | `ts:A` | relative to the read | the tag's value |
+| STAR with `--outSAMstrandField intronMotif` | `XS:A` | relative to the reference | `+` if `XS` equals the alignment `strand`, otherwise `-` |
+| other aligners writing Cufflinks-style `XS:A` (e.g. HISAT2) | `XS:A` | relative to the reference | as for STAR; expected to work, not tested |
+
+- If a record carries both tags, `ts:A` is used.
+- Any other tag value, or no tag, gives `*`.
+- For SAM/BAM input, [`sam2paf`](#sam2paf) copies both tags into the PAF.
+- Aligners only infer a strand for **spliced** alignments, so unspliced reads
+  are usually `*` (most of a short-read dataset):
+  - minimap2 tags only the spliced alignment;
+  - STAR tags both mates of a pair when either mate is spliced.
+- STAR writes `XS:A` only when run with `--outSAMstrandField intronMotif`.
+  Without it every value is `*`.
+
+**Genome strand.** The strand of the transcript on the reference is
+`strand` when `transcript_strand` is `+`, and the opposite of `strand` when it
+is `-`. For example, `strand` `-` with `transcript_strand` `-` is a transcript
+on the reference's `+` strand.
 
 ---
 
@@ -632,7 +682,7 @@ side's own `target_name`, so junctions on different contigs never match.
 ## TSV and Parquet
 
 The comparison table can be written as Parquet (`compare`'s default), gzipped
-TSV, or both, with the same 99 columns, names and order (`pd.read_parquet` is
+TSV, or both, with the same 101 columns, names and order (`pd.read_parquet` is
 a drop-in for `pd.read_csv`). Parquet is much faster to read when you only need
 a few columns. `toolkit summary` and `toolkit find-aln-diff` read either form;
 `toolkit query-junction-diff` reads Parquet only.
@@ -705,7 +755,7 @@ tsvwhere "$CMP" n_query_junctions_not_shared pos \
                 {print $h["query_name"]"\t"$h["n_query_junctions_A"]"\t"$h["n_query_junctions_B"]"\t"$h["query_junctions_only_A"]"\t"$h["query_junctions_only_B"]}' \
   | column -t -s $'\t' | less -S
 
-# Check column counts (alninfo 36, readinfo 36, comparison table 99)
+# Check column counts (alninfo 37, readinfo 37, comparison table 101)
 gzip -dc < "$CMP" | awk -F'\t' '{print NF}' | sort | uniq -c
 ```
 

@@ -61,6 +61,9 @@ pub(crate) const QUERY_LEN: Col = col("query_len", U64);
 pub(crate) const QUERY_START: Col = col("query_start", U64);
 pub(crate) const QUERY_END: Col = col("query_end", U64);
 pub(crate) const STRAND: Col = col("strand", Str);
+/// Transcript strand relative to the read, from `ts:A` / `XS:A` (see
+/// `paf::transcript_strand`).
+pub(crate) const TRANSCRIPT_STRAND: Col = col("transcript_strand", Str);
 pub(crate) const TARGET_NAME: Col = col("target_name", Str);
 pub(crate) const TARGET_START: Col = col("target_start", U64);
 pub(crate) const TARGET_END: Col = col("target_end", U64);
@@ -107,12 +110,13 @@ pub(crate) const N_ALNS_TP_S: Col = col("n_alns_tp_s", U64);
 
 /// The alninfo table, in output order. `AlnInfo::write_row` emits its fields in
 /// this order (pinned by a test in `record.rs`).
-pub(crate) const ALNINFO_COLS: [Col; 36] = [
+pub(crate) const ALNINFO_COLS: [Col; 37] = [
     QUERY_NAME,
     QUERY_LEN,
     QUERY_START,
     QUERY_END,
     STRAND,
+    TRANSCRIPT_STRAND,
     TARGET_NAME,
     TARGET_LEN,
     TARGET_START,
@@ -148,11 +152,12 @@ pub(crate) const ALNINFO_COLS: [Col; 36] = [
 
 /// The readinfo table, in output order. `collapse_group` builds its fields in
 /// this order (pinned by a test in `readinfo.rs`).
-pub(crate) const READINFO_COLS: [Col; 36] = [
+pub(crate) const READINFO_COLS: [Col; 37] = [
     QUERY_NAME,
     QUERY_LEN,
     TARGET_NAME,
     STRAND,
+    TRANSCRIPT_STRAND,
     MAPQ,
     AS_SCORE,
     MS_SCORE,
@@ -202,10 +207,11 @@ pub(crate) const COMPARE_KEY_COLS: [Col; 4] = [QUERY_NAME, QUERY_LEN, LABEL_A, L
 /// topic (locus, alignment selection, identity/coverage, junction counts,
 /// cs-derived event counts, and the three long strings last) so the comparison
 /// table is readable via `head -1 | tr '\t' '\n' | nl`. Do not "resync" the two.
-pub(crate) const COMPARE_SIDE_COLS: [Col; 33] = [
+pub(crate) const COMPARE_SIDE_COLS: [Col; 34] = [
     // Locus & span.
     TARGET_NAME,
     STRAND,
+    TRANSCRIPT_STRAND,
     TARGET_START,
     TARGET_END,
     QUERY_START,
@@ -459,15 +465,16 @@ mod tests {
     #[test]
     fn index_of_finds_columns_by_name() {
         assert_eq!(index_of(&ALNINFO_COLS, QUERY_NAME), 0);
-        assert_eq!(index_of(&ALNINFO_COLS, TP_TAG), 35);
-        assert_eq!(index_of(&READINFO_COLS, N_ALNS_TP_S), 35);
+        assert_eq!(index_of(&ALNINFO_COLS, TP_TAG), 36);
+        assert_eq!(index_of(&ALNINFO_COLS, TRANSCRIPT_STRAND), index_of(&ALNINFO_COLS, STRAND) + 1);
+        assert_eq!(index_of(&READINFO_COLS, N_ALNS_TP_S), 36);
     }
 
     #[test]
     fn compare_header_is_keys_then_a_then_b_then_diff() {
         let h = compare_header();
         assert_eq!(h.len(), N_COMPARE_COLS);
-        assert_eq!(h.len(), 99);
+        assert_eq!(h.len(), 101);
         assert_eq!(h[4], sided(TARGET_NAME, SIDE_A));
         assert_eq!(h[4 + COMPARE_SIDE_COLS.len()], sided(TARGET_NAME, SIDE_B));
     }
