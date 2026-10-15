@@ -220,17 +220,45 @@ pub fn format_junction_tuple(juncs: &[i64]) -> String {
     }
 }
 
-/// Render `&[GenomicJunction]` as a Python tuple of complete junction tuples,
+/// Render `&[GenomicJunction]` as a Python tuple of `(start, end)` pairs — the
+/// same format as the `genomic_junctions` columns of alninfo, readinfo and the
+/// comparison table (see `record.rs`):
+/// ```text
+///   []                                  → "()"
+///   [("chr22", 100, 250, '+')]          → "((100, 250),)"
+///   [(c, s1, e1, x), (c, s2, e2, x)]    → "((s1, e1), (s2, e2))"
+/// ```
+/// The contig and strand are dropped: one alignment's junctions share them, and
+/// `toolkit genomic-junction-compare` writes them once per row (`target_name_*`,
+/// `intron_strand_*`). For a self-contained form that keeps them, see
+/// [`format_genomic_junction_full_tuple`].
+pub fn format_genomic_junction_tuple(juncs: &[GenomicJunction]) -> String {
+    let items: Vec<String> = juncs.iter().map(|(_contig, st, en, _strand)| format!("({st}, {en})")).collect();
+    match items.len() {
+        0 => "()".to_string(),
+        1 => format!("({},)", items[0]),
+        _ => format!("({})", items.join(", ")),
+    }
+}
+
+/// Render `&[GenomicJunction]` as a Python tuple of **complete** junction tuples,
 /// `(contig, start, end, strand)`, parseable with `ast.literal_eval`:
 /// ```text
 ///   []                                       → "()"
 ///   [("chr22", 100, 250, '+')]               → "(('chr22', 100, 250, '+'),)"
 ///   [(c, s1, e1, '-'), (c, s2, e2, '-')]     → "(('c', s1, e1, '-'), ('c', s2, e2, '-'))"
 /// ```
-/// Used by `toolkit genomic-junction-compare`. (The `genomic_junctions` columns
-/// of alninfo, readinfo and the comparison table keep the `(start, end)` form,
-/// with the contig in `target_name`; see `record.rs`.)
-pub fn format_genomic_junction_tuple(juncs: &[GenomicJunction]) -> String {
+/// Each junction then carries its full identity, so lists from different rows
+/// can be pooled or compared without the row's `target_name_*` /
+/// `intron_strand_*` columns. Contig names are escaped as Python string
+/// literals ([`py_str`]).
+///
+/// Not used by any output at the moment: `genomic-junction-compare` wrote its
+/// per-read junction lists in this form briefly and went back to `(start, end)`
+/// pairs. Kept, with its tests, so that form can be switched back on by calling
+/// this instead of [`format_genomic_junction_tuple`].
+#[allow(dead_code)]
+pub fn format_genomic_junction_full_tuple(juncs: &[GenomicJunction]) -> String {
     let items: Vec<String> = juncs
         .iter()
         .map(|(contig, st, en, strand)| {
@@ -246,6 +274,7 @@ pub fn format_genomic_junction_tuple(juncs: &[GenomicJunction]) -> String {
 
 /// A Python single-quoted string literal, escaping what would break the
 /// literal or a TSV cell (backslash, quote, tab, newline, carriage return).
+#[allow(dead_code)]
 fn py_str(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
@@ -447,18 +476,35 @@ mod tests {
 
     #[test]
     fn format_genomic_single_has_trailing_comma() {
+        // Contig and strand are dropped: the pairs format of the genomic_junctions columns.
         let v = vec![("chr22".to_string(), 100, 250, '+')];
-        assert_eq!(format_genomic_junction_tuple(&v), "(('chr22', 100, 250, '+'),)");
+        assert_eq!(format_genomic_junction_tuple(&v), "((100, 250),)");
     }
 
     #[test]
-    fn format_genomic_multiple() {
+    fn format_genomic_pairs_round_trip_through_the_column_parser() {
+        let v = vec![("chr22".to_string(), 100, 250, '-'), ("chr22".to_string(), 400, 800, '-')];
+        let s = format_genomic_junction_tuple(&v);
+        assert_eq!(s, "((100, 250), (400, 800))");
+        assert_eq!(parse_genomic_junction_str(&s), vec![(100, 250), (400, 800)]);
+    }
+
+    #[test]
+    fn format_genomic_full_empty_and_single() {
+        let empty: Vec<GenomicJunction> = vec![];
+        assert_eq!(format_genomic_junction_full_tuple(&empty), "()");
+        let v = vec![("chr22".to_string(), 100, 250, '+')];
+        assert_eq!(format_genomic_junction_full_tuple(&v), "(('chr22', 100, 250, '+'),)");
+    }
+
+    #[test]
+    fn format_genomic_full_multiple() {
         let v = vec![
             ("chr22".to_string(), 100, 250, '-'),
             ("chr22".to_string(), 400, 800, '*'),
         ];
         assert_eq!(
-            format_genomic_junction_tuple(&v),
+            format_genomic_junction_full_tuple(&v),
             "(('chr22', 100, 250, '-'), ('chr22', 400, 800, '*'))"
         );
     }
@@ -468,7 +514,7 @@ mod tests {
         // A quote or tab in a contig name must neither end the literal nor add a
         // TSV field.
         let v = vec![("ab\tc'd".to_string(), 1, 2, '-')];
-        assert_eq!(format_genomic_junction_tuple(&v), "(('ab\\tc\\'d', 1, 2, '-'),)");
+        assert_eq!(format_genomic_junction_full_tuple(&v), "(('ab\\tc\\'d', 1, 2, '-'),)");
     }
 
 }
