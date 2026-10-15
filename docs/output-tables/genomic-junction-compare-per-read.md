@@ -20,17 +20,17 @@ start, end (0-based half-open), and intron strand.
 |---|---|---|
 | 1 | `query_name` | Read ID |
 | 2 | `target_name_A` | A's reference/target name; `*` if unmapped |
-| 3 | `target_name_B` | B's reference/target name |
-| 4 | `strand_A` | A's alignment strand (read relative to the reference) |
-| 5 | `strand_B` | B's alignment strand |
-| 6 | `intron_strand_A` | Strand of A's transcript on the reference, so of every A junction: `strand_A` when `transcript_strand_A` is `+`, the opposite when it is `-`; `*` if unknown or unmapped. See [REFERENCE.md](../REFERENCE.md#transcript-strand) |
+| 3 | `strand_A` | A's alignment strand (read relative to the reference) |
+| 4 | `intron_strand_A` | Strand of A's transcript on the reference, so of every A junction: `strand_A` when `transcript_strand_A` is `+`, the opposite when it is `-`; `*` if unknown or unmapped. See [REFERENCE.md](../REFERENCE.md#transcript-strand) |
+| 5 | `target_name_B` | B's reference/target name |
+| 6 | `strand_B` | B's alignment strand |
 | 7 | `intron_strand_B` | The same for B |
-| 8 | `n_genomic_junctions_A` | Number of junctions in A's alignment |
-| 9 | `n_genomic_junctions_B` | Number of junctions in B's alignment |
-| 10 | `n_genomic_junctions_shared` | Junctions in both sides, \|A ∩ B\| |
-| 11 | `n_genomic_junctions_not_shared` | Junctions in exactly one side, `n_genomic_junctions_only_A + n_genomic_junctions_only_B` |
-| 12 | `n_genomic_junctions_only_A` | Junctions only in A, \|A \ B\| |
-| 13 | `n_genomic_junctions_only_B` | Junctions only in B, \|B \ A\| |
+| 8 | `n_junctions_A` | Number of junctions in A's alignment |
+| 9 | `n_junctions_B` | Number of junctions in B's alignment |
+| 10 | `n_junctions_shared` | Junctions in both sides, \|A ∩ B\| |
+| 11 | `n_junctions_not_shared` | Junctions in exactly one side, `n_junctions_only_A + n_junctions_only_B` |
+| 12 | `n_junctions_only_A` | Junctions only in A, \|A \ B\| |
+| 13 | `n_junctions_only_B` | Junctions only in B, \|B \ A\| |
 | 14 | `genomic_junctions_A` | A's junctions in reference order, each `(contig, start, end, intron_strand)`, e.g. `(('chr11', 61300932, 61302256, '-'),)`; `()` if none |
 | 15 | `genomic_junctions_B` | B's junctions |
 | 16 | `junction_motifs_A` | A's splice-site motifs, one per junction in the same order, e.g. `('gt-ag', 'gc-ag')` |

@@ -127,6 +127,8 @@ fn format_motif_list(motifs: &[[u8; 4]], intron_strand: char) -> String {
 struct JunctionAcc {
     n_reads_a: u64,
     n_reads_b: u64,
+    /// Reads whose A and B alignments both have the junction (they agree on it).
+    n_reads_both: u64,
     motif_a: Option<[u8; 4]>,
     motif_b: Option<[u8; 4]>,
 }
@@ -293,7 +295,7 @@ pub fn run(args: &GenomicJunctionCompareArgs) -> Result<()> {
         let query_name = fields.get(query_name_idx).copied().unwrap_or("");
         writeln!(
             per_read_w,
-            "{query_name}\t{target_a}\t{target_b}\t{strand_a}\t{strand_b}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{cs_a}\t{cs_b}",
+            "{query_name}\t{target_a}\t{strand_a}\t{}\t{target_b}\t{strand_b}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{cs_a}\t{cs_b}",
             sa.intron_strand,
             sb.intron_strand,
             sa.junctions.len(),
@@ -310,9 +312,13 @@ pub fn run(args: &GenomicJunctionCompareArgs) -> Result<()> {
             format_genomic_junction_tuple(&cmp.only_b_list),
         )?;
 
-        for (j, &m) in sa.junctions.into_iter().zip(sa.motifs.iter()) {
+        // A read agrees on a junction when both of its alignments have it.
+        let in_b: std::collections::HashSet<&GenomicJunction> = sb.junctions.iter().collect();
+        let agreed: Vec<bool> = sa.junctions.iter().map(|j| in_b.contains(j)).collect();
+        for ((j, &m), both) in sa.junctions.into_iter().zip(sa.motifs.iter()).zip(agreed) {
             let acc = by_junction.entry(j).or_default();
             acc.n_reads_a += 1;
+            acc.n_reads_both += both as u64;
             note_motif(&mut acc.motif_a, m);
         }
         for (j, &m) in sb.junctions.into_iter().zip(sb.motifs.iter()) {
@@ -332,9 +338,12 @@ pub fn run(args: &GenomicJunctionCompareArgs) -> Result<()> {
         let motif = |m: Option<[u8; 4]>| m.map_or(".".to_string(), |m| oriented_motif(m, *strand));
         writeln!(
             per_junction_w,
-            "{contig}\t{start}\t{end}\t{strand}\t{}\t{}\t{}\t{}",
+            "{contig}\t{start}\t{end}\t{strand}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             acc.n_reads_a,
             acc.n_reads_b,
+            acc.n_reads_both,
+            acc.n_reads_a - acc.n_reads_both,
+            acc.n_reads_b - acc.n_reads_both,
             motif(acc.motif_a),
             motif(acc.motif_b),
         )?;
@@ -473,7 +482,8 @@ mod tests {
             s
         };
         let per_junction = gz("t.genomic_junction_compare.per_junction.tsv.gz");
-        assert_eq!(per_junction.lines().nth(1).unwrap(), "chr1\t105\t125\t+\t2\t1\tgt-ag\tnn-nn");
+        // r1 has the junction in both alignments, r2 only in A.
+        assert_eq!(per_junction.lines().nth(1).unwrap(), "chr1\t105\t125\t+\t2\t1\t1\t1\t0\tgt-ag\tnn-nn");
         let per_read = gz("t.genomic_junction_compare.per_read.tsv.gz");
         assert_eq!(per_read.lines().count(), 3, "header + the two reads with junctions");
         let header_len = gjc_per_read_header().len();
