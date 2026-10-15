@@ -156,6 +156,24 @@ test_data/test_results/Splice_vs_SpliceHQ.query_junction_diff.unmatched_junction
 test_data/test_results/Splice_vs_SpliceHQ.query_junction_diff.unmatched_junctions.B.tsv.gz
 ```
 
+To compare A's and B's splice junctions in **genomic (reference)
+coordinates** (each junction with its strand and splice-site motif, per read
+and per distinct junction), run **`toolkit genomic-junction-compare`** on the
+comparison table (Parquet or TSV). It only makes sense when A and B were
+aligned to the same reference:
+
+```bash
+maligno toolkit genomic-junction-compare \
+  -i test_data/test_results/Splice_vs_SpliceHQ.compare.parquet \
+  --outdir test_data/test_results/ --prefix Splice_vs_SpliceHQ
+```
+
+```
+test_data/test_results/Splice_vs_SpliceHQ.genomic_junction_compare.per_read.tsv.gz
+test_data/test_results/Splice_vs_SpliceHQ.genomic_junction_compare.per_junction.tsv.gz
+test_data/test_results/Splice_vs_SpliceHQ.genomic_junction_compare.summary.tsv
+```
+
 
 ## Included test dataset (Annotated Gencode v49 Human Transcripts from Chr22)
 

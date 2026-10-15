@@ -29,6 +29,8 @@
 //!                                    the regions where they cluster
 //!   - `toolkit query-junction-diff`  alignment comparison table (Parquet) -> per-read,
 //!                                    per-side splice-junction reconstruction and diff
+//!   - `toolkit genomic-junction-compare`  alignment comparison table -> A-vs-B splice
+//!                                    junctions in reference coordinates (strand, motifs)
 //!
 //! Only reads present in both inputs, matched on query_name, produce an output row.
 
@@ -43,6 +45,7 @@ mod compare_streaming;  // `toolkit merge-readinfo` command + merge-join machine
 mod compare_summary;    // `toolkit summary` command + shared classifier/accumulator
 mod find_query_diff;   // `find-aln-diff` command (differing reads + regions, query or reference space)
 mod query_junction_diff; // `query-junction-diff` command (per-read, per-side splice-junction reconstruction + diff)
+mod genomic_junction_compare; // `genomic-junction-compare` command (A-vs-B junctions in reference coordinates, with strand + motif)
 mod interval_merge;     // generic sort+sweep interval merge (bedtools merge -c -o count)
 mod cs_parser;          // cs-tag parser  (PAF → alninfo path; also extracts genomic junctions)
 mod io_utils;
@@ -68,6 +71,7 @@ use compare_summary::CompareSummaryArgs;
 use find_query_diff::FindAlnDiffArgs;
 use paf2tables::Paf2TablesArgs;
 use query_junction_diff::QueryJunctionDiffArgs;
+use genomic_junction_compare::GenomicJunctionCompareArgs;
 use sam2paf::Sam2pafArgs;
 
 /// Unified alignment-comparison toolkit.
@@ -107,6 +111,9 @@ enum ToolkitCommands {
     /// Alignment comparison table -> per-read, per-side splice-junction reconstruction and diff.
     #[command(name = "query-junction-diff")]
     QueryJunctionDiff(QueryJunctionDiffArgs),
+    /// Alignment comparison table -> A-vs-B splice junctions in reference coordinates (strand, motifs).
+    #[command(name = "genomic-junction-compare")]
+    GenomicJunctionCompare(GenomicJunctionCompareArgs),
 }
 
 fn main() -> Result<()> {
@@ -120,6 +127,7 @@ fn main() -> Result<()> {
             ToolkitCommands::Summary(args)       => compare_summary::run(args),
             ToolkitCommands::FindAlnDiff(args)   => find_query_diff::run(args),
             ToolkitCommands::QueryJunctionDiff(args) => query_junction_diff::run(args),
+            ToolkitCommands::GenomicJunctionCompare(args) => genomic_junction_compare::run(args),
         },
     }
 }

@@ -126,18 +126,23 @@ pub fn parse_genomic_junction_str(s: &str) -> Vec<(u64, u64)> {
     out
 }
 
+/// A genomic junction as `toolkit genomic-junction-compare` identifies it:
+/// `(contig, intron_start, intron_end, genome_strand)`, 0-based half-open, with
+/// `genome_strand` `+`, `-` or `*` (unknown; its own value, matching only `*`).
+pub type GenomicJunction = (String, u64, u64, char);
+
 /// Set-overlap stats for genome-coordinate junctions, treating each
-/// `(chrom, start, end)` triple as a set element. Deduplicated on both sides.
+/// [`GenomicJunction`] as a set element. Deduplicated on both sides.
 ///
-/// Cross-chromosome safety: different `chrom` strings → different set elements →
-/// junctions on different contigs cannot accidentally match.
+/// Different contigs, or different strands, are different set elements, so
+/// they never match.
 pub fn genomic_junction_set_stats(
-    a: &[(String, u64, u64)],
-    b: &[(String, u64, u64)],
+    a: &[GenomicJunction],
+    b: &[GenomicJunction],
 ) -> (u64, u64, u64) {
     use std::collections::HashSet;
-    let set_a: HashSet<&(String, u64, u64)> = a.iter().collect();
-    let set_b: HashSet<&(String, u64, u64)> = b.iter().collect();
+    let set_a: HashSet<&GenomicJunction> = a.iter().collect();
+    let set_b: HashSet<&GenomicJunction> = b.iter().collect();
     let overlap = set_a.intersection(&set_b).count() as u64;
     let only_a = set_a.len() as u64 - overlap;
     let only_b = set_b.len() as u64 - overlap;
@@ -168,18 +173,18 @@ pub fn junction_set_diffs(a: &[i64], b: &[i64]) -> (Vec<i64>, Vec<i64>) {
 }
 
 /// Symmetric counterpart to `genomic_junction_set_stats`: return the actual
-/// `(only_a, only_b)` lists of genome-coordinate junction tuples, sorted by
-/// `(chrom, start, end)`.
+/// `(only_a, only_b)` lists of genome-coordinate junctions, sorted by
+/// `(contig, start, end, strand)`.
 pub fn genomic_junction_set_diffs(
-    a: &[(String, u64, u64)],
-    b: &[(String, u64, u64)],
-) -> (Vec<(String, u64, u64)>, Vec<(String, u64, u64)>) {
+    a: &[GenomicJunction],
+    b: &[GenomicJunction],
+) -> (Vec<GenomicJunction>, Vec<GenomicJunction>) {
     use std::collections::HashSet;
-    let set_a: HashSet<&(String, u64, u64)> = a.iter().collect();
-    let set_b: HashSet<&(String, u64, u64)> = b.iter().collect();
-    let mut only_a: Vec<(String, u64, u64)> =
+    let set_a: HashSet<&GenomicJunction> = a.iter().collect();
+    let set_b: HashSet<&GenomicJunction> = b.iter().collect();
+    let mut only_a: Vec<GenomicJunction> =
         set_a.difference(&set_b).map(|t| (*t).clone()).collect();
-    let mut only_b: Vec<(String, u64, u64)> =
+    let mut only_b: Vec<GenomicJunction> =
         set_b.difference(&set_a).map(|t| (*t).clone()).collect();
     only_a.sort();
     only_b.sort();
@@ -215,28 +220,27 @@ pub fn format_junction_tuple(juncs: &[i64]) -> String {
     }
 }
 
-/// Render `&[(String, u64, u64)]` as a Python tuple-of-tuples string.
+/// Render `&[GenomicJunction]` as a Python tuple-of-tuples string of
+/// `(start, end)` pairs — the same format as the `genomic_junctions` columns.
 ///
-/// The chrom field is **intentionally dropped on serialization** —
-/// chrom is available separately via the per-row `target_name` sibling column, so
-/// embedding it in every tuple was redundant noise. The in-memory tuple keeps
-/// its `String` chrom (used by `genomic_junction_set_stats` and friends for
-/// cross-chromosome safety); only the serialized form is shorter.
+/// The contig and strand are **intentionally dropped on serialization**: one
+/// alignment's junctions share them, and they are written once per row in
+/// sibling columns. The in-memory tuple keeps both, for the set comparisons.
 /// ```text
 ///   []                              → "()"
 ///   [("chr22", 100, 250)]           → "((100, 250),)"
 ///   [(c1, s1, e1), (c2, s2, e2)]   → "((s1, e1), (s2, e2))"
 /// ```
-pub fn format_genomic_junction_tuple(juncs: &[(String, u64, u64)]) -> String {
+pub fn format_genomic_junction_tuple(juncs: &[GenomicJunction]) -> String {
     match juncs.len() {
         0 => "()".to_string(),
         1 => {
-            let (_chrom, st, en) = &juncs[0];
+            let (_chrom, st, en, _strand) = &juncs[0];
             format!("(({st}, {en}),)")
         }
         _ => {
             let mut s = String::from("(");
-            for (i, (_chrom, st, en)) in juncs.iter().enumerate() {
+            for (i, (_chrom, st, en, _strand)) in juncs.iter().enumerate() {
                 if i > 0 {
                     s.push_str(", ");
                 }
@@ -294,12 +298,12 @@ mod tests {
     #[test]
     fn genomic_set_same_chrom_partial_overlap() {
         let a = vec![
-            ("chr1".into(), 100, 200),
-            ("chr1".into(), 300, 400),
+            ("chr1".into(), 100, 200, '+'),
+            ("chr1".into(), 300, 400, '+'),
         ];
         let b = vec![
-            ("chr1".into(), 300, 400),
-            ("chr1".into(), 500, 600),
+            ("chr1".into(), 300, 400, '+'),
+            ("chr1".into(), 500, 600, '+'),
         ];
         // overlap = {(chr1, 300, 400)}; only_a = {(chr1, 100, 200)}; only_b = {(chr1, 500, 600)}
         assert_eq!(genomic_junction_set_stats(&a, &b), (1, 1, 1));
@@ -308,24 +312,36 @@ mod tests {
     #[test]
     fn genomic_set_cross_chrom_disjoint() {
         // Same coordinates on different chromosomes must NOT match.
-        let a = vec![("chr1".into(), 100, 250)];
-        let b = vec![("chr2".into(), 100, 250)];
+        let a = vec![("chr1".into(), 100, 250, '+')];
+        let b = vec![("chr2".into(), 100, 250, '+')];
         assert_eq!(genomic_junction_set_stats(&a, &b), (0, 1, 1));
+    }
+
+    #[test]
+    fn genomic_set_strand_is_part_of_the_junction() {
+        // Same coordinates on opposite strands are different junctions, and an
+        // unknown strand ('*') matches only another '*'.
+        let plus = vec![("chr1".into(), 100, 250, '+')];
+        let minus = vec![("chr1".into(), 100, 250, '-')];
+        let unknown = vec![("chr1".into(), 100, 250, '*')];
+        assert_eq!(genomic_junction_set_stats(&plus, &minus), (0, 1, 1));
+        assert_eq!(genomic_junction_set_stats(&plus, &unknown), (0, 1, 1));
+        assert_eq!(genomic_junction_set_stats(&unknown, &unknown), (1, 0, 0));
     }
 
     #[test]
     fn genomic_set_identical() {
         let v = vec![
-            ("chr1".into(), 100, 200),
-            ("chr1".into(), 300, 400),
+            ("chr1".into(), 100, 200, '+'),
+            ("chr1".into(), 300, 400, '+'),
         ];
         assert_eq!(genomic_junction_set_stats(&v, &v), (2, 0, 0));
     }
 
     #[test]
     fn genomic_set_one_side_empty() {
-        let a = vec![("chr1".into(), 1, 2), ("chr1".into(), 3, 4)];
-        let b: Vec<(String, u64, u64)> = vec![];
+        let a = vec![("chr1".into(), 1, 2, '+'), ("chr1".into(), 3, 4, '+')];
+        let b: Vec<GenomicJunction> = vec![];
         assert_eq!(genomic_junction_set_stats(&a, &b), (0, 2, 0));
         assert_eq!(genomic_junction_set_stats(&b, &a), (0, 0, 2));
     }
@@ -371,26 +387,26 @@ mod tests {
     #[test]
     fn genomic_diffs_cross_chrom_disjoint() {
         // Same coordinates on different chromosomes must NOT match.
-        let a = vec![("chr1".into(), 100, 250)];
-        let b = vec![("chr2".into(), 100, 250)];
+        let a = vec![("chr1".into(), 100, 250, '+')];
+        let b = vec![("chr2".into(), 100, 250, '+')];
         let (oa, ob) = genomic_junction_set_diffs(&a, &b);
-        assert_eq!(oa, vec![("chr1".into(), 100, 250)]);
-        assert_eq!(ob, vec![("chr2".into(), 100, 250)]);
+        assert_eq!(oa, vec![("chr1".into(), 100, 250, '+')]);
+        assert_eq!(ob, vec![("chr2".into(), 100, 250, '+')]);
     }
 
     #[test]
     fn genomic_diffs_partial_overlap() {
         let a = vec![
-            ("chr1".into(), 100, 200),
-            ("chr1".into(), 300, 400),
+            ("chr1".into(), 100, 200, '+'),
+            ("chr1".into(), 300, 400, '+'),
         ];
         let b = vec![
-            ("chr1".into(), 300, 400),
-            ("chr1".into(), 500, 600),
+            ("chr1".into(), 300, 400, '+'),
+            ("chr1".into(), 500, 600, '+'),
         ];
         let (oa, ob) = genomic_junction_set_diffs(&a, &b);
-        assert_eq!(oa, vec![("chr1".into(), 100, 200)]);
-        assert_eq!(ob, vec![("chr1".into(), 500, 600)]);
+        assert_eq!(oa, vec![("chr1".into(), 100, 200, '+')]);
+        assert_eq!(ob, vec![("chr1".into(), 500, 600, '+')]);
     }
 
     // ── format_junction_tuple ──────────────────────────────────────────────
@@ -414,22 +430,22 @@ mod tests {
 
     #[test]
     fn format_genomic_empty() {
-        let v: Vec<(String, u64, u64)> = vec![];
+        let v: Vec<GenomicJunction> = vec![];
         assert_eq!(format_genomic_junction_tuple(&v), "()");
     }
 
     #[test]
     fn format_genomic_single_has_trailing_comma() {
         // Chrom field is dropped on serialization.
-        let v = vec![("chr22".to_string(), 100, 250)];
+        let v = vec![("chr22".to_string(), 100, 250, '+')];
         assert_eq!(format_genomic_junction_tuple(&v), "((100, 250),)");
     }
 
     #[test]
     fn format_genomic_multiple() {
         let v = vec![
-            ("chr22".to_string(), 100, 250),
-            ("chr22".to_string(), 400, 800),
+            ("chr22".to_string(), 100, 250, '+'),
+            ("chr22".to_string(), 400, 800, '+'),
         ];
         assert_eq!(
             format_genomic_junction_tuple(&v),
@@ -440,7 +456,7 @@ mod tests {
     #[test]
     fn format_genomic_chrom_value_is_ignored() {
         // Chrom is dropped on serialization regardless of its value (no escaping needed).
-        let v = vec![("ab\tc'd".to_string(), 1, 2)];
+        let v = vec![("ab\tc'd".to_string(), 1, 2, '-')];
         assert_eq!(format_genomic_junction_tuple(&v), "((1, 2),)");
     }
 
@@ -452,8 +468,8 @@ mod tests {
         // returns just (start, end) pairs. The caller reconstructs full tuples
         // by combining the per-row target_name with these pairs.
         let v = vec![
-            ("chr22".to_string(), 100, 250),
-            ("chrX".to_string(), 999, 1500),
+            ("chr22".to_string(), 100, 250, '+'),
+            ("chrX".to_string(), 999, 1500, '+'),
         ];
         let s = format_genomic_junction_tuple(&v);
         let parsed = parse_genomic_junction_str(&s);

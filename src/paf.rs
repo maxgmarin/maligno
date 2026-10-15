@@ -109,6 +109,20 @@ pub fn transcript_strand(strand: char, ts: Option<char>, xs: Option<char>) -> ch
     }
 }
 
+/// The strand of the transcript on the **reference**, from the alignment
+/// `strand` and its read-relative `transcript_strand` (see [`transcript_strand`]):
+/// `strand` when the read is sense (`+`), the opposite strand when antisense
+/// (`-`), and `*` when either is unknown. Every intron of an alignment lies on
+/// this strand.
+pub fn genome_strand(strand: char, transcript_strand: char) -> char {
+    match (strand, transcript_strand) {
+        ('+' | '-', '+') => strand,
+        ('+', '-') => '-',
+        ('-', '-') => '+',
+        _ => '*',
+    }
+}
+
 /// Optional tags read from a PAF line. Unmapped records keep the defaults.
 struct PafTags<'a> {
     ms: i64,
@@ -234,5 +248,15 @@ mod tests {
             assert_eq!(r.strand, strand, "{paf}");
             assert_eq!(r.transcript_strand, '-', "{paf}");
         }
+    }
+
+    #[test]
+    fn genome_strand_combines_alignment_and_transcript_strand() {
+        assert_eq!(genome_strand('+', '+'), '+');
+        assert_eq!(genome_strand('-', '+'), '-');
+        assert_eq!(genome_strand('+', '-'), '-');
+        assert_eq!(genome_strand('-', '-'), '+');
+        assert_eq!(genome_strand('+', '*'), '*');
+        assert_eq!(genome_strand('*', '+'), '*');
     }
 }

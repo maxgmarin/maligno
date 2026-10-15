@@ -341,6 +341,72 @@ pub(crate) const CLASSIFY_SIDE_COLS: [Col; 8] = [
     QUERY_JUNCTIONS,
 ];
 
+// ── toolkit genomic-junction-compare ─────────────────────────────────────────
+//
+// A genomic junction there is `(contig, intron_start, intron_end, genome_strand)`;
+// see `junction::GenomicJunction`.
+
+/// Transcript strand on the reference (`paf::genome_strand`): `+`, `-`, `*`.
+pub(crate) const GENOME_STRAND: Col = col("genome_strand", Str);
+/// Number of genomic junctions in one side's representative alignment.
+pub(crate) const N_GENOMIC_JUNCTIONS: Col = col("n_genomic_junctions", U64);
+/// One side's junction motifs, parallel to its `genomic_junctions` list.
+pub(crate) const JUNCTION_MOTIFS: Col = col("junction_motifs", Str);
+pub(crate) const N_GENOMIC_JUNCTIONS_SHARED: Col = col("n_genomic_junctions_shared", U64);
+pub(crate) const N_GENOMIC_JUNCTIONS_NOT_SHARED: Col = col("n_genomic_junctions_not_shared", U64);
+pub(crate) const N_GENOMIC_JUNCTIONS_ONLY_A: Col = col("n_genomic_junctions_only_A", U64);
+pub(crate) const N_GENOMIC_JUNCTIONS_ONLY_B: Col = col("n_genomic_junctions_only_B", U64);
+pub(crate) const GENOMIC_JUNCTIONS_ONLY_A: Col = col("genomic_junctions_only_A", Str);
+pub(crate) const GENOMIC_JUNCTIONS_ONLY_B: Col = col("genomic_junctions_only_B", Str);
+pub(crate) const INTRON_START: Col = col("intron_start", U64);
+pub(crate) const INTRON_END: Col = col("intron_end", U64);
+pub(crate) const N_READS_A: Col = col("n_reads_A", U64);
+pub(crate) const N_READS_B: Col = col("n_reads_B", U64);
+pub(crate) const MOTIF_A: Col = col("motif_A", Str);
+pub(crate) const MOTIF_B: Col = col("motif_B", Str);
+
+/// The per-side comparison-table columns `genomic-junction-compare` reads.
+pub(crate) const GJC_INPUT_SIDE_COLS: [Col; 5] =
+    [TARGET_NAME, TARGET_START, STRAND, TRANSCRIPT_STRAND, CS];
+
+/// Header of `{prefix}.genomic_junction_compare.per_read.tsv.gz`, in output order:
+/// per-side pairs (`_A` then `_B`) of locus and strand, the comparison counts,
+/// the full junction and motif lists, the unmatched lists, then `cs` last.
+pub(crate) fn gjc_per_read_header() -> Vec<String> {
+    let pair = |c: Col| [sided(c, SIDE_A), sided(c, SIDE_B)];
+    let mut h = vec![QUERY_NAME.name.to_string()];
+    for c in [TARGET_NAME, STRAND, GENOME_STRAND, N_GENOMIC_JUNCTIONS] {
+        h.extend(pair(c));
+    }
+    for c in [
+        N_GENOMIC_JUNCTIONS_SHARED,
+        N_GENOMIC_JUNCTIONS_NOT_SHARED,
+        N_GENOMIC_JUNCTIONS_ONLY_A,
+        N_GENOMIC_JUNCTIONS_ONLY_B,
+    ] {
+        h.push(c.name.to_string());
+    }
+    for c in [GENOMIC_JUNCTIONS, JUNCTION_MOTIFS] {
+        h.extend(pair(c));
+    }
+    h.push(GENOMIC_JUNCTIONS_ONLY_A.name.to_string());
+    h.push(GENOMIC_JUNCTIONS_ONLY_B.name.to_string());
+    h.extend(pair(CS));
+    h
+}
+
+/// `{prefix}.genomic_junction_compare.per_junction.tsv.gz`, in output order.
+pub(crate) const GJC_PER_JUNCTION_COLS: [Col; 8] = [
+    TARGET_NAME,
+    INTRON_START,
+    INTRON_END,
+    GENOME_STRAND,
+    N_READS_A,
+    N_READS_B,
+    MOTIF_A,
+    MOTIF_B,
+];
+
 // ── Classification columns ───────────────────────────────────────────────────
 
 pub(crate) const QUERY_IDENTICAL_SAME_STRAND: &str = "query_identical_same_strand";

@@ -16,6 +16,7 @@ see [`docs/output-tables/`](output-tables/README.md).
   - [`toolkit summary`](#toolkit-summary): comparison table → summary statistics
   - [`toolkit find-aln-diff`](#toolkit-find-aln-diff): comparison table → differing reads and regions
   - [`toolkit query-junction-diff`](#toolkit-query-junction-diff): comparison table → per-read splice-junction diff
+  - [`toolkit genomic-junction-compare`](#toolkit-genomic-junction-compare): comparison table → A-vs-B junctions in reference coordinates, with strand and motifs
 - Shared definitions
   - [Representative alignment](#representative-alignment)
   - [Transcript strand](#transcript-strand)
@@ -61,7 +62,8 @@ You sort the inputs yourself and keep the intermediate per-read tables.
 ```
 
 Either way, the comparison table can then be analysed further with
-`toolkit summary`, `toolkit find-aln-diff` and `toolkit query-junction-diff`.
+`toolkit summary`, `toolkit find-aln-diff`, `toolkit query-junction-diff` and
+`toolkit genomic-junction-compare`.
 
 **Input and output conventions.** Inputs and outputs ending in `.gz` are
 read and written as gzip; `.gz` inputs may be single-member gzip or
@@ -508,6 +510,57 @@ The per-read and unmatched-junction tables are always gzipped; the summary
 never is. In the per-read table, `junction_index` is 1-based and counted
 separately on each side, in the read's 5'→3' order. It is not a matching key
 across sides.
+
+---
+
+## `toolkit genomic-junction-compare`
+
+```bash
+maligno toolkit genomic-junction-compare -i <compare.parquet|compare.tsv[.gz]> \
+  [--input-format auto|tsv|parquet] --outdir <DIR> --prefix <STR>
+```
+
+Compares A's and B's splice junctions in **genomic (reference)
+coordinates**, read by read and junction by junction, with each junction's
+strand and splice-site motif. The comparison table itself compares junctions
+only in query space (positions in the read); this command is where the
+reference-coordinate comparison lives.
+
+**Only meaningful when A and B were aligned to the same reference.** With
+different references (another assembly, or a reverse-complemented one), the
+coordinates aren't comparable; don't run it.
+
+**What a genomic junction is.** `(target_name, intron_start, intron_end,
+genome_strand)`, 0-based half-open:
+- `genome_strand` is the strand of the alignment's transcript on the
+  reference: `strand` when `transcript_strand` is `+`, the opposite when it
+  is `-`, and `*` when unknown (see [Transcript strand](#transcript-strand)).
+  Every junction of an alignment gets that alignment's genome strand.
+- The same coordinates on `+` and `-` are **different junctions**, and `*`
+  matches only `*`. Run aligners so they write the strand tags (STAR needs
+  `--outSAMstrandField intronMotif`), or every junction is `*`.
+
+**How junctions are found.** Each side's junctions are rebuilt from its
+representative alignment's `cs` tag (they equal the table's
+`genomic_junctions` columns). The same walk gives each intron's **splice-site
+motif**: the two letters at each end of the intron (`~gt…ag` in `cs`),
+written donor-acceptor in the junction's orientation, so a canonical intron
+is `gt-ag` on either strand. Aligners that don't report the bases give
+`nn-nn`.
+
+- **Input:** the comparison table from `compare` or `toolkit merge-readinfo`,
+  Parquet or TSV. It reads only the columns it needs.
+- **Not run by `compare`:** this is a standalone command.
+
+### Outputs
+
+| File | Contents |
+|---|---|
+| `{prefix}.genomic_junction_compare.per_read.tsv.gz` | one row per read with a junction on either side: each side's locus, strands, junctions, motifs and `cs`, plus shared / only-A / only-B counts and lists; see [genomic-junction-compare-per-read.md](output-tables/genomic-junction-compare-per-read.md) |
+| `{prefix}.genomic_junction_compare.per_junction.tsv.gz` | one row per distinct junction: reads supporting it on each side and each side's motif; see [genomic-junction-compare-per-junction.md](output-tables/genomic-junction-compare-per-junction.md) |
+| `{prefix}.genomic_junction_compare.summary.tsv` | reads by which sides have junctions, identical vs differing junction sets, and distinct-junction totals; see [genomic-junction-compare-summary.md](output-tables/genomic-junction-compare-summary.md) |
+
+The per-read and per-junction tables are always gzipped; the summary never is.
 
 ---
 

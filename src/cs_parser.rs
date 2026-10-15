@@ -18,6 +18,11 @@ pub struct CsStats {
     /// To get absolute reference coordinates, add the alignment's `target_start`.
     /// Always reference-ascending (the cs walk traverses the ref 5' → 3').
     pub raw_genomic_junctions: Vec<(u64, u64)>,
+    /// The splice-site motif of each `~` op, parallel to `raw_genomic_junctions`:
+    /// the two letters before and the two after the intron length, lowercased,
+    /// in reference-forward orientation as the aligner wrote them (`gtag`,
+    /// `ctac`, or `nnnn` when the aligner didn't report the bases).
+    pub raw_junction_motifs: Vec<[u8; 4]>,
 }
 
 /// Parse a minimap2 cs tag and return accumulated statistics.
@@ -102,11 +107,15 @@ pub fn parse_cs(cs: &str) -> CsStats {
             // format: two alpha (motif prefix) + digits (intron len) + two alpha (suffix)
             // Splice ops advance ref only (the intron span on the reference).
             b'~' => {
-                // skip 2-char motif prefix (e.g. "ct" or "gt")
+                // 2-char motif prefix (e.g. "ct" or "gt")
+                let pref = pos;
                 pos = pos.saturating_add(2).min(len);
                 let intron_len = parse_uint(bytes, &mut pos);
-                // skip 2-char motif suffix (e.g. "ac" or "ag")
+                // 2-char motif suffix (e.g. "ac" or "ag")
+                let suf = pos;
                 pos = pos.saturating_add(2).min(len);
+                let letter = |i: usize| bytes.get(i).map_or(b'n', |b| b.to_ascii_lowercase());
+                stats.raw_junction_motifs.push([letter(pref), letter(pref + 1), letter(suf), letter(suf + 1)]);
                 stats.n_splice_junction_events += 1;
                 stats.n_splice_junction_bases  += intron_len;
                 stats.raw_junctions.push(q_pos);
@@ -139,12 +148,32 @@ fn parse_uint(bytes: &[u8], pos: &mut usize) -> u64 {
 /// Complement a single nucleotide byte, preserving case. Non-ACGTN bytes pass
 /// through unchanged.
 #[inline]
-fn complement_base(b: u8) -> u8 {
+pub(crate) fn complement_base(b: u8) -> u8 {
     match b {
         b'A' => b'T', b'C' => b'G', b'G' => b'C', b'T' => b'A', b'N' => b'N',
         b'a' => b't', b'c' => b'g', b'g' => b'c', b't' => b'a', b'n' => b'n',
         other => other,
     }
+}
+
+/// A splice-site motif (`raw_junction_motifs` entry) written donor-acceptor in
+/// the junction's orientation, e.g. `gt-ag`.
+///
+/// On a `-` strand junction the reference-forward letters are reverse-
+/// complemented, so a minus-strand GT-AG intron (`~ct…ac` in cs) reads `gt-ag`.
+/// With an unknown strand (`*`) the orientation can't be known, and the letters
+/// are kept reference-forward. `nnnn` stays `nn-nn`.
+pub(crate) fn oriented_motif(m: [u8; 4], genome_strand: char) -> String {
+    let [a, b, c, d] = if genome_strand == '-' {
+        [complement_base(m[3]), complement_base(m[2]), complement_base(m[1]), complement_base(m[0])]
+    } else {
+        m
+    };
+    let mut s = String::with_capacity(5);
+    for x in [a, b, b'-', c, d] {
+        s.push(x as char);
+    }
+    s
 }
 
 /// Append the reverse-complement of `seq` to `out` (bases emitted in reverse
@@ -469,5 +498,23 @@ mod tests {
         ] {
             assert_eq!(cs_revcomp(&cs_revcomp(cs)), cs, "roundtrip failed for {cs}");
         }
+    }
+
+    #[test]
+    fn motif_letters_are_recorded_per_intron() {
+        let s = parse_cs(":10~gt100ag:5~CT50AC:5~nn20nn:3");
+        assert_eq!(s.raw_junction_motifs, vec![*b"gtag", *b"ctac", *b"nnnn"]);
+        assert_eq!(s.raw_junction_motifs.len(), s.raw_genomic_junctions.len());
+    }
+
+    #[test]
+    fn oriented_motif_follows_the_junction_strand() {
+        assert_eq!(oriented_motif(*b"gtag", '+'), "gt-ag");
+        // A minus-strand GT-AG intron is written ct..ac on the reference.
+        assert_eq!(oriented_motif(*b"ctac", '-'), "gt-ag");
+        assert_eq!(oriented_motif(*b"ctgc", '-'), "gc-ag");
+        // Unknown strand: kept reference-forward.
+        assert_eq!(oriented_motif(*b"ctac", '*'), "ct-ac");
+        assert_eq!(oriented_motif(*b"nnnn", '-'), "nn-nn");
     }
 }
