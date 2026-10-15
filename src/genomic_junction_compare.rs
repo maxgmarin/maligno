@@ -15,7 +15,8 @@
 //!
 //! Outputs (to `--outdir`, `--prefix`-named):
 //!   1. `{prefix}.genomic_junction_compare.per_read.tsv.gz` — one row per read
-//!      with at least one genomic junction on either side.
+//!      with at least one genomic junction on either side. Junction lists hold
+//!      complete `(contig, start, end, strand)` tuples.
 //!   2. `{prefix}.genomic_junction_compare.per_junction.tsv.gz` — one row per
 //!      distinct junction, with read counts and motifs per side.
 //!   3. `{prefix}.genomic_junction_compare.summary.tsv` — `category`/`count`.
@@ -389,7 +390,10 @@ mod tests {
             vec![("chr1".to_string(), 1010, 1110, '+'), ("chr1".to_string(), 1115, 1165, '+')]
         );
         assert_eq!(s.motifs, vec![*b"gtag", *b"nnnn"]);
-        assert_eq!(format_genomic_junction_tuple(&s.junctions), "((1010, 1110), (1115, 1165))");
+        assert_eq!(
+            format_genomic_junction_tuple(&s.junctions),
+            "(('chr1', 1010, 1110, '+'), ('chr1', 1115, 1165, '+'))"
+        );
         assert_eq!(format_motif_list(&s.motifs, s.genome_strand), "('gt-ag', 'nn-nn')");
     }
 
@@ -409,8 +413,8 @@ mod tests {
         let b = side_junctions("chr1", "0", "+", "-", ":5~gt20ag:5");
         let c = compare_sides(&a, &b);
         assert_eq!((c.shared, c.only_a, c.only_b), (0, 1, 1));
-        assert_eq!(format_genomic_junction_tuple(&c.only_a_list), "((5, 25),)");
-        assert_eq!(format_genomic_junction_tuple(&c.only_b_list), "((5, 25),)");
+        assert_eq!(format_genomic_junction_tuple(&c.only_a_list), "(('chr1', 5, 25, '+'),)");
+        assert_eq!(format_genomic_junction_tuple(&c.only_b_list), "(('chr1', 5, 25, '-'),)");
         let same = compare_sides(&a, &a);
         assert_eq!((same.shared, same.only_a, same.only_b), (1, 0, 0));
     }

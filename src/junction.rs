@@ -69,8 +69,8 @@ pub fn junction_set_stats(a: &[i64], b: &[i64]) -> (u64, u64, u64) {
 /// reconstructs full `(chrom, start, end)` tuples by combining this output with
 /// the relevant per-row chrom.
 ///
-/// Accepts the format written by `write_genomic_junction_tuple` in record.rs and
-/// `format_genomic_junction_tuple` in this module:
+/// Accepts the format written by `write_genomic_junction_tuple` in record.rs
+/// (the `genomic_junctions` columns):
 ///
 /// ```text
 /// "()"                          → []
@@ -220,36 +220,47 @@ pub fn format_junction_tuple(juncs: &[i64]) -> String {
     }
 }
 
-/// Render `&[GenomicJunction]` as a Python tuple-of-tuples string of
-/// `(start, end)` pairs — the same format as the `genomic_junctions` columns.
-///
-/// The contig and strand are **intentionally dropped on serialization**: one
-/// alignment's junctions share them, and they are written once per row in
-/// sibling columns. The in-memory tuple keeps both, for the set comparisons.
+/// Render `&[GenomicJunction]` as a Python tuple of complete junction tuples,
+/// `(contig, start, end, strand)`, parseable with `ast.literal_eval`:
 /// ```text
-///   []                              → "()"
-///   [("chr22", 100, 250)]           → "((100, 250),)"
-///   [(c1, s1, e1), (c2, s2, e2)]   → "((s1, e1), (s2, e2))"
+///   []                                       → "()"
+///   [("chr22", 100, 250, '+')]               → "(('chr22', 100, 250, '+'),)"
+///   [(c, s1, e1, '-'), (c, s2, e2, '-')]     → "(('c', s1, e1, '-'), ('c', s2, e2, '-'))"
 /// ```
+/// Used by `toolkit genomic-junction-compare`. (The `genomic_junctions` columns
+/// of alninfo, readinfo and the comparison table keep the `(start, end)` form,
+/// with the contig in `target_name`; see `record.rs`.)
 pub fn format_genomic_junction_tuple(juncs: &[GenomicJunction]) -> String {
-    match juncs.len() {
+    let items: Vec<String> = juncs
+        .iter()
+        .map(|(contig, st, en, strand)| {
+            format!("({}, {st}, {en}, {})", py_str(contig), py_str(&strand.to_string()))
+        })
+        .collect();
+    match items.len() {
         0 => "()".to_string(),
-        1 => {
-            let (_chrom, st, en, _strand) = &juncs[0];
-            format!("(({st}, {en}),)")
-        }
-        _ => {
-            let mut s = String::from("(");
-            for (i, (_chrom, st, en, _strand)) in juncs.iter().enumerate() {
-                if i > 0 {
-                    s.push_str(", ");
-                }
-                s.push_str(&format!("({st}, {en})"));
-            }
-            s.push(')');
-            s
+        1 => format!("({},)", items[0]),
+        _ => format!("({})", items.join(", ")),
+    }
+}
+
+/// A Python single-quoted string literal, escaping what would break the
+/// literal or a TSV cell (backslash, quote, tab, newline, carriage return).
+fn py_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(c),
         }
     }
+    out.push('\'');
+    out
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -436,43 +447,28 @@ mod tests {
 
     #[test]
     fn format_genomic_single_has_trailing_comma() {
-        // Chrom field is dropped on serialization.
         let v = vec![("chr22".to_string(), 100, 250, '+')];
-        assert_eq!(format_genomic_junction_tuple(&v), "((100, 250),)");
+        assert_eq!(format_genomic_junction_tuple(&v), "(('chr22', 100, 250, '+'),)");
     }
 
     #[test]
     fn format_genomic_multiple() {
         let v = vec![
-            ("chr22".to_string(), 100, 250, '+'),
-            ("chr22".to_string(), 400, 800, '+'),
+            ("chr22".to_string(), 100, 250, '-'),
+            ("chr22".to_string(), 400, 800, '*'),
         ];
         assert_eq!(
             format_genomic_junction_tuple(&v),
-            "((100, 250), (400, 800))"
+            "(('chr22', 100, 250, '-'), ('chr22', 400, 800, '*'))"
         );
     }
 
     #[test]
-    fn format_genomic_chrom_value_is_ignored() {
-        // Chrom is dropped on serialization regardless of its value (no escaping needed).
+    fn format_genomic_contig_is_escaped_as_a_python_string() {
+        // A quote or tab in a contig name must neither end the literal nor add a
+        // TSV field.
         let v = vec![("ab\tc'd".to_string(), 1, 2, '-')];
-        assert_eq!(format_genomic_junction_tuple(&v), "((1, 2),)");
+        assert_eq!(format_genomic_junction_tuple(&v), "(('ab\\tc\\'d', 1, 2, '-'),)");
     }
 
-    // ── round-trip: format → parse loses chrom (by design) ─────────────────
-
-    #[test]
-    fn format_then_parse_genomic_roundtrip_pairs_only() {
-        // The serialized form drops chrom, so the round-trip
-        // returns just (start, end) pairs. The caller reconstructs full tuples
-        // by combining the per-row target_name with these pairs.
-        let v = vec![
-            ("chr22".to_string(), 100, 250, '+'),
-            ("chrX".to_string(), 999, 1500, '+'),
-        ];
-        let s = format_genomic_junction_tuple(&v);
-        let parsed = parse_genomic_junction_str(&s);
-        assert_eq!(parsed, vec![(100, 250), (999, 1500)]);
-    }
 }

@@ -556,7 +556,7 @@ is `gt-ag` on either strand. Aligners that don't report the bases give
 
 | File | Contents |
 |---|---|
-| `{prefix}.genomic_junction_compare.per_read.tsv.gz` | one row per read with a junction on either side: each side's locus, strands, junctions, motifs and `cs`, plus shared / only-A / only-B counts and lists; see [genomic-junction-compare-per-read.md](output-tables/genomic-junction-compare-per-read.md) |
+| `{prefix}.genomic_junction_compare.per_read.tsv.gz` | one row per read with a junction on either side: each side's locus, strands, junctions as complete `(contig, start, end, strand)` tuples, motifs and `cs`, plus shared / only-A / only-B counts and lists; see [genomic-junction-compare-per-read.md](output-tables/genomic-junction-compare-per-read.md) |
 | `{prefix}.genomic_junction_compare.per_junction.tsv.gz` | one row per distinct junction: reads supporting it on each side and each side's motif; see [genomic-junction-compare-per-junction.md](output-tables/genomic-junction-compare-per-junction.md) |
 | `{prefix}.genomic_junction_compare.summary.tsv` | reads by which sides have junctions, identical vs differing junction sets, and distinct-junction totals; see [genomic-junction-compare-summary.md](output-tables/genomic-junction-compare-summary.md) |
 
