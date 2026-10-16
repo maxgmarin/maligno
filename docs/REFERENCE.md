@@ -224,10 +224,10 @@ gives the same bytes as `samtools view -h in.bam | maligno sam2paf -`.
 
 | Flag | Meaning |
 |---|---|
-| `-p` | primary + supplementary alignments only (skip secondary, FLAG 0x100) |
-| `-P` | primary alignments only (skip secondary and supplementary, FLAG 0x800); implies `-p` |
-| `-L` | write the `cs` tag in long form (`=ACGT`) instead of the default short form (`:N`) |
-| `-U` | write a placeholder PAF record for each unmapped read (otherwise unmapped reads are dropped) |
+| `-p`, `--primary-or-supp` | primary + supplementary alignments only (skip secondary, FLAG 0x100) |
+| `-P`, `--primary-only` | primary alignments only (skip secondary and supplementary, FLAG 0x800); implies `-p` |
+| `-L`, `--long-cs` | write the `cs` tag in long form (`=ACGT`) instead of the default short form (`:N`) |
+| `-U`, `--unaligned` | write a placeholder PAF record for each unmapped read (otherwise unmapped reads are dropped) |
 
 Pass `-U` when the PAF will be compared: unmapped reads then appear as
 `n_alns = 0` rows instead of disappearing.
@@ -255,7 +255,7 @@ minimap2's default. Don't compare it against a PAF made with
 ## `toolkit paf2tables`
 
 ```bash
-maligno toolkit paf2tables -i <in.paf[.gz]|-> [--alninfo <alninfo.tsv[.gz]>] [--readinfo <readinfo.tsv[.gz]>] [--strict-grouping]
+maligno toolkit paf2tables -i <in.paf[.gz]|-> [-a/--alninfo <alninfo.tsv[.gz]>] [-r/--readinfo <readinfo.tsv[.gz]>] [--strict-grouping]
 ```
 
 Turns a PAF into maligno's tables, writing either or both in a single pass
@@ -295,7 +295,7 @@ gzip -dc in.paf.gz | LC_ALL=C sort -t$'\t' -k1,1 | maligno toolkit paf2tables -i
 ## `toolkit merge-readinfo`
 
 ```bash
-maligno toolkit merge-readinfo -a <readinfo_a.tsv[.gz]> -b <readinfo_b.tsv[.gz]> \
+maligno toolkit merge-readinfo -a/--readinfo-a <readinfo_a.tsv[.gz]> -b/--readinfo-b <readinfo_b.tsv[.gz]> \
   [--label-a A] [--label-b B] -o <compare.parquet|compare.tsv[.gz]> [--allow-id-mismatch]
 ```
 
@@ -487,8 +487,8 @@ A read is "differing", and gets junction reconstruction, when:
 mapped_a = target_name_A not empty or "*"      (mapped_b likewise)
 differing =
     mapped_a && mapped_b    => n_query_junctions_only_A > 0 || n_query_junctions_only_B > 0
-    mapped_a && !mapped_b   => n_query_junctions_A > 0
-    !mapped_a && mapped_b   => n_query_junctions_B > 0
+    mapped_a && !mapped_b   => n_intron_events_A > 0
+    !mapped_a && mapped_b   => n_intron_events_B > 0
     !mapped_a && !mapped_b  => false
 ```
 
@@ -690,7 +690,7 @@ coordinates), and either:
 
 - **same strand:** `strand_A == strand_B` and `cs_A == cs_B`
   (→ `query_identical_same_strand`), or
-- **reverse complement:** `Strand_A != Strand_B` and `cs_A` equals the reverse
+- **reverse complement:** `strand_A != strand_B` and `cs_A` equals the reverse
   complement of `cs_B` (→ `query_identical_revcomp`). This is the same
   read-to-reference correspondence on the opposite strand, e.g. a locus
   inverted between two assemblies.
@@ -759,7 +759,8 @@ with `ast.literal_eval`. An empty set is `()`. `genomic_junctions` tuples are
 The comparison table can be written as Parquet (`compare`'s default), gzipped
 TSV, or both, with the same 93 columns, names and order (`pd.read_parquet` is
 a drop-in for `pd.read_csv`). Parquet is much faster to read when you only need
-a few columns. `toolkit summary` and `toolkit find-aln-diff` read either form;
+a few columns. `toolkit summary`, `toolkit find-aln-diff` and
+`toolkit genomic-junction-compare` read either form;
 `toolkit query-junction-diff` reads Parquet only.
 
 **Nulls in Parquet mean "undefined", nothing else.** A Parquet null appears
@@ -829,7 +830,7 @@ tsvwhere "$CMP" n_query_junctions_not_shared pos \
                 {print $h["query_name"]"\t"$h["n_intron_events_A"]"\t"$h["n_intron_events_B"]"\t"$h["query_junctions_only_A"]"\t"$h["query_junctions_only_B"]}' \
   | column -t -s $'\t' | less -S
 
-# Check column counts (alninfo 36, readinfo 37, comparison table 93)
+# Check the comparison table's column count (93; alninfo has 36, readinfo 37)
 gzip -dc < "$CMP" | awk -F'\t' '{print NF}' | sort | uniq -c
 ```
 

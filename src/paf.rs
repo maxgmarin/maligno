@@ -15,14 +15,14 @@ pub struct PafRecord<'a> {
     pub num_residue_matches:  u64,
     pub aln_block_len:        u64,
     pub mapq:                 u32,
-    /// SAM `ms:i` tag (mapping Score: the maximum-scoring sub-segment within a given alignment).
+    /// `ms:i` tag (DP score of the maximum-scoring segment of the alignment).
     pub ms:                   i64,
     /// SAM `AS:i` tag (alignment score).
     pub aln_score:            i64,
     /// cs tag string (borrowed from the input line).
     pub cs:                   &'a str,
     /// SAM/PAF `tp:A` tag (alignment type: 'P' primary, 'S' secondary,
-    /// 'I' inversion of the primary). '*' when absent or unmapped — the
+    /// 'I' / 'i' inversion of the primary / of a secondary). '*' when absent or unmapped — the
     /// same sentinel this codebase already uses for an unknown `strand`.
     pub tp_tag:               char,
     /// Strand of the transcript relative to the **read** (`+` sense, `-`

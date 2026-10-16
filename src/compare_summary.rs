@@ -13,8 +13,9 @@
 //!
 //! `classify` reads per-side values by **unsuffixed** readinfo column name through
 //! two accessor closures, resolving them via a name→index map, so it is insensitive
-//! to column order. The columns it needs are `cs`, `strand`, `query_start`,
-//! `query_end`, `target_name`, `target_start`, `target_end`.
+//! to column order. The columns it needs are `CLASSIFY_SIDE_COLS`: `target_name`,
+//! `strand`, `cs`, `query_start`, `query_end`, `target_start`, `target_end`,
+//! `query_junctions`.
 //!
 //! cs-tag equality is **motif-blind**: intron donor/acceptor letters are blanked
 //! out (via `cs_strip_splice_motifs`) before comparing, so an intron with the same
@@ -273,13 +274,11 @@ impl CompareSummary {
         self.b_only_by_id += 1;
     }
 
-    /// query-different among both-mapped reads. Computed from the two
-    /// "both mapped" identity sub-counters (not `self.query_identical`
-    /// directly), since `query_identical` also now includes `aligned_neither`
-    /// reads — subtracting the grown total from `aligned_both` would
-    /// underflow. This yields the exact same value as before for any dataset:
-    /// `query_identical_same_strand` and `query_identical_rc` are still only
-    /// ever incremented for `BothMapped` reads.
+    /// query-different among both-mapped reads: `aligned_both` minus the two
+    /// both-mapped identity sub-counters. Not `aligned_both - query_identical`,
+    /// because `query_identical` also counts `aligned_neither` reads;
+    /// `query_identical_same_strand` and `query_identical_rc` are only
+    /// incremented for `BothMapped` reads.
     fn query_not_identical(&self) -> u64 {
         self.aligned_both - self.query_identical_same_strand - self.query_identical_rc
     }
@@ -772,7 +771,7 @@ mod tests {
         let rows: HashMap<String, u64> = s.rows().into_iter().collect();
         assert_eq!(rows["aligned_both"], 2);
         assert_eq!(rows["aligned_neither"], 2);
-        // query_identical now includes the 2 neither-mapped reads.
+        // query_identical includes the 2 neither-mapped reads.
         assert_eq!(rows["query_identical"], 3);
         // ...but query_not_identical must still reflect only the genuine
         // both-mapped mismatch (1), not underflow/panic from the subtraction.

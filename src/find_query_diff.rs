@@ -389,12 +389,12 @@ impl AlnDiffAccumulator {
     }
 }
 
-/// Reject `--space`/`--compare-by` combinations this command no longer
-/// supports, before any input is read or output created.
+/// Reject `--space`/`--compare-by` combinations this command does not
+/// support, before any input is read or output created.
 fn check_mode(space: DiffSpace, compare_by: CompareBy) -> Result<()> {
     if space == DiffSpace::Reference && compare_by == CompareBy::Junctions {
         bail!(
-            "`--compare-by junctions` with `--space reference` is no longer supported: \
+            "`--compare-by junctions` with `--space reference` is not supported: \
              genomic junction sets are compared by `maligno toolkit genomic-junction-compare`"
         );
     }
@@ -409,15 +409,15 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
 
     let ext = if args.no_gzip { "" } else { ".gz" };
     // Non-default mode gets a `.junctions` filename segment so its outputs never
-    // clobber the default (`all`) run at the same --outdir/--prefix, and so the
-    // default run stays byte-for-byte backward-compatible.
+    // clobber the default (`all`) run at the same --outdir/--prefix; the
+    // default run's filenames carry no segment.
     let tag = match args.compare_by {
         CompareBy::All => "",
         CompareBy::Junctions => ".junctions",
     };
     // `--space` picks the filename stem, so a query-space and reference-space
-    // run at the same --outdir/--prefix never clobber each other, and the
-    // default (`query`) run stays byte-for-byte backward-compatible.
+    // run at the same --outdir/--prefix never clobber each other; the
+    // default (`query`) run uses the `query_diff` stem.
     let stem = match args.space {
         DiffSpace::Query => "query_diff",
         DiffSpace::Reference => "reference_diff",

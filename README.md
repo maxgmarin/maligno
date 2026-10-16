@@ -93,7 +93,8 @@ It then runs the whole pipeline in four main steps:
    if they differ, reporting how many IDs are shared / only in A / only in B.
 3. **Select representative alignment for each readID within each read set (A and B)**.
    In cases where a read has multiple alignments reported, the best alignment is
-   chosen by alignment score: `ms` tag, then `AS` tag, then mapping quality (`mapq`).
+   chosen by alignment score: `ms` tag, then `AS` tag, then mapping quality (`mapq`);
+   remaining ties prefer the aligner's primary alignment (`tp:A`), then input order.
    Every value reported for the read describes that one alignment.
 4. **Compare the representative alignment across sets A and B**. The selected
    alignments for each read are systematically compared and the results are
@@ -211,10 +212,11 @@ zcat < test_data/test_results/Splice_vs_SpliceHQ.compare.tsv.gz \
 
 ## Extended documentation
 
-A per-column spec for every output file `compare` (and `toolkit
-query-junction-diff`) can write — alninfo, readinfo, the comparison table, the
-summary TSV, the diff-reads/regions tables, and the query-junction-diff
-tables — lives in **[`docs/output-tables/`](docs/output-tables/)**.
+A per-column spec for every output file `compare`, `toolkit
+query-junction-diff` and `toolkit genomic-junction-compare` can write — alninfo,
+readinfo, the comparison table, the summary TSV, the diff-reads/regions tables,
+the query-junction-diff tables and the genomic-junction-compare tables — lives
+in **[`docs/output-tables/`](docs/output-tables/)**.
 
 The full manual lives in **[`docs/REFERENCE.md`](docs/REFERENCE.md)**:
 

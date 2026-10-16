@@ -42,7 +42,7 @@ classifier. It exists because the main `test_data/` chr22 pair, despite having
 
 - **Multiple alignments per read** (`n_alns > 1`). Both this fixture and the
   chr22 pair are primary-alignment-only, one row per read, so
-  `readinfo.rs::collapse_group`'s tie-breaking (ms → AS → MQ) is never
+  `readinfo.rs::collapse_group`'s tie-breaking (ms → AS → MQ → primary before secondary → input order) is never
   exercised. Would need a non-`PriAln` source.
 
 ## Use

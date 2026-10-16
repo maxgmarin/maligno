@@ -6,8 +6,9 @@ Written by `compare` by default (fused into its single merge pass, fixed at
 `--space query --compare-by all`; `--skip-find-aln-diff` opts out) and by
 standalone `toolkit find-aln-diff` (`--space query` or `reference`, and
 `--compare-by all`, or `junctions` with `--space query` — filenames gain a
-`.junctions`/`reference_diff` segment
-accordingly; see [REFERENCE.md](../REFERENCE.md#--compare-by)
+`.junctions` suffix (`--compare-by junctions`) or use a `reference_diff`
+stem in place of `query_diff` (`--space reference`);
+see [REFERENCE.md](../REFERENCE.md#--compare-by)
 for the full mode matrix).
 
 9 columns.
@@ -39,8 +40,11 @@ for the full mode matrix).
   table either. See the complementary, opt-in
   `{prefix}.query_identical_reads.tsv.gz`, produced only by standalone
   `find-aln-diff --emit-identical-reads`, never by `compare`; it carries the
-  same 9-column schema for the complementary read set, plus a third
-  `category` value, `neither_mapped`, for these reads (columns 3–9 all `0`,
-  since none of them are a "both mapped" concept).
+  same 9-column schema for the complementary read set, with a `category`
+  column in place of `outcome`: `query_identical_same_strand` /
+  `query_identical_revcomp` (default mode), `query_identical_junctions`
+  (`--compare-by junctions`) or `reference_identical` (`--space reference`),
+  and `neither_mapped` for these reads (columns 3–9 all `0`, since none of
+  them are a "both mapped" concept).
 - Every genomic locus this table's reads cluster into is summarized in
   [query-diff-regions.md](query-diff-regions.md).

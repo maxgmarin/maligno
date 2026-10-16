@@ -31,7 +31,7 @@ junctions, are in `target_name_*` and `genomic_intron_strand_*`.
 | 11 | `n_junctions_not_shared` | Junctions in exactly one side, `n_junctions_only_A + n_junctions_only_B` |
 | 12 | `n_junctions_only_A` | Junctions only in A, \|A \ B\| |
 | 13 | `n_junctions_only_B` | Junctions only in B, \|B \ A\| |
-| 14 | `genomic_junctions_A` | A's junctions in reference order, as `(start, end)` pairs, e.g. `((61300932, 61302256),)`; `()` if none. Contig in `target_name_A`, strand in `intron_strand_A` |
+| 14 | `genomic_junctions_A` | A's junctions in reference order, as `(start, end)` pairs, e.g. `((61300932, 61302256),)`; `()` if none. Contig in `target_name_A`, strand in `genomic_intron_strand_A` |
 | 15 | `genomic_junctions_B` | B's junctions |
 | 16 | `junction_motifs_A` | A's splice-site motifs, one per junction in the same order, e.g. `('gt-ag', 'gc-ag')` |
 | 17 | `junction_motifs_B` | B's splice-site motifs |

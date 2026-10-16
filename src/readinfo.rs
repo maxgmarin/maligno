@@ -96,7 +96,8 @@ pub struct ReadInfoRow {
     pub target_start: u64,
     pub target_end: u64,
     /// Best alignment's PAF `tp:A` tag (alignment type: 'P' primary, 'S'
-    /// secondary, 'I' inversion of the primary). '*' when absent or unmapped.
+    /// secondary, 'I' / 'i' inversion of the primary / of a secondary). '*' when
+    /// absent or unmapped.
     pub tp_tag: char,
     /// Mapped alignment rows whose `tp:A` is `P` or `I` (SAM primary + supplementary).
     pub num_aln_tpp: u64,
@@ -174,8 +175,8 @@ pub(crate) fn parse_aln_row(line: &str) -> Option<AlnRow> {
 
 /// Collapse a group of alignment rows into a single per-read summary.
 ///
-/// Sort order: ms desc → AS desc → MQ desc → primary before secondary
-/// ([`tp_rank`]). The highest-scoring, highest-confidence alignment becomes the
+/// Sort order: ms desc → AS desc → MAPQ desc → [`tp_rank`] (P/I > untagged >
+/// S/i > unmapped) → input order (stable sort). The highest-scoring, highest-confidence alignment becomes the
 /// representative, and among full ties the aligner's primary; every per-alignment
 /// column (target, strand, scores, identity, coverage, junctions, cs,
 /// coordinates, event counts) comes from that single row. Only the counts
@@ -494,7 +495,7 @@ mod tests {
         parse_aln_row(&f.join("\t")).expect("valid alninfo row")
     }
 
-    /// Collapse `rows`, check the tpP + tpS <= n_alns invariant, and return
+    /// Collapse `rows`, check the n_alns_primsupp + n_alns_secondary <= n_alns invariant, and return
     /// (n_alns_primsupp, n_alns_secondary, n_alns).
     fn counts(mut rows: Vec<AlnRow>) -> (u64, u64, u64) {
         let ri = collapse_group(&mut rows);

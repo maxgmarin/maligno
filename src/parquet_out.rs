@@ -292,8 +292,8 @@ impl<W: Write + Send> ComparisonParquetWriter<W> {
 ///
 /// The `#[default]` variant (`parquet`) is the single source of truth for the
 /// CLI default: `compare`'s `--format` uses a bare `default_value_t`, which
-/// takes `OutputFormat::default()`. `find-aln-diff`, `toolkit summary` and
-/// `toolkit query-junction-diff` all read Parquet, so a Parquet-only run works
+/// takes `OutputFormat::default()`. `find-aln-diff`, `toolkit summary`,
+/// `toolkit query-junction-diff` and `toolkit genomic-junction-compare` all read Parquet, so a Parquet-only run works
 /// standalone with each of them; pass `--format tsv` (or `both`) for the
 /// gzipped TSV.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]

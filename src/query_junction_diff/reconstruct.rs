@@ -2,7 +2,7 @@
 //!
 //! See the parent module's doc comment for why this re-derives junctions
 //! from each side's `cs` tag instead of trusting the comparison table's own
-//! `junctions`/`genomic_junctions` columns.
+//! `query_junctions`/`genomic_junctions` columns.
 
 use std::collections::HashSet;
 use std::io::Write;

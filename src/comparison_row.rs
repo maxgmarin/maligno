@@ -22,7 +22,7 @@
 //! `COMPARE_SIDE_COLS` exactly as the header does, so the two cannot drift apart.
 //! Second, `toolkit merge-readinfo` accepts user-written TSVs: re-rendering would turn
 //! `1e-05` into `0.00001`, `+5` into `5`, and would fabricate `0` where an empty
-//! cell passes through today. Most of these columns feed no computation at all;
+//! cell passes through. Most of these columns feed no computation at all;
 //! parsing them would be a lossy operation performed for looks.
 
 use std::io::Write;
@@ -84,7 +84,7 @@ pub(crate) struct AlignmentMetrics {
 
 /// One side of the comparison: the raw transport columns plus the parsed view.
 pub(crate) struct AlignmentRow<'r> {
-    /// The 34 per-side columns in `COMPARE_SIDE_COLS` order, exactly as read.
+    /// The 35 per-side columns in `COMPARE_SIDE_COLS` order, exactly as read.
     raw: [&'r str; N_SIDE_COLS],
     pub(crate) metrics: AlignmentMetrics,
 }
@@ -113,7 +113,7 @@ impl<'r> AlignmentRow<'r> {
         Self { raw, metrics }
     }
 
-    /// The 34 per-side columns in `COMPARE_SIDE_COLS` order, exactly as read.
+    /// The 35 per-side columns in `COMPARE_SIDE_COLS` order, exactly as read.
     /// The Parquet writer walks this in step with the column list.
     pub(crate) fn raw(&self) -> &[&'r str; N_SIDE_COLS] {
         &self.raw
@@ -272,7 +272,7 @@ impl<'r> ComparisonRow<'r> {
     /// Write the row. Field order here is checked against the header by
     /// `header_and_row_field_counts_agree`.
     ///
-    /// Escaping: the 68 per-side fields and
+    /// Escaping: the 70 per-side fields and
     /// the 2 object-list fields are escaped; `query_name` and the two labels are
     /// **not** (labels are validated by `validate_set_label` instead). Note the
     /// per-side values were already escaped once when the readinfo row was written,

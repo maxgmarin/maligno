@@ -4,19 +4,16 @@
 //! which junctions are unsupported by the other side.
 //!
 //! **Why this re-derives junctions from each side's `cs` tag instead of
-//! trusting the already-stored `junctions`/`genomic_junctions` columns**: in
-//! `record.rs`'s `AlnInfo::from_paf`, a `-`-strand alignment's `junctions` is
+//! trusting the already-stored `query_junctions`/`genomic_junctions` columns**: in
+//! `record.rs`'s `AlnInfo::from_paf`, a `-`-strand alignment's `query_junctions` is
 //! flipped and sorted into ascending query order, but `genomic_junctions`
 //! (built from the same cs-walk data) is never reordered to match. Every
 //! individual value in both stored columns is correct — only the positional
 //! correspondence between the two lists breaks for `-`-strand alignments.
-//! Nothing else in the crate reads those two columns index-paired (every
-//! existing consumer treats each as an independent, order-insensitive set),
-//! so this has never affected any existing output. This command is the first
-//! consumer that needs the pairing, so it reconstructs both lists itself,
+//! Every other consumer treats each column as an independent, order-insensitive
+//! set. This command needs the pairing, so it reconstructs both lists itself,
 //! from `cs`, with a single stable sort permutation applied to the query and
-//! genomic vectors together — self-contained here, no change to `record.rs`
-//! or any existing table's schema.
+//! genomic vectors together.
 //!
 //! **Why "query-junction-diff"**: read selection is anchored at the
 //! **query** coordinate space — a read counts as differing based on its

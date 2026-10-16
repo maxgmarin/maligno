@@ -14,7 +14,7 @@ fn escape_tsv_field(field: &str) -> String {
         .replace('\t', "\\t")   // Tab
 }
 
-/// Fully computed per-alignment info row, matching `paf_to_df()` output.
+/// Fully computed per-alignment info row: one alninfo row (`ALNINFO_COLS`).
 #[derive(Debug)]
 pub struct AlnInfo {
     // ── 12 standard PAF fields ────────────────────────────────────────────
@@ -64,8 +64,8 @@ pub struct AlnInfo {
     /// `chrom` is embedded per tuple so cross-chromosome set comparisons are automatically
     /// disjoint (junctions on different contigs never collide).
     pub genomic_junctions:    Vec<(String, u64, u64)>,
-    /// PAF `tp:A` tag (alignment type: 'P' primary, 'S' secondary, 'I' inversion
-    /// of the primary). '*' when absent or unmapped.
+    /// PAF `tp:A` tag (alignment type: 'P' primary, 'S' secondary, 'I' / 'i'
+    /// inversion of the primary / of a secondary). '*' when absent or unmapped.
     pub tp_tag:               char,
 }
 
@@ -220,10 +220,10 @@ impl AlnInfo {
             self.n_splice_junction_events, self.n_splice_junction_bases,
         )?;
 
-        // junctions: Python's str(tuple) format
+        // query_junctions: Python's str(tuple) format
         write_junction_tuple(w, &self.junctions)?;
         write!(w, "\t")?;
-        // genomic_junctions: nested Python tuple format with chrom embedded
+        // genomic_junctions: (start, end) pairs; chrom omitted (see write_genomic_junction_tuple)
         write_genomic_junction_tuple(w, &self.genomic_junctions)?;
         writeln!(w)
     }
@@ -286,11 +286,9 @@ fn write_junction_tuple<W: Write>(w: &mut W, junctions: &[i64]) -> std::io::Resu
 
 /// Write genomic junctions in Python's `str(tuple of tuples)` format.
 ///
-/// The chrom field is **dropped on serialization** — chrom is available
-/// per-row via the sibling `target_name` column (alninfo, readinfo),
-/// so embedding it in every tuple was redundant. The in-memory `AlnInfo` keeps the
-/// chrom (used by downstream set-comparison for cross-chrom safety); only the
-/// serialized form is shorter.
+/// The chrom is **omitted on serialization**: it is in the sibling
+/// `target_name` column (alninfo, readinfo). The in-memory `AlnInfo` keeps the
+/// chrom (used by set comparisons for cross-chrom safety).
 ///
 /// Coordinates are 0-based half-open.
 ///

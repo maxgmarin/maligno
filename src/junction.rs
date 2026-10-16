@@ -172,7 +172,7 @@ pub fn genomic_junction_set_diffs(
 
 // ───────────────────────────────────────────────────────────────────────────
 // String formatters — Python-tuple style, matching the per-side
-// `junctions` / `genomic_junctions` column format produced by record.rs.
+// `query_junctions` / `genomic_junctions` column format produced by record.rs.
 // ───────────────────────────────────────────────────────────────────────────
 
 /// Render `&[i64]` as a Python tuple-of-ints string:
@@ -232,10 +232,9 @@ pub fn format_genomic_junction_tuple(juncs: &[GenomicJunction]) -> String {
 /// `genomic_intron_strand_*` columns. Contig names are escaped as Python string
 /// literals ([`py_str`]).
 ///
-/// Not used by any output at the moment: `genomic-junction-compare` wrote its
-/// per-read junction lists in this form briefly and went back to `(start, end)`
-/// pairs. Kept, with its tests, so that form can be switched back on by calling
-/// this instead of [`format_genomic_junction_tuple`].
+/// Not used by any output. Kept, with its tests, so `genomic-junction-compare`
+/// can write self-contained junction lists by calling this instead of
+/// [`format_genomic_junction_tuple`].
 #[allow(dead_code)]
 pub fn format_genomic_junction_full_tuple(juncs: &[GenomicJunction]) -> String {
     let items: Vec<String> = juncs
