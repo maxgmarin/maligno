@@ -14,7 +14,7 @@ still produces a full row, with alignment-derived fields zeroed/`NaN`.
 The per-alignment columns use the same names as in [readinfo.md](readinfo.md),
 which describes each read by its representative alignment.
 
-37 columns: the 12 standard PAF fields in PAF order, then the remaining
+36 columns: the 12 standard PAF fields in PAF order, then the remaining
 columns in the same order as the per-side block of the
 [comparison table](compare.md).
 
@@ -32,7 +32,7 @@ columns in the same order as the per-side block of the
 | 10 | `n_residue_matches` | Number of matching bases in the alignment (PAF col 10) |
 | 11 | `aln_block_len` | Alignment block length (PAF col 11) |
 | 12 | `mapq` | Mapping quality (PAF col 12) |
-| 13 | `tp_tag` | PAF `tp:A` alignment-type tag: `P` primary, `S` secondary, `I` inversion of the primary. `*` when absent or unmapped |
+| 13 | `tp_tag` | PAF `tp:A` alignment-type tag: `P` primary (or supplementary), `S` secondary, `I` / `i` inversion of the primary / of a secondary. `*` when absent or unmapped. minimap2 writes it; `sam2paf` derives it from the SAM FLAG (`S` if `0x100` is set, else `P`) |
 | 14 | `as_score` | Alignment score (`AS:i` tag); `0` if absent |
 | 15 | `ms_score` | minimap2's `ms:i` tag: DP score of the max-scoring segment in the alignment; `0` if absent |
 | 16 | `aln_identity` | Alignment identity, `n_residue_matches / aln_block_len`; `NaN` if unmapped |
@@ -56,7 +56,6 @@ columns in the same order as the per-side block of the
 | 34 | `n_intron_bases` | Total intron bases |
 | 35 | `query_junctions` | Query-coordinate splice-junction positions, plus-strand-adjusted, sorted ascending. Python tuple string, e.g. `(108, 359)`; `()` if none |
 | 36 | `genomic_junctions` | Splice junctions in absolute reference coordinates, 0-based half-open. Python tuple-of-tuples string, e.g. `((100, 250), (400, 800))`; `()` if none. Chromosome is **not** embedded — it's the sibling `target_name` column |
-| 37 | `target_start_1based` | `target_start + 1` — 1-based convenience column |
 
 **Notes**
 - `query_junctions` / `genomic_junctions` use a Python tuple-of-tuples format —

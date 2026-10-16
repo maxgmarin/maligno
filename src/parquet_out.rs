@@ -7,8 +7,8 @@
 //! Why it exists: the comparison table is written once and re-read many times —
 //! by the notebooks, and by `find-aln-diff` re-run standalone with
 //! `--compare-by junctions`. Parquet stores each column separately, so a reader
-//! touching a few of the 91 columns never pays for the rest. The cost being
-//! avoided is **splitting every row into 91 fields**, not decompression, which
+//! touching a few of the 93 columns never pays for the rest. The cost being
+//! avoided is **splitting every row into 93 fields**, not decompression, which
 //! is cheap.
 //!
 //! Reading a few columns from Parquet is several times faster than from the
@@ -22,7 +22,7 @@
 //! the same lists that drive the TSV header, so the two cannot drift. This module
 //! adds only the nullability rules and the Arrow type for each `ColType`.
 //!
-//! Layout is **flat** — 91 top-level columns named exactly as the TSV header —
+//! Layout is **flat** — 93 top-level columns named exactly as the TSV header —
 //! rather than nested `aln_a`/`aln_b`/`diff` structs, because the consumers are
 //! pandas/polars/DuckDB, where `read_parquet` should be a drop-in for `read_csv`.
 
@@ -75,7 +75,7 @@ impl ColType {
     }
 }
 
-/// Build the flat 91-column schema, deriving names, order and types from
+/// Build the flat 93-column schema, deriving names, order and types from
 /// `columns.rs`.
 ///
 /// **Nullability** encodes what a null *means*: "undefined", nothing else.

@@ -147,7 +147,7 @@ pub struct CompareArgs {
     #[arg(long = "presorted", conflicts_with_all = ["allow_id_mismatch", "keep_sorted_paf"])]
     presorted: bool,
 
-    /// Write the per-set alninfo (37-col) tables (off by default).
+    /// Write the per-set alninfo (36-col) tables (off by default).
     #[arg(long = "emit-alninfo")]
     emit_alninfo: bool,
 

@@ -56,7 +56,6 @@ pub struct AlnInfo {
     /// Splice junction query-coordinate positions, plus-strand adjusted, sorted ascending.
     pub junctions:                Vec<i64>,
     // ── Derived scalars ───────────────────────────────────────────────────
-    pub target_start_1based:  u64,
     pub seqid:                f64,
     pub query_aln_len:        u64,
     pub query_aln_cov:        f64,
@@ -137,7 +136,6 @@ impl AlnInfo {
             .collect();
 
         // ── Derived scalars ───────────────────────────────────────────────
-        let target_start_1based = rec.target_start + 1;
         let seqid = if rec.aln_block_len > 0 {
             rec.num_residue_matches as f64 / rec.aln_block_len as f64
         } else {
@@ -182,7 +180,6 @@ impl AlnInfo {
             n_softclipped_bases_end:   sc_end,
             n_softclipped_events,
             junctions,
-            target_start_1based,
             seqid,
             query_aln_len,
             query_aln_cov,
@@ -228,7 +225,6 @@ impl AlnInfo {
         write!(w, "\t")?;
         // genomic_junctions: nested Python tuple format with chrom embedded
         write_genomic_junction_tuple(w, &self.genomic_junctions)?;
-        write!(w, "\t{}", self.target_start_1based)?;
         writeln!(w)
     }
 }
@@ -453,11 +449,11 @@ mod tests {
             n_deletion_events: 17, n_deletion_bases: 18, n_splice_junction_events: 19,
             n_splice_junction_bases: 20, n_softclipped_bases_start: 21,
             n_softclipped_bases_end: 22, n_softclipped_events: 2,
-            junctions: vec![5, 6], target_start_1based: 201,
+            junctions: vec![5, 6],
             seqid: 0.5, query_aln_len: 97, query_aln_cov: 0.25,
             genomic_junctions: vec![("chr9".into(), 300, 400)], tp_tag: 'S',
         };
-        let expected: [(Col, &str); 37] = [
+        let expected: [(Col, &str); 36] = [
             (QUERY_NAME, "read7"), (QUERY_LEN, "101"), (QUERY_START, "2"), (QUERY_END, "99"),
             (STRAND, "-"), (TARGET_NAME, "chr9"), (TARGET_LEN, "5000"),
             (TARGET_START, "200"), (TARGET_END, "1300"), (N_RESIDUE_MATCHES, "90"),
@@ -470,7 +466,6 @@ mod tests {
             (N_SOFTCLIP_EVENTS, "2"), (N_SOFTCLIP_BASES_START, "21"), (N_SOFTCLIP_BASES_END, "22"),
             (N_INTRON_EVENTS, "19"), (N_INTRON_BASES, "20"),
             (QUERY_JUNCTIONS, "(5, 6)"), (GENOMIC_JUNCTIONS, "((300, 400),)"),
-            (TARGET_START_1BASED, "201"),
         ];
         let mut buf = Vec::new();
         a.write_row(&mut buf).unwrap();

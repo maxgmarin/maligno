@@ -13,7 +13,7 @@
 //! - [`AlignmentMetrics`] — the 10 values per side that the comparison math needs,
 //!   parsed once. No lifetime, `Copy`; this is what [`AlignmentDiff::compute`] is
 //!   tested against.
-//! - [`AlignmentRow`] — one side's 34 columns exactly as read (`&str`), plus the
+//! - [`AlignmentRow`] — one side's 35 columns exactly as read (`&str`), plus the
 //!   parsed view. The raw strings are what the TSV writer emits.
 //! - [`AlignmentDiff`] — the computed A-vs-B block, owned.
 //!
@@ -375,7 +375,7 @@ mod tests {
         AlignmentDiff::compute(&side(a), &side(b))
     }
 
-    /// Render one full row and split it into its 91 fields.
+    /// Render one full row and split it into its 93 fields.
     fn render(a: &[(&str, &'static str)], b: &[(&str, &'static str)]) -> Vec<String> {
         let mut buf: Vec<u8> = Vec::new();
         ComparisonRow::build("read1", 100, "SetA", "SetB", |c| lookup(a, c), |c| lookup(b, c))
@@ -394,7 +394,7 @@ mod tests {
         s.trim_end_matches('\n').split('\t').map(String::from).collect()
     }
 
-    /// Index of an output column in the 91-column header.
+    /// Index of an output column in the 93-column header.
     fn col(name: &str) -> usize {
         header_fields()
             .iter()
@@ -408,7 +408,7 @@ mod tests {
     fn header_and_row_field_counts_agree() {
         let h = header_fields();
         let r = render(&[], &[]);
-        assert_eq!(h.len(), 91, "header should have 91 columns");
+        assert_eq!(h.len(), 93, "header should have 93 columns");
         assert_eq!(
             r.len(),
             h.len(),
@@ -418,7 +418,7 @@ mod tests {
         );
         assert_eq!(
             4 + 2 * COMPARE_SIDE_COLS.len() + COMPARE_DIFF_COLS.len(),
-            91
+            93
         );
     }
 
@@ -427,13 +427,15 @@ mod tests {
         let h = header_fields();
         assert_eq!(&h[..4], &["query_name", "query_len", "label_A", "label_B"]);
         assert_eq!(h[4], "target_name_A");
-        assert_eq!(h[37], "genomic_junctions_A");
-        assert_eq!(h[38], "target_name_B");
-        assert_eq!(h[71], "genomic_junctions_B");
-        assert_eq!(h[72], "strand_match");
-        assert_eq!(h[90], "query_junctions_only_B");
+        assert_eq!(h[38], "genomic_junctions_A");
+        assert_eq!(h[39], "target_name_B");
+        assert_eq!(h[73], "genomic_junctions_B");
+        assert_eq!(h[74], "strand_match");
+        assert_eq!(h[92], "query_junctions_only_B");
         for side in ["A", "B"] {
-            // The alignment-type counts sit directly after n_alns.
+            // The representative's tp:A, then the alignment-type counts.
+            let m = col(&format!("mapq_{side}"));
+            assert_eq!(h[m + 1], format!("tp_tag_{side}"));
             let n = col(&format!("n_alns_{side}"));
             assert_eq!(h[n + 1], format!("n_alns_primsupp_{side}"));
             assert_eq!(h[n + 2], format!("n_alns_secondary_{side}"));
@@ -462,7 +464,7 @@ mod tests {
         let a = [("cs", "a\tb")];
         let r = render(&a, &[]);
         assert_eq!(r[col("cs_A")], "a\\tb");
-        assert_eq!(r.len(), 91, "an embedded tab must not add a field");
+        assert_eq!(r.len(), 93, "an embedded tab must not add a field");
     }
 
     #[test]

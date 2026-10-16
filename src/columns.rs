@@ -100,7 +100,6 @@ pub(crate) const TP_TAG: Col = col("tp_tag", Str);
 pub(crate) const TARGET_LEN: Col = col("target_len", U64);
 pub(crate) const N_RESIDUE_MATCHES: Col = col("n_residue_matches", U64);
 pub(crate) const ALN_BLOCK_LEN: Col = col("aln_block_len", U64);
-pub(crate) const TARGET_START_1BASED: Col = col("target_start_1based", U64);
 
 // ── readinfo-only columns: counts over all of a read's alignments ────────────
 
@@ -116,7 +115,7 @@ pub(crate) const N_ALNS_SECONDARY: Col = col("n_alns_secondary", U64);
 /// The alninfo table, in output order: the 12 PAF fields in PAF order, then the
 /// rest in the order of [`COMPARE_SIDE_COLS`]. `AlnInfo::write_row` emits its
 /// fields in this order (pinned by a test in `record.rs`).
-pub(crate) const ALNINFO_COLS: [Col; 37] = [
+pub(crate) const ALNINFO_COLS: [Col; 36] = [
     // The 12 PAF fields.
     QUERY_NAME,
     QUERY_LEN,
@@ -159,12 +158,10 @@ pub(crate) const ALNINFO_COLS: [Col; 37] = [
     N_INTRON_BASES,
     QUERY_JUNCTIONS,
     GENOMIC_JUNCTIONS,
-    // Convenience.
-    TARGET_START_1BASED,
 ];
 
 /// The readinfo table, in output order: the two join keys, then exactly
-/// [`COMPARE_SIDE_COLS`] (pinned by a test below), then `tp_tag`.
+/// [`COMPARE_SIDE_COLS`] (pinned by a test below).
 /// `collapse_group` builds its fields in this order (pinned by a test in
 /// `readinfo.rs`).
 pub(crate) const READINFO_COLS: [Col; 37] = [
@@ -179,6 +176,7 @@ pub(crate) const READINFO_COLS: [Col; 37] = [
     QUERY_END,
     // Alignment selection & score.
     MAPQ,
+    TP_TAG,
     N_ALNS,
     N_ALNS_PRIMSUPP,
     N_ALNS_SECONDARY,
@@ -210,8 +208,6 @@ pub(crate) const READINFO_COLS: [Col; 37] = [
     N_INTRON_BASES,
     QUERY_JUNCTIONS,
     GENOMIC_JUNCTIONS,
-    // The representative alignment's PAF type.
-    TP_TAG,
 ];
 
 // ── Comparison table ─────────────────────────────────────────────────────────
@@ -227,10 +223,10 @@ pub(crate) const COMPARE_KEY_COLS: [Col; 4] = [QUERY_NAME, QUERY_LEN, LABEL_A, L
 ///
 /// Grouped by topic (locus, alignment selection, identity/coverage, `cs` and
 /// strands, cs-derived event counts, introns and junctions) so the comparison
-/// table is readable via `head -1 | tr '\t' '\n' | nl`. readinfo carries the
-/// same columns in the same order (columns 3–36), and alninfo follows this
-/// order after its 12 PAF fields.
-pub(crate) const COMPARE_SIDE_COLS: [Col; 34] = [
+/// table is readable via `head -1 | tr '\t' '\n' | nl`. readinfo is the two
+/// join keys followed by exactly these columns, and alninfo follows this order
+/// after its 12 PAF fields.
+pub(crate) const COMPARE_SIDE_COLS: [Col; 35] = [
     // Locus & span.
     TARGET_NAME,
     STRAND,
@@ -240,6 +236,7 @@ pub(crate) const COMPARE_SIDE_COLS: [Col; 34] = [
     QUERY_END,
     // Alignment selection & score.
     MAPQ,
+    TP_TAG,
     N_ALNS,
     N_ALNS_PRIMSUPP,
     N_ALNS_SECONDARY,
@@ -526,10 +523,9 @@ mod tests {
     }
 
     #[test]
-    fn readinfo_is_the_join_keys_then_the_compare_side_block_then_tp_tag() {
+    fn readinfo_is_the_join_keys_then_the_compare_side_block() {
         assert_eq!(READINFO_COLS[..2], [QUERY_NAME, QUERY_LEN]);
-        assert_eq!(READINFO_COLS[2..36], COMPARE_SIDE_COLS);
-        assert_eq!(READINFO_COLS[36], TP_TAG);
+        assert_eq!(READINFO_COLS[2..], COMPARE_SIDE_COLS);
     }
 
     #[test]
@@ -552,14 +548,14 @@ mod tests {
         assert_eq!(index_of(&ALNINFO_COLS, QUERY_NAME), 0);
         assert_eq!(index_of(&ALNINFO_COLS, TP_TAG), 12);
         assert_eq!(index_of(&ALNINFO_COLS, GENOMIC_INTRON_STRAND), index_of(&ALNINFO_COLS, CS) + 2);
-        assert_eq!(index_of(&READINFO_COLS, TP_TAG), 36);
+        assert_eq!(index_of(&READINFO_COLS, TP_TAG), index_of(&READINFO_COLS, MAPQ) + 1);
     }
 
     #[test]
     fn compare_header_is_keys_then_a_then_b_then_diff() {
         let h = compare_header();
         assert_eq!(h.len(), N_COMPARE_COLS);
-        assert_eq!(h.len(), 91);
+        assert_eq!(h.len(), 93);
         assert_eq!(h[4], sided(TARGET_NAME, SIDE_A));
         assert_eq!(h[4 + COMPARE_SIDE_COLS.len()], sided(TARGET_NAME, SIDE_B));
     }

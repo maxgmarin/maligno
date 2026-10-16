@@ -261,7 +261,7 @@ maligno toolkit paf2tables -i <in.paf[.gz]|-> [--alninfo <alninfo.tsv[.gz]>] [--
 Turns a PAF into maligno's tables, writing either or both in a single pass
 over the PAF. At least one output must be given.
 
-- **`--alninfo`** writes one row per PAF record (37 columns; see
+- **`--alninfo`** writes one row per PAF record (36 columns; see
   [alninfo.md](output-tables/alninfo.md)). Each record's `cs` tag is walked to
   count matches, substitutions, insertions, deletions and splice junctions;
   soft-clip lengths, junction coordinates and identity/coverage are derived
@@ -307,7 +307,7 @@ table is identical to the one `compare` writes from the same reads (see
 
 **Required columns.** Each input must carry `query_name`, `query_len` and every
 readinfo column that goes into the comparison table (all of
-[readinfo.md](output-tables/readinfo.md) except `tp_tag`), in any order. A
+[readinfo.md](output-tables/readinfo.md)), in any order. A
 missing column is an error naming the file and the column, as `compare`'s own
 readinfo rows always carry them all.
 
@@ -571,8 +571,20 @@ for a read are collapsed to one **representative (best) alignment**. This is
 used by `compare` and `toolkit paf2tables --readinfo`.
 
 - **Selection:** highest `ms_score` (the `ms:i` tag), then highest `as_score`
-  (`AS:i`), then highest `mapq`. Full ties keep the first in input order,
-  usually the aligner's own order.
+  (`AS:i`), then highest `mapq`, then the alignment type from `tp:A`: primary
+  (`P`/`I`) before untagged before secondary (`S`/`i`), and any mapped row
+  before an unmapped one. Remaining ties keep the first in input order.
+  - The type key only breaks **full** score ties. Among multimappers that
+    score the same (STAR gives all of them the same `AS` and MAPQ), the
+    aligner's own primary represents the read; a higher-scoring secondary
+    still wins.
+  - minimap2 writes `tp:A` on every PAF line. For SAM/BAM input,
+    [`sam2paf`](#sam2paf) derives it from the FLAG: `S` when `0x100`
+    (secondary) is set, otherwise `P`, so supplementary segments are `P` too.
+  - A PAF without `tp:A` tags leaves every row "untagged": the type key then
+    never decides, and input order breaks the tie.
+  - The representative's type is the `tp_tag` column (readinfo, and
+    `tp_tag_A` / `tp_tag_B` in the comparison table).
 - **Every per-alignment value comes from the representative alone:**
   `target_name`, `strand`, `query_transcript_strand`, `genomic_intron_strand`, `mapq`, `as_score`, `ms_score`, `aln_identity`,
   `query_aln_cov`, `query_aln_len`, `cs`, `query_junctions`,
@@ -585,9 +597,11 @@ used by `compare` and `toolkit paf2tables --readinfo`.
   segments. A read that is present but unmapped has `n_alns = 0`,
   `target_name = "*"`, and zeroed or NaN statistics.
 - **`n_alns_tied_top_score`** counts the mapped alignments tied with the
-  representative on all three selection keys: `ms_score`, `as_score` and
-  `mapq`. `1` means the representative won outright; `> 1` means that many
-  alignments were equal on every key and input order picked one. Aligners such
+  representative on the three score keys: `ms_score`, `as_score` and `mapq`.
+  The `tp:A` type is not one of them, so a primary and a secondary with equal
+  scores count as tied. `1` means the representative won outright; `> 1`
+  means that many alignments scored the same and the type (then input order)
+  picked one. Aligners such
   as STAR write `ms = 0` for every alignment, so `as_score` does the actual
   selection.
 - **`n_alns_primsupp` / `n_alns_secondary`** count mapped alignments by their `tp:A`
@@ -743,7 +757,7 @@ with `ast.literal_eval`. An empty set is `()`. `genomic_junctions` tuples are
 ## TSV and Parquet
 
 The comparison table can be written as Parquet (`compare`'s default), gzipped
-TSV, or both, with the same 91 columns, names and order (`pd.read_parquet` is
+TSV, or both, with the same 93 columns, names and order (`pd.read_parquet` is
 a drop-in for `pd.read_csv`). Parquet is much faster to read when you only need
 a few columns. `toolkit summary` and `toolkit find-aln-diff` read either form;
 `toolkit query-junction-diff` reads Parquet only.
@@ -815,7 +829,7 @@ tsvwhere "$CMP" n_query_junctions_not_shared pos \
                 {print $h["query_name"]"\t"$h["n_intron_events_A"]"\t"$h["n_intron_events_B"]"\t"$h["query_junctions_only_A"]"\t"$h["query_junctions_only_B"]}' \
   | column -t -s $'\t' | less -S
 
-# Check column counts (alninfo 37, readinfo 37, comparison table 91)
+# Check column counts (alninfo 36, readinfo 37, comparison table 93)
 gzip -dc < "$CMP" | awk -F'\t' '{print NF}' | sort | uniq -c
 ```
 

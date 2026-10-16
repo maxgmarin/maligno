@@ -1,6 +1,6 @@
 //! Subcommand `paf2tables`: the primary PAF entry point.
 //!
-//! Takes a PAF and writes the per-alignment **alninfo** table (37 cols), the
+//! Takes a PAF and writes the per-alignment **alninfo** table (36 cols), the
 //! per-read **readinfo** summary (37 cols), or **both in a single pass**,
 //! depending on which output paths are supplied:
 //!
@@ -45,7 +45,7 @@ pub struct Paf2TablesArgs {
     #[arg(short = 'i', long = "input", value_name = "in.paf[.gz]")]
     input: String,
 
-    /// Write the per-alignment info table (37 cols) here. '.gz' for gzip.
+    /// Write the per-alignment info table (36 cols) here. '.gz' for gzip.
     /// Omit to skip the alninfo output.
     #[arg(short = 'a', long = "alninfo", value_name = "alninfo.tsv[.gz]")]
     alninfo: Option<String>,

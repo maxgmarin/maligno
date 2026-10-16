@@ -126,6 +126,22 @@ pub(crate) struct AlnRow {
     pub(crate) aln_score: i64,
     pub(crate) is_aligned: bool, // target_name != "*"
     pub(crate) mapq: u32,        // parsed once; used as tertiary sort key
+    /// Final sort key, from `tp:A` (see [`tp_rank`]). Only breaks ties; it is
+    /// not a key of `n_alns_tied_top_score`.
+    pub(crate) tp_rank: u8,
+}
+
+/// Rank of an alignment row as the final selection key, highest first:
+/// primary (`tp:A` `P`/`I`) 3, untagged 2, secondary (`S`/`i`) 1, unmapped 0.
+/// So among alignments tied on ms, AS and MAPQ, the aligner's own primary
+/// represents the read, and a mapped row always beats an unmapped placeholder.
+fn tp_rank(is_aligned: bool, tp: Option<char>) -> u8 {
+    match (is_aligned, tp) {
+        (false, _) => 0,
+        (true, Some('P' | 'I')) => 3,
+        (true, Some('S' | 'i')) => 1,
+        (true, _) => 2,
+    }
 }
 
 impl AlnRow {
@@ -145,19 +161,22 @@ pub(crate) fn parse_aln_row(line: &str) -> Option<AlnRow> {
     let aln_score: i64 = fields[COL_AS].parse().unwrap_or(0);
     let is_aligned = fields[COL_TARGET_NAME] != "*";
     let mapq: u32 = fields[COL_MQ].parse().unwrap_or(0);
+    let tp_rank = tp_rank(is_aligned, fields.get(COL_TP_TAG).and_then(|s| s.chars().next()));
     Some(AlnRow {
         fields,
         ms,
         aln_score,
         is_aligned,
         mapq,
+        tp_rank,
     })
 }
 
 /// Collapse a group of alignment rows into a single per-read summary.
 ///
-/// Sort order: ms desc → AS desc → MQ desc. The highest-scoring,
-/// highest-confidence alignment becomes the representative; every per-alignment
+/// Sort order: ms desc → AS desc → MQ desc → primary before secondary
+/// ([`tp_rank`]). The highest-scoring, highest-confidence alignment becomes the
+/// representative, and among full ties the aligner's primary; every per-alignment
 /// column (target, strand, scores, identity, coverage, junctions, cs,
 /// coordinates, event counts) comes from that single row. Only the counts
 /// (n_alns, n_alns_primsupp, n_alns_secondary, n_alns_tied_top_score) are computed over the
@@ -168,6 +187,7 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
             .cmp(&a.ms)
             .then_with(|| b.aln_score.cmp(&a.aln_score))
             .then_with(|| b.mapq.cmp(&a.mapq))
+            .then_with(|| b.tp_rank.cmp(&a.tp_rank))
     });
 
     let best = &rows[0];
@@ -229,9 +249,11 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
         }
     }
 
-    // Count aligned rows tied with the best on every selection key (ms, AS,
-    // MQ). n_alns_tied_top_score = 1 means the representative won outright; > 1
-    // means input order picked it among equals.
+    // Count aligned rows tied with the best on ms, AS and MQ. The tp:A
+    // tie-break is deliberately not a key here: a primary and a secondary with
+    // equal scores still count as tied. n_alns_tied_top_score = 1 means the
+    // representative won on score; > 1 means it was picked among equals
+    // (primary first, then input order).
     let top_key = rows
         .iter()
         .filter(|r| r.is_aligned)
@@ -254,6 +276,7 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
         query_end.to_string(),
         // Alignment selection & score.
         mapq_best.to_string(),
+        tp_tag.to_string(),
         num_aln.to_string(),
         num_aln_tpp.to_string(),
         num_aln_tps.to_string(),
@@ -285,8 +308,6 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
         n_splice_bases.to_string(),
         junctions.clone(),
         genomic_junctions.clone(),
-        // Representative's PAF type.
-        tp_tag.to_string(),
     ];
 
     ReadInfoRow {
@@ -485,12 +506,14 @@ mod tests {
     }
 
     #[test]
-    fn header_ends_with_tp_tag_and_matches_the_row_width() {
+    fn header_has_tp_tag_after_mapq_and_matches_the_row_width() {
         let header = readinfo_header();
         let cols: Vec<&str> = header.split('\t').collect();
         assert_eq!(cols.len(), 37);
-        assert_eq!(&cols[8..13], &["mapq", "n_alns", "n_alns_primsupp", "n_alns_secondary", "n_alns_tied_top_score"]);
-        assert_eq!(cols[36], "tp_tag");
+        assert_eq!(
+            &cols[8..14],
+            &["mapq", "tp_tag", "n_alns", "n_alns_primsupp", "n_alns_secondary", "n_alns_tied_top_score"]
+        );
         let ri = collapse_group(&mut [row("chr1", 50, 50, 60, "P")]);
         assert_eq!(2 + ri.raw_fields.len(), cols.len());
     }
@@ -570,10 +593,29 @@ mod tests {
     }
 
     #[test]
+    fn a_full_tie_prefers_the_primary_but_still_counts_as_tied() {
+        // A secondary listed first ties the primary on ms, AS and MQ (a STAR
+        // multimapper): the primary represents the read, and both count as tied.
+        let mut rows = vec![row("chr2", 0, 50, 3, "S"), row("chr1", 0, 50, 3, "P")];
+        let ri = collapse_group(&mut rows);
+        assert_eq!((ri.target_chr.as_str(), ri.tp_tag), ("chr1", 'P'));
+        assert_eq!((ri.num_aln, ri.num_aln_maxscore), (2, 2));
+        // A higher-scoring secondary still wins: tp:A only breaks full ties.
+        let mut rows = vec![row("chr1", 0, 50, 3, "P"), row("chr2", 0, 60, 3, "S")];
+        assert_eq!(collapse_group(&mut rows).tp_tag, 'S');
+        // An untagged mapped row ranks between primary and secondary, and any
+        // mapped row beats the unmapped placeholder.
+        let mut rows = vec![row("chr2", 0, 0, 0, "S"), row("chr3", 0, 0, 0, "*")];
+        assert_eq!(collapse_group(&mut rows).target_chr, "chr3");
+        let mut rows = vec![row("*", 0, 0, 0, "*"), row("chr2", 0, 0, 0, "S")];
+        assert_eq!(collapse_group(&mut rows).target_chr, "chr2");
+    }
+
+    #[test]
     fn raw_fields_follow_the_readinfo_columns() {
         // One alignment whose every field holds a distinct value, so a field
         // emitted in the wrong position cannot match by accident.
-        let vals: [(Col, &str); 37] = [
+        let vals: [(Col, &str); 36] = [
             (QUERY_NAME, "r9"), (QUERY_LEN, "101"), (QUERY_START, "2"), (QUERY_END, "99"),
             (STRAND, "-"), (TARGET_NAME, "chr9"), (TARGET_LEN, "5000"),
             (TARGET_START, "200"), (TARGET_END, "1300"), (N_RESIDUE_MATCHES, "90"),
@@ -586,7 +628,6 @@ mod tests {
             (N_SOFTCLIP_EVENTS, "2"), (N_SOFTCLIP_BASES_START, "21"), (N_SOFTCLIP_BASES_END, "22"),
             (N_INTRON_EVENTS, "19"), (N_INTRON_BASES, "20"),
             (QUERY_JUNCTIONS, "(5, 6, 7)"), (GENOMIC_JUNCTIONS, "((300, 400),)"),
-            (TARGET_START_1BASED, "201"),
         ];
         let mut f = vec![String::new(); ALNINFO_COLS.len()];
         for (col, v) in vals {
@@ -597,7 +638,7 @@ mod tests {
         let expected: [(Col, &str); 35] = [
             (TARGET_NAME, "chr9"), (STRAND, "-"), (TARGET_START, "200"), (TARGET_END, "1300"),
             (QUERY_START, "2"), (QUERY_END, "99"),
-            (MAPQ, "42"), (N_ALNS, "1"), (N_ALNS_PRIMSUPP, "0"), (N_ALNS_SECONDARY, "1"),
+            (MAPQ, "42"), (TP_TAG, "S"), (N_ALNS, "1"), (N_ALNS_PRIMSUPP, "0"), (N_ALNS_SECONDARY, "1"),
             (N_ALNS_TIED_TOP_SCORE, "1"), (AS_SCORE, "66"), (MS_SCORE, "77"),
             (ALN_IDENTITY, "0.5"), (QUERY_ALN_COV, "0.25"), (QUERY_ALN_LEN, "97"),
             (CS, ":10"), (QUERY_TRANSCRIPT_STRAND, "-"), (GENOMIC_INTRON_STRAND, "+"),
@@ -607,7 +648,6 @@ mod tests {
             (N_SOFTCLIP_EVENTS, "2"), (N_SOFTCLIP_BASES_START, "21"), (N_SOFTCLIP_BASES_END, "22"),
             (N_INTRON_EVENTS, "19"), (N_INTRON_BASES, "20"),
             (QUERY_JUNCTIONS, "(5, 6, 7)"), (GENOMIC_JUNCTIONS, "((300, 400),)"),
-            (TP_TAG, "S"),
         ];
         // Listed in readinfo order, so a reordered writer fails here.
         for (i, (col, _)) in expected.iter().enumerate() {
