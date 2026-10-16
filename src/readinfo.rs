@@ -5,7 +5,6 @@ use anyhow::{bail, Result};
 
 use crate::columns::*;
 use crate::io_utils::{escape_tsv_field, fmt_float, open_input, open_output};
-use crate::junction::junction_count_str;
 
 // ── Column indices in alninfo rows ───────────────────────────────────────────
 // Resolved by name against `ALNINFO_COLS` at compile time.
@@ -14,7 +13,8 @@ const COL_QUERY_LEN: usize = index_of(&ALNINFO_COLS, QUERY_LEN);
 const COL_QUERY_START: usize = index_of(&ALNINFO_COLS, QUERY_START);
 const COL_QUERY_END: usize = index_of(&ALNINFO_COLS, QUERY_END);
 const COL_STRAND: usize = index_of(&ALNINFO_COLS, STRAND);
-const COL_TRANSCRIPT_STRAND: usize = index_of(&ALNINFO_COLS, TRANSCRIPT_STRAND);
+const COL_QUERY_TRANSCRIPT_STRAND: usize = index_of(&ALNINFO_COLS, QUERY_TRANSCRIPT_STRAND);
+const COL_GENOMIC_INTRON_STRAND: usize = index_of(&ALNINFO_COLS, GENOMIC_INTRON_STRAND);
 const COL_MQ: usize = index_of(&ALNINFO_COLS, MAPQ);
 const COL_TARGET_NAME: usize = index_of(&ALNINFO_COLS, TARGET_NAME);
 const COL_TARGET_START: usize = index_of(&ALNINFO_COLS, TARGET_START);
@@ -61,7 +61,9 @@ pub struct ReadInfoRow {
     pub target_chr: String,
     pub strand: char,
     /// Representative alignment's transcript strand, relative to the read.
-    pub transcript_strand: char,
+    pub query_transcript_strand: char,
+    /// Representative alignment's intron strand on the reference.
+    pub genomic_intron_strand: char,
     pub mapq_best: u32,
     pub aln_score: i64,
     pub ms: i64,
@@ -71,7 +73,6 @@ pub struct ReadInfoRow {
     pub junctions: String,
     pub num_aln: u64,
     pub num_aln_maxscore: u64,
-    pub junc_count: usize,
     pub n_match_events: u64,
     pub n_match_bases: u64,
     pub n_sub_events: u64,
@@ -159,7 +160,7 @@ pub(crate) fn parse_aln_row(line: &str) -> Option<AlnRow> {
 /// highest-confidence alignment becomes the representative; every per-alignment
 /// column (target, strand, scores, identity, coverage, junctions, cs,
 /// coordinates, event counts) comes from that single row. Only the counts
-/// (n_alns, n_alns_tp_p, n_alns_tp_s, n_alns_tied_top_score) are computed over the
+/// (n_alns, n_alns_primsupp, n_alns_secondary, n_alns_tied_top_score) are computed over the
 /// full group.
 pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
     rows.sort_by(|a, b| {
@@ -176,7 +177,8 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
     let read_len: u64 = bf[COL_QUERY_LEN].parse().unwrap_or(0);
     let target_chr = bf[COL_TARGET_NAME].clone();
     let strand: char = bf[COL_STRAND].chars().next().unwrap_or('*');
-    let transcript_strand: char = bf[COL_TRANSCRIPT_STRAND].chars().next().unwrap_or('*');
+    let query_transcript_strand: char = bf[COL_QUERY_TRANSCRIPT_STRAND].chars().next().unwrap_or('*');
+    let genomic_intron_strand: char = bf[COL_GENOMIC_INTRON_STRAND].chars().next().unwrap_or('*');
     let mapq_best: u32 = best.mapq;
     // Best alignment's query span on the read and target span on the reference
     // (both 0-based half-open per PAF).
@@ -203,7 +205,6 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
     let cs = bf[COL_CS].clone();
     let genomic_junctions = bf[COL_GENOMIC_JUNCTIONS].clone();
     let tp_tag: char = bf.get(COL_TP_TAG).and_then(|s| s.chars().next()).unwrap_or('*');
-    let junc_count = junction_count_str(&junctions);
     let aln_score: i64 = best.aln_score;
     let ms: i64 = best.ms;
     let query_aln_cov: f64 = bf[COL_QUERY_ALN_COV].parse().unwrap_or(f64::NAN);
@@ -244,19 +245,30 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
     // Build raw_fields for pass-through (all columns except query_name, query_len),
     // in READINFO_COLS order.
     let raw_fields: Vec<String> = vec![
+        // Locus & span.
         target_chr.clone(),
         strand.to_string(),
-        transcript_strand.to_string(),
+        target_start.to_string(),
+        target_end.to_string(),
+        query_start.to_string(),
+        query_end.to_string(),
+        // Alignment selection & score.
         mapq_best.to_string(),
+        num_aln.to_string(),
+        num_aln_tpp.to_string(),
+        num_aln_tps.to_string(),
+        num_aln_maxscore.to_string(),
         aln_score.to_string(),
         ms.to_string(),
+        // Identity & coverage.
+        fmt_float(seqid),
         fmt_float(query_aln_cov),
         query_aln_len.to_string(),
-        fmt_float(seqid),
-        junctions.clone(),
-        num_aln.to_string(),
-        num_aln_maxscore.to_string(),
-        junc_count.to_string(),
+        // cs & strands.
+        cs.clone(),
+        query_transcript_strand.to_string(),
+        genomic_intron_strand.to_string(),
+        // cs-derived event counts.
         n_match_events.to_string(),
         n_match_bases.to_string(),
         n_sub_events.to_string(),
@@ -265,20 +277,16 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
         n_ins_bases.to_string(),
         n_del_events.to_string(),
         n_del_bases.to_string(),
-        n_splice_events.to_string(),
-        n_splice_bases.to_string(),
+        n_sc_events.to_string(),
         n_sc_start.to_string(),
         n_sc_end.to_string(),
-        n_sc_events.to_string(),
-        cs.clone(),
+        // Introns & junctions.
+        n_splice_events.to_string(),
+        n_splice_bases.to_string(),
+        junctions.clone(),
         genomic_junctions.clone(),
-        query_start.to_string(),
-        query_end.to_string(),
-        target_start.to_string(),
-        target_end.to_string(),
+        // Representative's PAF type.
         tp_tag.to_string(),
-        num_aln_tpp.to_string(),
-        num_aln_tps.to_string(),
     ];
 
     ReadInfoRow {
@@ -286,7 +294,8 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
         read_len,
         target_chr,
         strand,
-        transcript_strand,
+        query_transcript_strand,
+        genomic_intron_strand,
         mapq_best,
         aln_score,
         ms,
@@ -296,7 +305,6 @@ pub(crate) fn collapse_group(rows: &mut [AlnRow]) -> ReadInfoRow {
         junctions,
         num_aln,
         num_aln_maxscore,
-        junc_count,
         n_match_events,
         n_match_bases,
         n_sub_events,
@@ -446,13 +454,14 @@ mod tests {
 
     /// A full alninfo row for read `r1`: zeros everywhere except the fields
     /// `collapse_group` keys on. `target` "*" makes an unmapped placeholder; `tp`
-    /// "" drops the tp_tag column entirely (an older alninfo row without it).
+    /// "" leaves the tp_tag cell empty.
     fn row(target: &str, ms: i64, aln_score: i64, mapq: u32, tp: &str) -> AlnRow {
-        let mut f = vec!["0".to_string(); COL_TP_TAG + 1];
+        let mut f = vec!["0".to_string(); ALNINFO_COLS.len()];
         f[COL_QUERY_NAME] = "r1".into();
         f[COL_QUERY_LEN] = "100".into();
         f[COL_STRAND] = if target == "*" { "*" } else { "+" }.into();
-        f[COL_TRANSCRIPT_STRAND] = "*".into();
+        f[COL_QUERY_TRANSCRIPT_STRAND] = "*".into();
+        f[COL_GENOMIC_INTRON_STRAND] = "*".into();
         f[COL_TARGET_NAME] = target.into();
         f[COL_MS] = ms.to_string();
         f[COL_AS] = aln_score.to_string();
@@ -460,32 +469,28 @@ mod tests {
         f[COL_CS] = String::new();
         f[COL_JUNCTIONS] = "()".into();
         f[COL_GENOMIC_JUNCTIONS] = "()".into();
-        if tp.is_empty() {
-            f.pop();
-        } else {
-            f[COL_TP_TAG] = tp.into();
-        }
+        f[COL_TP_TAG] = tp.into();
         parse_aln_row(&f.join("\t")).expect("valid alninfo row")
     }
 
     /// Collapse `rows`, check the tpP + tpS <= n_alns invariant, and return
-    /// (n_alns_tp_p, n_alns_tp_s, n_alns).
+    /// (n_alns_primsupp, n_alns_secondary, n_alns).
     fn counts(mut rows: Vec<AlnRow>) -> (u64, u64, u64) {
         let ri = collapse_group(&mut rows);
         assert!(ri.num_aln_tpp + ri.num_aln_tps <= ri.num_aln);
-        // The two new columns are the last two readinfo fields, after tp_tag.
-        let n = ri.raw_fields.len();
-        assert_eq!(ri.raw_fields[n - 2], ri.num_aln_tpp.to_string());
-        assert_eq!(ri.raw_fields[n - 1], ri.num_aln_tps.to_string());
+        let at = |c: Col| ri.raw_fields[index_of(&READINFO_COLS, c) - 2].clone();
+        assert_eq!(at(N_ALNS_PRIMSUPP), ri.num_aln_tpp.to_string());
+        assert_eq!(at(N_ALNS_SECONDARY), ri.num_aln_tps.to_string());
         (ri.num_aln_tpp, ri.num_aln_tps, ri.num_aln)
     }
 
     #[test]
-    fn header_ends_with_the_type_counts_and_matches_the_row_width() {
+    fn header_ends_with_tp_tag_and_matches_the_row_width() {
         let header = readinfo_header();
         let cols: Vec<&str> = header.split('\t').collect();
         assert_eq!(cols.len(), 37);
-        assert_eq!(&cols[34..], &["tp_tag", "n_alns_tp_p", "n_alns_tp_s"]);
+        assert_eq!(&cols[8..13], &["mapq", "n_alns", "n_alns_primsupp", "n_alns_secondary", "n_alns_tied_top_score"]);
+        assert_eq!(cols[36], "tp_tag");
         let ri = collapse_group(&mut [row("chr1", 50, 50, 60, "P")]);
         assert_eq!(2 + ri.raw_fields.len(), cols.len());
     }
@@ -496,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn split_read_counts_every_tp_p_segment() {
+    fn split_read_counts_every_primsupp_segment() {
         let rows = vec![row("chr1", 50, 50, 60, "P"), row("chr2", 30, 30, 60, "P")];
         assert_eq!(counts(rows), (2, 0, 2));
     }
@@ -512,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn inversions_fold_into_tp_p_and_tp_s() {
+    fn inversions_fold_into_primsupp_and_secondary() {
         let rows = vec![
             row("chr1", 50, 50, 60, "P"),
             row("chr1", 20, 20, 60, "I"),
@@ -570,17 +575,18 @@ mod tests {
         // emitted in the wrong position cannot match by accident.
         let vals: [(Col, &str); 37] = [
             (QUERY_NAME, "r9"), (QUERY_LEN, "101"), (QUERY_START, "2"), (QUERY_END, "99"),
-            (STRAND, "-"), (TRANSCRIPT_STRAND, "+"), (TARGET_NAME, "chr9"), (TARGET_LEN, "5000"),
+            (STRAND, "-"), (TARGET_NAME, "chr9"), (TARGET_LEN, "5000"),
             (TARGET_START, "200"), (TARGET_END, "1300"), (N_RESIDUE_MATCHES, "90"),
-            (ALN_BLOCK_LEN, "95"), (MAPQ, "42"), (MS_SCORE, "77"), (AS_SCORE, "66"), (CS, ":10"),
+            (ALN_BLOCK_LEN, "95"), (MAPQ, "42"), (TP_TAG, "S"), (AS_SCORE, "66"), (MS_SCORE, "77"),
+            (ALN_IDENTITY, "0.5"), (QUERY_ALN_COV, "0.25"), (QUERY_ALN_LEN, "97"),
+            (CS, ":10"), (QUERY_TRANSCRIPT_STRAND, "-"), (GENOMIC_INTRON_STRAND, "+"),
             (N_MATCH_EVENTS, "11"), (N_MATCH_BASES, "12"), (N_SUBSTITUTION_EVENTS, "13"),
             (N_SUBSTITUTION_BASES, "14"), (N_INSERTION_EVENTS, "15"), (N_INSERTION_BASES, "16"),
             (N_DELETION_EVENTS, "17"), (N_DELETION_BASES, "18"),
+            (N_SOFTCLIP_EVENTS, "2"), (N_SOFTCLIP_BASES_START, "21"), (N_SOFTCLIP_BASES_END, "22"),
             (N_INTRON_EVENTS, "19"), (N_INTRON_BASES, "20"),
-            (N_SOFTCLIP_BASES_START, "21"), (N_SOFTCLIP_BASES_END, "22"),
-            (N_SOFTCLIP_EVENTS, "2"), (QUERY_JUNCTIONS, "(5, 6, 7)"), (N_QUERY_JUNCTIONS, "3"),
-            (TARGET_START_1BASED, "201"), (ALN_IDENTITY, "0.5"), (QUERY_ALN_LEN, "97"),
-            (QUERY_ALN_COV, "0.25"), (GENOMIC_JUNCTIONS, "((300, 400),)"), (TP_TAG, "S"),
+            (QUERY_JUNCTIONS, "(5, 6, 7)"), (GENOMIC_JUNCTIONS, "((300, 400),)"),
+            (TARGET_START_1BASED, "201"),
         ];
         let mut f = vec![String::new(); ALNINFO_COLS.len()];
         for (col, v) in vals {
@@ -589,19 +595,24 @@ mod tests {
         let ri = collapse_group(&mut [parse_aln_row(&f.join("\t")).unwrap()]);
 
         let expected: [(Col, &str); 35] = [
-            (TARGET_NAME, "chr9"), (STRAND, "-"), (TRANSCRIPT_STRAND, "+"), (MAPQ, "42"), (AS_SCORE, "66"),
-            (MS_SCORE, "77"), (QUERY_ALN_COV, "0.25"), (QUERY_ALN_LEN, "97"),
-            (ALN_IDENTITY, "0.5"), (QUERY_JUNCTIONS, "(5, 6, 7)"), (N_ALNS, "1"),
-            (N_ALNS_TIED_TOP_SCORE, "1"), (N_QUERY_JUNCTIONS, "3"),
+            (TARGET_NAME, "chr9"), (STRAND, "-"), (TARGET_START, "200"), (TARGET_END, "1300"),
+            (QUERY_START, "2"), (QUERY_END, "99"),
+            (MAPQ, "42"), (N_ALNS, "1"), (N_ALNS_PRIMSUPP, "0"), (N_ALNS_SECONDARY, "1"),
+            (N_ALNS_TIED_TOP_SCORE, "1"), (AS_SCORE, "66"), (MS_SCORE, "77"),
+            (ALN_IDENTITY, "0.5"), (QUERY_ALN_COV, "0.25"), (QUERY_ALN_LEN, "97"),
+            (CS, ":10"), (QUERY_TRANSCRIPT_STRAND, "-"), (GENOMIC_INTRON_STRAND, "+"),
             (N_MATCH_EVENTS, "11"), (N_MATCH_BASES, "12"), (N_SUBSTITUTION_EVENTS, "13"),
             (N_SUBSTITUTION_BASES, "14"), (N_INSERTION_EVENTS, "15"), (N_INSERTION_BASES, "16"),
             (N_DELETION_EVENTS, "17"), (N_DELETION_BASES, "18"),
+            (N_SOFTCLIP_EVENTS, "2"), (N_SOFTCLIP_BASES_START, "21"), (N_SOFTCLIP_BASES_END, "22"),
             (N_INTRON_EVENTS, "19"), (N_INTRON_BASES, "20"),
-            (N_SOFTCLIP_BASES_START, "21"), (N_SOFTCLIP_BASES_END, "22"),
-            (N_SOFTCLIP_EVENTS, "2"), (CS, ":10"), (GENOMIC_JUNCTIONS, "((300, 400),)"),
-            (QUERY_START, "2"), (QUERY_END, "99"), (TARGET_START, "200"), (TARGET_END, "1300"),
-            (TP_TAG, "S"), (N_ALNS_TP_P, "0"), (N_ALNS_TP_S, "1"),
+            (QUERY_JUNCTIONS, "(5, 6, 7)"), (GENOMIC_JUNCTIONS, "((300, 400),)"),
+            (TP_TAG, "S"),
         ];
+        // Listed in readinfo order, so a reordered writer fails here.
+        for (i, (col, _)) in expected.iter().enumerate() {
+            assert_eq!(index_of(&READINFO_COLS, *col) - 2, i, "{:?} listed out of order", col.name);
+        }
         assert_eq!(2 + ri.raw_fields.len(), READINFO_COLS.len());
         assert_eq!((ri.read_name.as_str(), ri.read_len), ("r9", 101));
         for (col, want) in expected {
@@ -622,7 +633,8 @@ mod tests {
             f[COL_QUERY_NAME] = "r1".into();
             f[COL_QUERY_LEN] = "100".into();
             f[COL_STRAND] = "+".into();
-            f[COL_TRANSCRIPT_STRAND] = if target == "chr1" { "-" } else { "+" }.into();
+            f[COL_QUERY_TRANSCRIPT_STRAND] = if target == "chr1" { "-" } else { "+" }.into();
+            f[COL_GENOMIC_INTRON_STRAND] = if target == "chr1" { "-" } else { "+" }.into();
             f[COL_TARGET_NAME] = target.into();
             f[COL_MS] = ms.to_string();
             f[COL_AS] = aln_score.to_string();
@@ -639,12 +651,12 @@ mod tests {
         assert_eq!(ri.target_chr, "chr1");
         assert_eq!((ri.ms, ri.aln_score, ri.query_aln_len), (50, 60, 60));
         assert_eq!((ri.seqid, ri.query_aln_cov), (0.9, 0.6));
-        assert_eq!(ri.transcript_strand, '-');
+        assert_eq!((ri.query_transcript_strand, ri.genomic_intron_strand), ('-', '-'));
         let at = |c: Col| ri.raw_fields[index_of(&READINFO_COLS, c) - 2].as_str();
         assert_eq!(
             [at(AS_SCORE), at(MS_SCORE), at(ALN_IDENTITY), at(QUERY_ALN_COV), at(QUERY_ALN_LEN),
-             at(TRANSCRIPT_STRAND)],
-            ["60", "50", "0.9", "0.6", "60", "-"]
+             at(QUERY_TRANSCRIPT_STRAND), at(GENOMIC_INTRON_STRAND)],
+            ["60", "50", "0.9", "0.6", "60", "-", "-"]
         );
         assert_eq!((ri.num_aln, ri.num_aln_maxscore), (2, 1));
     }

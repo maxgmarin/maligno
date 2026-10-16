@@ -17,7 +17,7 @@ Every `category` below is one **row**, in this order:
 | `reads_with_junctions_neither` | Reads with no junction on either side |
 | `reads_genomic_junctions_identical` | Of `reads_with_junctions_both`: the two junction sets are identical |
 | `reads_genomic_junctions_differ` | Of `reads_with_junctions_both`: the sets differ |
-| `reads_intron_strand_differ` | Of `reads_with_junctions_both`: both intron strands are known and different |
+| `reads_genomic_intron_strand_differ` | Of `reads_with_junctions_both`: both intron strands are known and different |
 | `n_distinct_junctions_A` | Distinct junctions seen in A across all reads |
 | `n_distinct_junctions_B` | Distinct junctions seen in B |
 | `n_distinct_junctions_shared` | Distinct junctions seen in both |
@@ -33,7 +33,7 @@ Every `category` below is one **row**, in this order:
 - A junction is `(target_name, intron_start, intron_end, intron_strand)`, so a
   strand disagreement, or an unknown strand on one side only, makes the
   junctions differ even when the coordinates agree.
-  `reads_intron_strand_differ` and the `unknown_strand` rows show how much of
+  `reads_genomic_intron_strand_differ` and the `unknown_strand` rows show how much of
   the difference comes from strand.
 - "Identical" is set equality only; it doesn't require the alignments to
   start at the same position. Position is covered by the `ref_*` rows of

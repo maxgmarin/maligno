@@ -12,7 +12,7 @@ Each side's junctions are rebuilt from its representative alignment's `cs`
 tag, so their coordinates equal that side's `genomic_junctions` column in the
 [comparison table](compare.md), and the lists use the same `(start, end)`
 pairs (0-based half-open). The contig and strand, shared by all of one side's
-junctions, are in `target_name_*` and `intron_strand_*`.
+junctions, are in `target_name_*` and `genomic_intron_strand_*`.
 
 21 columns.
 
@@ -21,10 +21,10 @@ junctions, are in `target_name_*` and `intron_strand_*`.
 | 1 | `query_name` | Read ID |
 | 2 | `target_name_A` | A's reference/target name; `*` if unmapped |
 | 3 | `strand_A` | A's alignment strand (read relative to the reference) |
-| 4 | `intron_strand_A` | Strand of A's transcript on the reference, so of every A junction: `strand_A` when `transcript_strand_A` is `+`, the opposite when it is `-`; `*` if unknown or unmapped. See [REFERENCE.md](../REFERENCE.md#transcript-strand) |
+| 4 | `genomic_intron_strand_A` | Strand of A's transcript on the reference, so of every A junction (the comparison table's `genomic_intron_strand_A`); `*` if unknown or unmapped. See [REFERENCE.md](../REFERENCE.md#transcript-strand) |
 | 5 | `target_name_B` | B's reference/target name |
 | 6 | `strand_B` | B's alignment strand |
-| 7 | `intron_strand_B` | The same for B |
+| 7 | `genomic_intron_strand_B` | The same for B |
 | 8 | `n_junctions_A` | Number of junctions in A's alignment |
 | 9 | `n_junctions_B` | Number of junctions in B's alignment |
 | 10 | `n_junctions_shared` | Junctions in both sides, \|A ∩ B\| |
@@ -43,9 +43,10 @@ junctions, are in `target_name_*` and `intron_strand_*`.
 **Notes**
 - **The strand is part of a junction.** The same coordinates with different
   intron strands are different junctions, and `*` matches only `*`. So when
-  `intron_strand_A` and `intron_strand_B` differ, every junction is "only A"
-  or "only B", and the same `(start, end)` can appear in both
-  `genomic_junctions_only_*` lists; their strands are in `intron_strand_*`.
+  `genomic_intron_strand_A` and `genomic_intron_strand_B` differ, every
+  junction is "only A" or "only B", and the same `(start, end)` can appear in
+  both `genomic_junctions_only_*` lists; their strands are in
+  `genomic_intron_strand_*`.
 - **Motifs** are the 2 + 2 intron-edge letters from `cs`, written
   donor-acceptor in the junction's orientation: on a `-` strand junction the
   reference letters are reverse-complemented, so a canonical intron reads

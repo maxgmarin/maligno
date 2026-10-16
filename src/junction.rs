@@ -20,27 +20,6 @@ pub fn parse_junction_str(s: &str) -> Vec<i64> {
         .collect()
 }
 
-/// Count the number of junctions in a Python-format tuple string.
-/// "()" → 0, "(108,)" → 1, "(108, 168)" → 2
-pub fn junction_count_str(s: &str) -> usize {
-    let trimmed = s.trim().trim_start_matches('(').trim_end_matches(')');
-    if trimmed.is_empty() {
-        return 0;
-    }
-    trimmed
-        .split(',')
-        .filter(|tok| !tok.trim().is_empty())
-        .count()
-}
-
-/// Sum of |a_i - b_i| for sorted pairs up to min(len(a), len(b)).
-pub fn junction_distance(a: &[i64], b: &[i64]) -> u64 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(x, y)| (x - y).unsigned_abs())
-        .sum()
-}
-
 /// Set-overlap stats between two junction lists (deduplicated on both sides).
 /// Returns `(n_overlap, n_only_a, n_only_b)` where:
 ///   n_overlap = |A ∩ B|, n_only_a = |A \ B|, n_only_b = |B \ A|.
@@ -230,7 +209,7 @@ pub fn format_junction_tuple(juncs: &[i64]) -> String {
 /// ```
 /// The contig and strand are dropped: one alignment's junctions share them, and
 /// `toolkit genomic-junction-compare` writes them once per row (`target_name_*`,
-/// `intron_strand_*`). For a self-contained form that keeps them, see
+/// `genomic_intron_strand_*`). For a self-contained form that keeps them, see
 /// [`format_genomic_junction_full_tuple`].
 pub fn format_genomic_junction_tuple(juncs: &[GenomicJunction]) -> String {
     let items: Vec<String> = juncs.iter().map(|(_contig, st, en, _strand)| format!("({st}, {en})")).collect();
@@ -250,7 +229,7 @@ pub fn format_genomic_junction_tuple(juncs: &[GenomicJunction]) -> String {
 /// ```
 /// Each junction then carries its full identity, so lists from different rows
 /// can be pooled or compared without the row's `target_name_*` /
-/// `intron_strand_*` columns. Contig names are escaped as Python string
+/// `genomic_intron_strand_*` columns. Contig names are escaped as Python string
 /// literals ([`py_str`]).
 ///
 /// Not used by any output at the moment: `genomic-junction-compare` wrote its

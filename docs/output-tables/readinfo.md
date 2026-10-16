@@ -15,11 +15,13 @@ highest `as_score`, then by highest `mapq`; remaining ties fall through to
 input order (stable sort).
 
 **Every per-alignment column comes from the representative alone** (locus,
-strand, transcript strand, scores, identity, coverage, junctions, `cs`, coordinates, event counts,
+strands, scores, identity, coverage, junctions, `cs`, coordinates, event counts,
 `tp_tag`), and has the same name as in [alninfo.md](alninfo.md). Only the four
 `n_alns*` columns are computed over the read's whole group of alignments.
 
-37 columns.
+37 columns: `query_name`, `query_len`, then the 34 columns of the
+[comparison table](compare.md)'s per-side block, in the same order (columns
+3–36), then `tp_tag`.
 
 | # | Column | Description |
 |---|---|---|
@@ -27,39 +29,39 @@ strand, transcript strand, scores, identity, coverage, junctions, `cs`, coordina
 | 2 | `query_len` | Query sequence length |
 | 3 | `target_name` | Representative alignment's reference/target name; `*` if unaligned |
 | 4 | `strand` | Representative alignment's strand; `*` if unaligned |
-| 5 | `transcript_strand` | Representative alignment's transcript strand relative to the read (`+`/`-`/`*`); see [REFERENCE.md](../REFERENCE.md#transcript-strand) |
-| 6 | `mapq` | Representative alignment's mapping quality |
-| 7 | `as_score` | Representative alignment's alignment score (`AS:i`) |
-| 8 | `ms_score` | Representative alignment's `ms:i` score (DP score of the max-scoring segment) |
-| 9 | `query_aln_cov` | Representative alignment's `query_aln_len / query_len`; `NaN` if `query_len` is `0` |
-| 10 | `query_aln_len` | Representative alignment's aligned query length, `query_end − query_start` |
-| 11 | `aln_identity` | Representative alignment's identity, `n_residue_matches / aln_block_len`; `NaN` if unaligned |
-| 12 | `query_junctions` | Representative alignment's query-coordinate splice junctions (Python tuple string) |
-| 13 | `n_alns` | Number of aligned rows (`target_name != "*"`) for this read; `0` if the read is present but entirely unaligned |
-| 14 | `n_alns_tied_top_score` | Number of aligned rows tied with the representative on **all** selection keys (`ms_score`, `as_score` **and** `mapq`). `1` ⇒ the representative won outright; `> 1` ⇒ input order picked it among equals; `0` for an unaligned read |
-| 15 | `n_query_junctions` | Number of entries in `query_junctions` |
-| 16 | `n_match_events` | Representative alignment's match-run count |
-| 17 | `n_match_bases` | Representative alignment's matched bases |
-| 18 | `n_substitution_events` | Representative alignment's substitution-event count |
-| 19 | `n_substitution_bases` | Representative alignment's substituted bases |
-| 20 | `n_insertion_events` | Representative alignment's insertion-event count |
-| 21 | `n_insertion_bases` | Representative alignment's inserted bases |
-| 22 | `n_deletion_events` | Representative alignment's deletion-event count |
-| 23 | `n_deletion_bases` | Representative alignment's deleted bases |
-| 24 | `n_intron_events` | Representative alignment's intron (`~`) op count |
-| 25 | `n_intron_bases` | Representative alignment's total intron bases |
-| 26 | `n_softclip_bases_start` | Representative alignment's start soft-clip length |
-| 27 | `n_softclip_bases_end` | Representative alignment's end soft-clip length |
-| 28 | `n_softclip_events` | Representative alignment's soft-clip event count (`0`/`1`/`2`) |
-| 29 | `cs` | Representative alignment's compact alignment string |
-| 30 | `genomic_junctions` | Representative alignment's splice junctions in absolute reference coordinates (Python tuple-of-tuples string; chrom is the sibling `target_name` column) |
-| 31 | `query_start` | Representative alignment's query-coordinate span start (0-based half-open) |
-| 32 | `query_end` | Representative alignment's query-coordinate span end |
-| 33 | `target_start` | Representative alignment's target-coordinate span start (0-based half-open) |
-| 34 | `target_end` | Representative alignment's target-coordinate span end |
-| 35 | `tp_tag` | Representative alignment's PAF `tp:A` tag (`P`/`S`/`I`); `*` if absent or unaligned |
-| 36 | `n_alns_tp_p` | Number of the read's **aligned** rows whose `tp:A` is `P` or `I` (SAM primary **+ supplementary**); `0` for an unaligned read |
-| 37 | `n_alns_tp_s` | Number of the read's **aligned** rows whose `tp:A` is `S` or `i` (secondary); `0` for an unaligned read |
+| 5 | `target_start` | Representative alignment's target-coordinate span start (0-based half-open) |
+| 6 | `target_end` | Representative alignment's target-coordinate span end |
+| 7 | `query_start` | Representative alignment's query-coordinate span start (0-based half-open) |
+| 8 | `query_end` | Representative alignment's query-coordinate span end |
+| 9 | `mapq` | Representative alignment's mapping quality |
+| 10 | `n_alns` | Number of aligned rows (`target_name != "*"`) for this read; `0` if the read is present but entirely unaligned |
+| 11 | `n_alns_primsupp` | Number of the read's **aligned** rows whose `tp:A` is `P` or `I` (SAM primary **+ supplementary**); `0` for an unaligned read |
+| 12 | `n_alns_secondary` | Number of the read's **aligned** rows whose `tp:A` is `S` or `i` (secondary); `0` for an unaligned read |
+| 13 | `n_alns_tied_top_score` | Number of aligned rows tied with the representative on **all** selection keys (`ms_score`, `as_score` **and** `mapq`). `1` ⇒ the representative won outright; `> 1` ⇒ input order picked it among equals; `0` for an unaligned read |
+| 14 | `as_score` | Representative alignment's alignment score (`AS:i`) |
+| 15 | `ms_score` | Representative alignment's `ms:i` score (DP score of the max-scoring segment) |
+| 16 | `aln_identity` | Representative alignment's identity, `n_residue_matches / aln_block_len`; `NaN` if unaligned |
+| 17 | `query_aln_cov` | Representative alignment's `query_aln_len / query_len`; `NaN` if `query_len` is `0` |
+| 18 | `query_aln_len` | Representative alignment's aligned query length, `query_end − query_start` |
+| 19 | `cs` | Representative alignment's compact alignment string |
+| 20 | `query_transcript_strand` | Representative alignment's transcript strand **relative to the read** (`+` sense, `-` antisense, `*` unknown); see [REFERENCE.md](../REFERENCE.md#transcript-strand) |
+| 21 | `genomic_intron_strand` | Representative alignment's transcript (and intron) strand **on the reference** (`+`/`-`/`*`); see [alninfo.md](alninfo.md) |
+| 22 | `n_match_events` | Representative alignment's match-run count |
+| 23 | `n_match_bases` | Representative alignment's matched bases |
+| 24 | `n_substitution_events` | Representative alignment's substitution-event count |
+| 25 | `n_substitution_bases` | Representative alignment's substituted bases |
+| 26 | `n_insertion_events` | Representative alignment's insertion-event count |
+| 27 | `n_insertion_bases` | Representative alignment's inserted bases |
+| 28 | `n_deletion_events` | Representative alignment's deletion-event count |
+| 29 | `n_deletion_bases` | Representative alignment's deleted bases |
+| 30 | `n_softclip_events` | Representative alignment's soft-clip event count (`0`/`1`/`2`) |
+| 31 | `n_softclip_bases_start` | Representative alignment's start soft-clip length |
+| 32 | `n_softclip_bases_end` | Representative alignment's end soft-clip length |
+| 33 | `n_intron_events` | Representative alignment's intron (`~`) op count, i.e. its number of junctions |
+| 34 | `n_intron_bases` | Representative alignment's total intron bases |
+| 35 | `query_junctions` | Representative alignment's query-coordinate splice junctions (Python tuple string) |
+| 36 | `genomic_junctions` | Representative alignment's splice junctions in absolute reference coordinates (Python tuple-of-tuples string; chrom is the sibling `target_name` column) |
+| 37 | `tp_tag` | Representative alignment's PAF `tp:A` tag (`P`/`S`/`I`); `*` if absent or unaligned |
 
 **Notes**
 - `query_start`/`query_end` + `target_start`/`target_end` + `target_name` +
@@ -72,19 +74,19 @@ strand, transcript strand, scores, identity, coverage, junctions, `cs`, coordina
   including supplementary segments, which cover other parts of the read rather
   than competing placements. `n_alns_tied_top_score` is counted over the same
   rows.
-- **`n_alns_tp_p` / `n_alns_tp_s`** split `n_alns` by PAF `tp:A` type:
-  - `n_alns_tp_p` counts `P` and `I` rows. In PAF (and in maligno's `sam2paf`
+- **`n_alns_primsupp` / `n_alns_secondary`** split `n_alns` by PAF `tp:A` type:
+  - `n_alns_primsupp` counts `P` and `I` rows. In PAF (and in maligno's `sam2paf`
     output), **supplementary alignments are `tp:A:P` too**, so it is SAM
-    primary + supplementary, and `n_alns_tp_p > 1` means the read is split
-    into `n_alns_tp_p − 1` extra segments (chimeric / split alignment).
-  - `n_alns_tp_s` counts `S` and `i` rows: secondary (alternative) placements.
+    primary + supplementary, and `n_alns_primsupp > 1` means the read is split
+    into `n_alns_primsupp − 1` extra segments (chimeric / split alignment).
+  - `n_alns_secondary` counts `S` and `i` rows: secondary (alternative) placements.
   - A mapped row with no `tp` tag counts toward neither, so
-    `n_alns_tp_p + n_alns_tp_s <= n_alns`; the remainder is untagged rows.
+    `n_alns_primsupp + n_alns_secondary <= n_alns`; the remainder is untagged rows.
   - The representative alignment, `n_alns` and `n_alns_tied_top_score` don't
     depend on these counts.
   - **Counts reflect the input as filtered.** On SAM/BAM input, `compare`'s
     default `--sam-records-to-convert primary-supp` (`sam2paf -p`) drops
-    secondary records, so `n_alns_tp_s` is always `0` unless you pass
+    secondary records, so `n_alns_secondary` is always `0` unless you pass
     `--sam-records-to-convert all`; `--sam-records-to-convert primary` (`-P`)
-    also drops supplementary records, so `n_alns_tp_p <= 1`.
+    also drops supplementary records, so `n_alns_primsupp <= 1`.
     For minimap2 PAF, secondaries appear only if minimap2 emitted them.

@@ -439,7 +439,7 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
     // error.
     //
     // For a Parquet input, project down to just the columns this command reads
-    // (19 of the comparison table's 95) — Parquet skips decoding the rest, which
+    // (19 of the comparison table's 91) — Parquet skips decoding the rest, which
     // is where its per-column storage actually pays off.
     let wanted = wanted_columns(&[QUERY_NAME, LABEL_A, LABEL_B], &CLASSIFY_SIDE_COLS);
     let wanted_refs: Vec<&str> = wanted.iter().map(String::as_str).collect();

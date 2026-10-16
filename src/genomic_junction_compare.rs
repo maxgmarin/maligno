@@ -3,8 +3,8 @@
 //!
 //! A genomic junction is `(contig, intron_start, intron_end, intron_strand)`
 //! ([`GenomicJunction`]): 0-based half-open intron coordinates on the reference,
-//! plus the strand of the transcript on the reference (`paf::intron_strand`,
-//! from each side's `strand` + `transcript_strand`). The same coordinates on `+`
+//! plus the strand of the transcript on the reference (each side's
+//! `genomic_intron_strand` column). The same coordinates on `+`
 //! and `-` are different junctions; an unknown strand (`*`) matches only `*`.
 //!
 //! Each side's junctions are rebuilt from its representative alignment's `cs`
@@ -17,7 +17,7 @@
 //!   1. `{prefix}.genomic_junction_compare.per_read.tsv.gz` — one row per read
 //!      with at least one genomic junction on either side. Junction lists hold
 //!      `(start, end)` pairs, like the `genomic_junctions` columns; each side's
-//!      contig and strand are in `target_name_*` / `intron_strand_*`.
+//!      contig and strand are in `target_name_*` / `genomic_intron_strand_*`.
 //!   2. `{prefix}.genomic_junction_compare.per_junction.tsv.gz` — one row per
 //!      distinct junction, with read counts and motifs per side.
 //!   3. `{prefix}.genomic_junction_compare.summary.tsv` — `category`/`count`.
@@ -35,7 +35,7 @@ use anyhow::{Context, Result};
 use crate::columns::{
     gjc_per_read_header, header_line, CS, GJC_INPUT_SIDE_COLS, GJC_PER_JUNCTION_COLS, LABEL_A,
     LABEL_B, QUERY_NAME, SIDE_A, SIDE_B, STRAND, SUMMARY_HEADER, TARGET_NAME, TARGET_START,
-    TRANSCRIPT_STRAND,
+    GENOMIC_INTRON_STRAND,
 };
 use crate::compare_summary::{labels_from_row, require_ab_schema, require_col, wanted_columns, SideIndex};
 use crate::cs_parser::{oriented_motif, parse_cs};
@@ -44,7 +44,6 @@ use crate::junction::{
     format_genomic_junction_tuple, genomic_junction_set_diffs, genomic_junction_set_stats,
     GenomicJunction,
 };
-use crate::paf::intron_strand;
 use crate::table_input::{open_table, InputFormat};
 
 /// Compare A's and B's splice junctions in genomic coordinates, with strand and
@@ -92,15 +91,16 @@ struct SideJunctions {
 fn side_junctions(
     target_name: &str,
     target_start: &str,
-    strand: &str,
-    transcript_strand: &str,
+    genomic_intron_strand: &str,
     cs: &str,
 ) -> SideJunctions {
     if !is_mapped(target_name) {
         return SideJunctions { intron_strand: '*', ..Default::default() };
     }
-    let first = |s: &str| s.chars().next().unwrap_or('*');
-    let gs = intron_strand(first(strand), first(transcript_strand));
+    let gs = match genomic_intron_strand.chars().next() {
+        Some(c @ ('+' | '-')) => c,
+        _ => '*',
+    };
     let tstart: u64 = target_start.parse().unwrap_or(0);
     let stats = parse_cs(cs);
     let junctions = stats
@@ -153,7 +153,7 @@ struct Summary {
     reads_with_junctions_neither: u64,
     reads_genomic_junctions_identical: u64,
     reads_genomic_junctions_differ: u64,
-    reads_intron_strand_differ: u64,
+    reads_genomic_intron_strand_differ: u64,
     n_distinct_junctions_a: u64,
     n_distinct_junctions_b: u64,
     n_distinct_junctions_shared: u64,
@@ -173,7 +173,7 @@ impl Summary {
             ("reads_with_junctions_neither", self.reads_with_junctions_neither),
             ("reads_genomic_junctions_identical", self.reads_genomic_junctions_identical),
             ("reads_genomic_junctions_differ", self.reads_genomic_junctions_differ),
-            ("reads_intron_strand_differ", self.reads_intron_strand_differ),
+            ("reads_genomic_intron_strand_differ", self.reads_genomic_intron_strand_differ),
             ("n_distinct_junctions_A", self.n_distinct_junctions_a),
             ("n_distinct_junctions_B", self.n_distinct_junctions_b),
             ("n_distinct_junctions_shared", self.n_distinct_junctions_shared),
@@ -260,8 +260,7 @@ pub fn run(args: &GenomicJunctionCompareArgs) -> Result<()> {
             let s = side_junctions(
                 get(TARGET_NAME.name),
                 get(TARGET_START.name),
-                get(STRAND.name),
-                get(TRANSCRIPT_STRAND.name),
+                get(GENOMIC_INTRON_STRAND.name),
                 get(CS.name),
             );
             (s, get(TARGET_NAME.name), get(STRAND.name), get(CS.name))
@@ -289,7 +288,7 @@ pub fn run(args: &GenomicJunctionCompareArgs) -> Result<()> {
                 summary.reads_genomic_junctions_differ += 1;
             }
             if sa.intron_strand != '*' && sb.intron_strand != '*' && sa.intron_strand != sb.intron_strand {
-                summary.reads_intron_strand_differ += 1;
+                summary.reads_genomic_intron_strand_differ += 1;
             }
         }
 
@@ -392,8 +391,7 @@ mod tests {
 
     #[test]
     fn junctions_are_rebuilt_from_cs_with_strand_and_motif() {
-        // '-' alignment, read antisense ('-'): the transcript is on the reference '+'.
-        let s = side_junctions("chr1", "1000", "-", "-", ":10~gt100ag:5~nn50nn:5");
+        let s = side_junctions("chr1", "1000", "+", ":10~gt100ag:5~nn50nn:5");
         assert_eq!(s.intron_strand, '+');
         assert_eq!(
             s.junctions,
@@ -406,18 +404,18 @@ mod tests {
 
     #[test]
     fn unmapped_or_unknown_strand_sides() {
-        let unmapped = side_junctions("*", "0", "*", "*", "");
+        let unmapped = side_junctions("*", "0", "*", "");
         assert_eq!(unmapped.intron_strand, '*');
         assert!(unmapped.junctions.is_empty());
-        let unknown = side_junctions("chr1", "0", "+", "*", ":5~ct20ac:5");
+        let unknown = side_junctions("chr1", "0", "*", ":5~ct20ac:5");
         assert_eq!(unknown.intron_strand, '*');
         assert_eq!(format_motif_list(&unknown.motifs, '*'), "('ct-ac',)", "kept reference-forward");
     }
 
     #[test]
     fn strand_disagreement_makes_every_junction_differ() {
-        let a = side_junctions("chr1", "0", "+", "+", ":5~gt20ag:5");
-        let b = side_junctions("chr1", "0", "+", "-", ":5~gt20ag:5");
+        let a = side_junctions("chr1", "0", "+", ":5~gt20ag:5");
+        let b = side_junctions("chr1", "0", "-", ":5~gt20ag:5");
         let c = compare_sides(&a, &b);
         assert_eq!((c.shared, c.only_a, c.only_b), (0, 1, 1));
         assert_eq!(format_genomic_junction_tuple(&c.only_a_list), "((5, 25),)");
@@ -450,7 +448,7 @@ mod tests {
             header.extend(GJC_INPUT_SIDE_COLS.iter().map(|&c| crate::columns::sided(c, side)));
         }
         // Columns: query_name, labels, then target_name, target_start, strand,
-        // transcript_strand, cs for A and for B.
+        // genomic_intron_strand, cs for A and for B.
         let rows = [
             "r1\tX\tY\tchr1\t100\t+\t+\t:5~gt20ag:5\tchr1\t100\t+\t+\t:5~nn20nn:5",
             "r2\tX\tY\tchr1\t100\t+\t+\t:5~gt20ag:5\t*\t0\t*\t*\t",

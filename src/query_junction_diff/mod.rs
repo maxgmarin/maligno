@@ -29,7 +29,7 @@
 //!   - mapped on both sides, and its query-space junction sets differ
 //!     (`n_query_junctions_only_A`/`n_query_junctions_only_B` not both `0`); or
 //!   - mapped on only one side, and that side has at least one splice
-//!     junction (`n_query_junctions > 0` — a junction with nothing to compare against
+//!     junction (`n_intron_events > 0` — a junction with nothing to compare against
 //!     is, by definition, unsupported by the other side).
 //! Reads unmapped on both sides, both-mapped reads with identical query
 //! junctions, and only-one-side reads with zero junctions are excluded (but
@@ -72,7 +72,7 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 
 use crate::columns::{
-    sided, Col, CS, GENOMIC_JUNCTIONS, N_QUERY_JUNCTIONS, LABEL_A, LABEL_B, N_QUERY_JUNCTIONS_ONLY_A,
+    sided, Col, CS, GENOMIC_JUNCTIONS, N_INTRON_EVENTS, LABEL_A, LABEL_B, N_QUERY_JUNCTIONS_ONLY_A,
     N_QUERY_JUNCTIONS_ONLY_B, QUERY_END, QUERY_START, QUERY_LEN, QUERY_NAME, SIDE_A, SIDE_B, STRAND,
     TARGET_NAME, TARGET_START,
 };
@@ -116,7 +116,7 @@ pub struct QueryJunctionDiffArgs {
 }
 
 /// The per-side columns pass 1 reads, resolved for each side up front.
-const SIDE_COLS: [Col; 7] = [CS, STRAND, QUERY_START, QUERY_END, TARGET_START, TARGET_NAME, N_QUERY_JUNCTIONS];
+const SIDE_COLS: [Col; 7] = [CS, STRAND, QUERY_START, QUERY_END, TARGET_START, TARGET_NAME, N_INTRON_EVENTS];
 
 pub fn run(args: &QueryJunctionDiffArgs) -> Result<()> {
     if !args.input.ends_with(".parquet") {
@@ -185,8 +185,8 @@ pub fn run(args: &QueryJunctionDiffArgs) -> Result<()> {
 
         let mapped_a = is_mapped(get_a(TARGET_NAME.name));
         let mapped_b = is_mapped(get_b(TARGET_NAME.name));
-        let junc_count_a: u64 = get_a(N_QUERY_JUNCTIONS.name).parse().unwrap_or(0);
-        let junc_count_b: u64 = get_b(N_QUERY_JUNCTIONS.name).parse().unwrap_or(0);
+        let junc_count_a: u64 = get_a(N_INTRON_EVENTS.name).parse().unwrap_or(0);
+        let junc_count_b: u64 = get_b(N_INTRON_EVENTS.name).parse().unwrap_or(0);
 
         let differing =
             summary.observe_row(mapped_a, mapped_b, n_only_a, n_only_b, junc_count_a, junc_count_b);

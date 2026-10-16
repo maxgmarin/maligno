@@ -105,9 +105,9 @@ picks which records are converted:
 | `primary` | primary only | `sam2paf -P -U` |
 | `all` | every record | `sam2paf -U` |
 
-This also decides which alignments the per-read `n_alns_tp_p` / `n_alns_tp_s`
-counts can see. Under the default, secondaries are dropped, so `n_alns_tp_s`
-is `0`.
+This also decides which alignments the per-read `n_alns_primsupp` /
+`n_alns_secondary` counts can see. Under the default, secondaries are dropped,
+so `n_alns_secondary` is `0`.
 
 Every kept, mapped SAM/BAM record needs a `cs` tag, or an `MD` tag plus `SEQ`
 to build one from. A record with neither stops the run (see
@@ -217,8 +217,8 @@ maligno sam2paf [options] <in.sam|in.bam|->  > out.paf
 Converts SAM or BAM to PAF on stdout. Its output is byte-for-byte compatible
 with the `sam2paf` command of minimap2's `paftools.js`, with one addition: the
 transcript-strand tags `ts:A` (minimap2) and `XS:A` (STAR, HISAT2) are copied
-to the PAF record when present, so [`transcript_strand`](#transcript-strand)
-survives conversion. The input format is
+to the PAF record when present, so the [strand columns](#transcript-strand)
+survive conversion. The input format is
 detected automatically; `-` reads SAM text from stdin. `maligno sam2paf in.bam`
 gives the same bytes as `samtools view -h in.bam | maligno sam2paf -`.
 
@@ -532,10 +532,10 @@ coordinates aren't comparable; don't run it.
 
 **What a genomic junction is.** `(target_name, intron_start, intron_end,
 intron_strand)`, 0-based half-open:
-- `intron_strand` is the strand of the alignment's transcript on the
-  reference: `strand` when `transcript_strand` is `+`, the opposite when it
-  is `-`, and `*` when unknown (see [Transcript strand](#transcript-strand)).
-  Every junction of an alignment gets that alignment's intron strand.
+- `intron_strand` is the alignment's `genomic_intron_strand`: the strand of
+  its transcript on the reference, `*` when unknown (see
+  [Transcript strand](#transcript-strand)). Every junction of an alignment
+  gets that alignment's intron strand.
 - The same coordinates on `+` and `-` are **different junctions**, and `*`
   matches only `*`. Run aligners so they write the strand tags (STAR needs
   `--outSAMstrandField intronMotif`), or every junction is `*`.
@@ -574,7 +574,7 @@ used by `compare` and `toolkit paf2tables --readinfo`.
   (`AS:i`), then highest `mapq`. Full ties keep the first in input order,
   usually the aligner's own order.
 - **Every per-alignment value comes from the representative alone:**
-  `target_name`, `strand`, `transcript_strand`, `mapq`, `as_score`, `ms_score`, `aln_identity`,
+  `target_name`, `strand`, `query_transcript_strand`, `genomic_intron_strand`, `mapq`, `as_score`, `ms_score`, `aln_identity`,
   `query_aln_cov`, `query_aln_len`, `cs`, `query_junctions`,
   `genomic_junctions`, the event counts, and the spans `query_start` /
   `query_end` and `target_start` / `target_end`. So every per-side value in
@@ -590,7 +590,7 @@ used by `compare` and `toolkit paf2tables --readinfo`.
   alignments were equal on every key and input order picked one. Aligners such
   as STAR write `ms = 0` for every alignment, so `as_score` does the actual
   selection.
-- **`n_alns_tp_p` / `n_alns_tp_s`** count mapped alignments by their `tp:A`
+- **`n_alns_primsupp` / `n_alns_secondary`** count mapped alignments by their `tp:A`
   tag: `P` or `I` (primary, including supplementary) and `S` or `i`
   (secondary). Alignments without a `tp` tag count toward neither.
 - **`mapq`** is the representative alignment's mapping quality. For STAR, the common
@@ -602,28 +602,26 @@ used by `compare` and `toolkit paf2tables --readinfo`.
 
 ## Transcript strand
 
-`transcript_strand` records which way the read runs relative to the transcript
-it came from, as inferred by the aligner from the splice signals. It is a
-column of alninfo, readinfo (the representative alignment's value) and both
-per-side blocks of the comparison table (`transcript_strand_A` /
-`transcript_strand_B`).
+Two columns record the strand of the transcript a read came from, as
+inferred by the aligner from the splice signals. Each is a column of alninfo,
+readinfo (the representative alignment's value) and both per-side blocks of
+the comparison table (`_A` / `_B`). Their names say which frame they are in:
 
-| Value | Meaning |
-|---|---|
-| `+` | the read is in the transcript's sense orientation |
-| `-` | the read is antisense to the transcript |
-| `*` | unknown: no strand tag, or the record is unmapped |
+| Column | Relative to | `+` | `-` | `*` |
+|---|---|---|---|---|
+| `query_transcript_strand` | the **read** | the read is in the transcript's sense orientation | the read is antisense to the transcript | unknown: no strand tag, or unmapped |
+| `genomic_intron_strand` | the **reference** | the transcript, and so every intron of the alignment, is on the reference `+` strand | on the `-` strand | unknown |
 
 **It is relative to the read, not the reference.** The same read keeps the
 same value whichever reference, or reference orientation, it is aligned to.
 For example, aligned to HG38 a read maps to `strand` `+`; aligned to the
-reverse-complemented HG38 it maps to `strand` `-`, and its `transcript_strand`
-is the same in both. This keeps it comparable between two alignments to
-different references, like the query-space junctions.
+reverse-complemented HG38 it maps to `strand` `-`, and its
+`query_transcript_strand` is the same in both. This keeps it comparable between
+two alignments to different references, like the query-space junctions.
 
 **Where it comes from.** maligno reads one of two SAM/PAF tags:
 
-| Aligner | Tag | Tag's convention | `transcript_strand` |
+| Aligner | Tag | Tag's convention | `query_transcript_strand` |
 |---|---|---|---|
 | minimap2, splice presets (`-x splice`, `splice:hq`, `splice:sr`) | `ts:A` | relative to the read | the tag's value |
 | STAR with `--outSAMstrandField intronMotif` | `XS:A` | relative to the reference | `+` if `XS` equals the alignment `strand`, otherwise `-` |
@@ -639,13 +637,17 @@ different references, like the query-space junctions.
 - STAR writes `XS:A` only when run with `--outSAMstrandField intronMotif`.
   Without it every value is `*`.
 
-**Intron strand.** The strand of the transcript, and so of its introns, on
-the reference is `strand` when `transcript_strand` is `+`, and the opposite of
-`strand` when it is `-`. For example, `strand` `-` with `transcript_strand` `-`
-is a transcript on the reference's `+` strand.
-[`toolkit genomic-junction-compare`](#toolkit-genomic-junction-compare) reports
-this as `intron_strand`. Unlike `transcript_strand`, it is relative to the
-reference, not the read.
+**Genomic intron strand.** `genomic_intron_strand` is `strand` when
+`query_transcript_strand` is `+`, the opposite of `strand` when it is `-`, and
+`*` when either is unknown. For example, `strand` `-` with
+`query_transcript_strand` `-` is a transcript on the reference's `+` strand.
+It is relative to the reference, so use it with genomic coordinates
+(annotation strand, BED strand,
+[`toolkit genomic-junction-compare`](#toolkit-genomic-junction-compare)).
+
+For a mapped alignment, any two of `strand`, `query_transcript_strand` and
+`genomic_intron_strand` give the third. Both strand columns are written so
+each use reads one column directly.
 
 ---
 
@@ -653,8 +655,8 @@ reference, not the read.
 
 Each read in the comparison table is classified from the two sides'
 representative alignments, using `target_name`, `strand`, `cs`,
-`query_start` / `query_end`, `target_start`, `query_junctions` and
-`genomic_junctions`. These classes feed the summary statistics and
+`query_start` / `query_end`, `target_start` / `target_end` and
+`query_junctions`. These classes feed the summary statistics and
 `toolkit find-aln-diff`. The summary rows are listed in
 [compare-summary.md](output-tables/compare-summary.md).
 
@@ -741,7 +743,7 @@ with `ast.literal_eval`. An empty set is `()`. `genomic_junctions` tuples are
 ## TSV and Parquet
 
 The comparison table can be written as Parquet (`compare`'s default), gzipped
-TSV, or both, with the same 95 columns, names and order (`pd.read_parquet` is
+TSV, or both, with the same 91 columns, names and order (`pd.read_parquet` is
 a drop-in for `pd.read_csv`). Parquet is much faster to read when you only need
 a few columns. `toolkit summary` and `toolkit find-aln-diff` read either form;
 `toolkit query-junction-diff` reads Parquet only.
@@ -810,10 +812,10 @@ tsvcut "$CMP" n_query_junctions_not_shared | tail -n +2 | sort | uniq -c
 tsvwhere "$CMP" n_query_junctions_not_shared pos | tail -n +2 | wc -l
 tsvwhere "$CMP" n_query_junctions_not_shared pos \
   | awk -F'\t' 'NR==1{for(i=1;i<=NF;i++)h[$i]=i}
-                {print $h["query_name"]"\t"$h["n_query_junctions_A"]"\t"$h["n_query_junctions_B"]"\t"$h["query_junctions_only_A"]"\t"$h["query_junctions_only_B"]}' \
+                {print $h["query_name"]"\t"$h["n_intron_events_A"]"\t"$h["n_intron_events_B"]"\t"$h["query_junctions_only_A"]"\t"$h["query_junctions_only_B"]}' \
   | column -t -s $'\t' | less -S
 
-# Check column counts (alninfo 37, readinfo 37, comparison table 95)
+# Check column counts (alninfo 37, readinfo 37, comparison table 91)
 gzip -dc < "$CMP" | awk -F'\t' '{print NF}' | sort | uniq -c
 ```
 

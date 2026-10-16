@@ -62,8 +62,12 @@ pub(crate) const QUERY_START: Col = col("query_start", U64);
 pub(crate) const QUERY_END: Col = col("query_end", U64);
 pub(crate) const STRAND: Col = col("strand", Str);
 /// Transcript strand relative to the read, from `ts:A` / `XS:A` (see
-/// `paf::transcript_strand`).
-pub(crate) const TRANSCRIPT_STRAND: Col = col("transcript_strand", Str);
+/// `paf::transcript_strand`): `+` sense, `-` antisense, `*` unknown.
+pub(crate) const QUERY_TRANSCRIPT_STRAND: Col = col("query_transcript_strand", Str);
+/// Strand of the alignment's introns on the reference (`paf::intron_strand`):
+/// `strand` when `query_transcript_strand` is `+`, the opposite when `-`, `*`
+/// otherwise. Any two of `strand`, `query_transcript_strand` and this give the third.
+pub(crate) const GENOMIC_INTRON_STRAND: Col = col("genomic_intron_strand", Str);
 pub(crate) const TARGET_NAME: Col = col("target_name", Str);
 pub(crate) const TARGET_START: Col = col("target_start", U64);
 pub(crate) const TARGET_END: Col = col("target_end", U64);
@@ -85,7 +89,6 @@ pub(crate) const N_SOFTCLIP_BASES_START: Col = col("n_softclip_bases_start", U64
 pub(crate) const N_SOFTCLIP_BASES_END: Col = col("n_softclip_bases_end", U64);
 pub(crate) const N_SOFTCLIP_EVENTS: Col = col("n_softclip_events", U64);
 pub(crate) const QUERY_JUNCTIONS: Col = col("query_junctions", Str);
-pub(crate) const N_QUERY_JUNCTIONS: Col = col("n_query_junctions", U64);
 pub(crate) const GENOMIC_JUNCTIONS: Col = col("genomic_junctions", Str);
 pub(crate) const ALN_IDENTITY: Col = col("aln_identity", F64);
 pub(crate) const QUERY_ALN_LEN: Col = col("query_aln_len", U64);
@@ -103,20 +106,23 @@ pub(crate) const TARGET_START_1BASED: Col = col("target_start_1based", U64);
 
 pub(crate) const N_ALNS: Col = col("n_alns", U64);
 pub(crate) const N_ALNS_TIED_TOP_SCORE: Col = col("n_alns_tied_top_score", U64);
-pub(crate) const N_ALNS_TP_P: Col = col("n_alns_tp_p", U64);
-pub(crate) const N_ALNS_TP_S: Col = col("n_alns_tp_s", U64);
+/// Aligned rows with `tp:A` `P`/`I`: primary + supplementary.
+pub(crate) const N_ALNS_PRIMSUPP: Col = col("n_alns_primsupp", U64);
+/// Aligned rows with `tp:A` `S`/`i`: secondary.
+pub(crate) const N_ALNS_SECONDARY: Col = col("n_alns_secondary", U64);
 
 // ── Table layouts ────────────────────────────────────────────────────────────
 
-/// The alninfo table, in output order. `AlnInfo::write_row` emits its fields in
-/// this order (pinned by a test in `record.rs`).
+/// The alninfo table, in output order: the 12 PAF fields in PAF order, then the
+/// rest in the order of [`COMPARE_SIDE_COLS`]. `AlnInfo::write_row` emits its
+/// fields in this order (pinned by a test in `record.rs`).
 pub(crate) const ALNINFO_COLS: [Col; 37] = [
+    // The 12 PAF fields.
     QUERY_NAME,
     QUERY_LEN,
     QUERY_START,
     QUERY_END,
     STRAND,
-    TRANSCRIPT_STRAND,
     TARGET_NAME,
     TARGET_LEN,
     TARGET_START,
@@ -124,9 +130,19 @@ pub(crate) const ALNINFO_COLS: [Col; 37] = [
     N_RESIDUE_MATCHES,
     ALN_BLOCK_LEN,
     MAPQ,
-    MS_SCORE,
+    // Type & score.
+    TP_TAG,
     AS_SCORE,
+    MS_SCORE,
+    // Identity & coverage.
+    ALN_IDENTITY,
+    QUERY_ALN_COV,
+    QUERY_ALN_LEN,
+    // cs & strands.
     CS,
+    QUERY_TRANSCRIPT_STRAND,
+    GENOMIC_INTRON_STRAND,
+    // cs-derived event counts.
     N_MATCH_EVENTS,
     N_MATCH_BASES,
     N_SUBSTITUTION_EVENTS,
@@ -135,39 +151,49 @@ pub(crate) const ALNINFO_COLS: [Col; 37] = [
     N_INSERTION_BASES,
     N_DELETION_EVENTS,
     N_DELETION_BASES,
-    N_INTRON_EVENTS,
-    N_INTRON_BASES,
+    N_SOFTCLIP_EVENTS,
     N_SOFTCLIP_BASES_START,
     N_SOFTCLIP_BASES_END,
-    N_SOFTCLIP_EVENTS,
+    // Introns & junctions.
+    N_INTRON_EVENTS,
+    N_INTRON_BASES,
     QUERY_JUNCTIONS,
-    N_QUERY_JUNCTIONS,
-    TARGET_START_1BASED,
-    ALN_IDENTITY,
-    QUERY_ALN_LEN,
-    QUERY_ALN_COV,
     GENOMIC_JUNCTIONS,
-    TP_TAG,
+    // Convenience.
+    TARGET_START_1BASED,
 ];
 
-/// The readinfo table, in output order. `collapse_group` builds its fields in
-/// this order (pinned by a test in `readinfo.rs`).
+/// The readinfo table, in output order: the two join keys, then exactly
+/// [`COMPARE_SIDE_COLS`] (pinned by a test below), then `tp_tag`.
+/// `collapse_group` builds its fields in this order (pinned by a test in
+/// `readinfo.rs`).
 pub(crate) const READINFO_COLS: [Col; 37] = [
     QUERY_NAME,
     QUERY_LEN,
+    // Locus & span.
     TARGET_NAME,
     STRAND,
-    TRANSCRIPT_STRAND,
+    TARGET_START,
+    TARGET_END,
+    QUERY_START,
+    QUERY_END,
+    // Alignment selection & score.
     MAPQ,
+    N_ALNS,
+    N_ALNS_PRIMSUPP,
+    N_ALNS_SECONDARY,
+    N_ALNS_TIED_TOP_SCORE,
     AS_SCORE,
     MS_SCORE,
+    // Identity & coverage.
+    ALN_IDENTITY,
     QUERY_ALN_COV,
     QUERY_ALN_LEN,
-    ALN_IDENTITY,
-    QUERY_JUNCTIONS,
-    N_ALNS,
-    N_ALNS_TIED_TOP_SCORE,
-    N_QUERY_JUNCTIONS,
+    // cs & strands.
+    CS,
+    QUERY_TRANSCRIPT_STRAND,
+    GENOMIC_INTRON_STRAND,
+    // cs-derived event counts.
     N_MATCH_EVENTS,
     N_MATCH_BASES,
     N_SUBSTITUTION_EVENTS,
@@ -176,20 +202,16 @@ pub(crate) const READINFO_COLS: [Col; 37] = [
     N_INSERTION_BASES,
     N_DELETION_EVENTS,
     N_DELETION_BASES,
-    N_INTRON_EVENTS,
-    N_INTRON_BASES,
+    N_SOFTCLIP_EVENTS,
     N_SOFTCLIP_BASES_START,
     N_SOFTCLIP_BASES_END,
-    N_SOFTCLIP_EVENTS,
-    CS,
+    // Introns & junctions.
+    N_INTRON_EVENTS,
+    N_INTRON_BASES,
+    QUERY_JUNCTIONS,
     GENOMIC_JUNCTIONS,
-    QUERY_START,
-    QUERY_END,
-    TARGET_START,
-    TARGET_END,
+    // The representative alignment's PAF type.
     TP_TAG,
-    N_ALNS_TP_P,
-    N_ALNS_TP_S,
 ];
 
 // ── Comparison table ─────────────────────────────────────────────────────────
@@ -203,15 +225,15 @@ pub(crate) const COMPARE_KEY_COLS: [Col; 4] = [QUERY_NAME, QUERY_LEN, LABEL_A, L
 /// The per-side columns, each emitted once suffixed `_A` and once `_B`, read out
 /// of each side's readinfo row by name.
 ///
-/// This order is deliberately different from [`READINFO_COLS`]. It is grouped by
-/// topic (locus, alignment selection, identity/coverage, junction counts,
-/// cs-derived event counts, and the three long strings last) so the comparison
-/// table is readable via `head -1 | tr '\t' '\n' | nl`. Do not "resync" the two.
+/// Grouped by topic (locus, alignment selection, identity/coverage, `cs` and
+/// strands, cs-derived event counts, introns and junctions) so the comparison
+/// table is readable via `head -1 | tr '\t' '\n' | nl`. readinfo carries the
+/// same columns in the same order (columns 3–36), and alninfo follows this
+/// order after its 12 PAF fields.
 pub(crate) const COMPARE_SIDE_COLS: [Col; 34] = [
     // Locus & span.
     TARGET_NAME,
     STRAND,
-    TRANSCRIPT_STRAND,
     TARGET_START,
     TARGET_END,
     QUERY_START,
@@ -219,8 +241,8 @@ pub(crate) const COMPARE_SIDE_COLS: [Col; 34] = [
     // Alignment selection & score.
     MAPQ,
     N_ALNS,
-    N_ALNS_TP_P,
-    N_ALNS_TP_S,
+    N_ALNS_PRIMSUPP,
+    N_ALNS_SECONDARY,
     N_ALNS_TIED_TOP_SCORE,
     AS_SCORE,
     MS_SCORE,
@@ -228,10 +250,10 @@ pub(crate) const COMPARE_SIDE_COLS: [Col; 34] = [
     ALN_IDENTITY,
     QUERY_ALN_COV,
     QUERY_ALN_LEN,
-    // Junction counts.
-    N_QUERY_JUNCTIONS,
-    N_INTRON_EVENTS,
-    N_INTRON_BASES,
+    // cs & strands.
+    CS,
+    QUERY_TRANSCRIPT_STRAND,
+    GENOMIC_INTRON_STRAND,
     // cs-derived event counts.
     N_MATCH_EVENTS,
     N_MATCH_BASES,
@@ -244,10 +266,11 @@ pub(crate) const COMPARE_SIDE_COLS: [Col; 34] = [
     N_SOFTCLIP_EVENTS,
     N_SOFTCLIP_BASES_START,
     N_SOFTCLIP_BASES_END,
-    // Long strings last — these dominate the table's on-disk size.
+    // Introns & junctions.
+    N_INTRON_EVENTS,
+    N_INTRON_BASES,
     QUERY_JUNCTIONS,
     GENOMIC_JUNCTIONS,
-    CS,
 ];
 
 pub(crate) const STRAND_MATCH: Col = col("strand_match", Bool);
@@ -259,18 +282,14 @@ pub(crate) const MS_SCORE_DIFF: Col = col("ms_score_diff", I64);
 pub(crate) const AS_SCORE_RATIO: Col = col("as_score_ratio", F64);
 pub(crate) const MS_SCORE_RATIO: Col = col("ms_score_ratio", F64);
 pub(crate) const N_SUBSTITUTION_BASES_DIFF: Col = col("n_substitution_bases_diff", I64);
-pub(crate) const N_SUBSTITUTION_BASES_RATIO: Col = col("n_substitution_bases_ratio", F64);
 pub(crate) const N_INSERTION_BASES_DIFF: Col = col("n_insertion_bases_diff", I64);
-pub(crate) const N_INSERTION_BASES_RATIO: Col = col("n_insertion_bases_ratio", F64);
 pub(crate) const N_DELETION_BASES_DIFF: Col = col("n_deletion_bases_diff", I64);
-pub(crate) const N_DELETION_BASES_RATIO: Col = col("n_deletion_bases_ratio", F64);
 pub(crate) const N_SOFTCLIP_BASES_START_DIFF: Col = col("n_softclip_bases_start_diff", I64);
 pub(crate) const N_SOFTCLIP_BASES_END_DIFF: Col = col("n_softclip_bases_end_diff", I64);
 pub(crate) const N_QUERY_JUNCTIONS_SHARED: Col = col("n_query_junctions_shared", U64);
 pub(crate) const N_QUERY_JUNCTIONS_NOT_SHARED: Col = col("n_query_junctions_not_shared", U64);
 pub(crate) const N_QUERY_JUNCTIONS_ONLY_A: Col = col("n_query_junctions_only_A", U64);
 pub(crate) const N_QUERY_JUNCTIONS_ONLY_B: Col = col("n_query_junctions_only_B", U64);
-pub(crate) const QUERY_JUNCTION_POS_DISTANCE: Col = col("query_junction_pos_distance", U64);
 pub(crate) const QUERY_JUNCTIONS_ONLY_A: Col = col("query_junctions_only_A", Str);
 pub(crate) const QUERY_JUNCTIONS_ONLY_B: Col = col("query_junctions_only_B", Str);
 
@@ -281,7 +300,7 @@ pub(crate) const QUERY_JUNCTIONS_ONLY_B: Col = col("query_junctions_only_B", Str
 ///
 /// `AlignmentDiff::values()` and `write_tsv_row` both emit in this order; the
 /// Parquet round-trip test in `parquet_out.rs` checks them against each other.
-pub(crate) const COMPARE_DIFF_COLS: [Col; 23] = [
+pub(crate) const COMPARE_DIFF_COLS: [Col; 19] = [
     // Orientation & identity.
     STRAND_MATCH,
     ALN_IDENTITY_DIFF,
@@ -294,11 +313,8 @@ pub(crate) const COMPARE_DIFF_COLS: [Col; 23] = [
     MS_SCORE_RATIO,
     // Event-count diffs.
     N_SUBSTITUTION_BASES_DIFF,
-    N_SUBSTITUTION_BASES_RATIO,
     N_INSERTION_BASES_DIFF,
-    N_INSERTION_BASES_RATIO,
     N_DELETION_BASES_DIFF,
-    N_DELETION_BASES_RATIO,
     N_SOFTCLIP_BASES_START_DIFF,
     N_SOFTCLIP_BASES_END_DIFF,
     // Query-space junction set comparison.
@@ -306,7 +322,6 @@ pub(crate) const COMPARE_DIFF_COLS: [Col; 23] = [
     N_QUERY_JUNCTIONS_NOT_SHARED,
     N_QUERY_JUNCTIONS_ONLY_A,
     N_QUERY_JUNCTIONS_ONLY_B,
-    QUERY_JUNCTION_POS_DISTANCE,
     // Object columns at the very end (the actual non-overlapping junctions, as
     // opposed to just their counts above).
     QUERY_JUNCTIONS_ONLY_A,
@@ -347,7 +362,8 @@ pub(crate) const CLASSIFY_SIDE_COLS: [Col; 8] = [
 // see `junction::GenomicJunction`.
 
 /// Strand of an alignment's introns on the reference (`paf::intron_strand`):
-/// `+`, `-`, `*`. Reference-relative, unlike the read-relative `TRANSCRIPT_STRAND`.
+/// `+`, `-`, `*`: the per-junction table's name for a junction's
+/// [`GENOMIC_INTRON_STRAND`], next to `intron_start` / `intron_end`.
 pub(crate) const INTRON_STRAND: Col = col("intron_strand", Str);
 /// Number of genomic junctions in one side's representative alignment.
 pub(crate) const N_JUNCTIONS: Col = col("n_junctions", U64);
@@ -372,7 +388,7 @@ pub(crate) const MOTIF_B: Col = col("motif_B", Str);
 
 /// The per-side comparison-table columns `genomic-junction-compare` reads.
 pub(crate) const GJC_INPUT_SIDE_COLS: [Col; 5] =
-    [TARGET_NAME, TARGET_START, STRAND, TRANSCRIPT_STRAND, CS];
+    [TARGET_NAME, TARGET_START, STRAND, GENOMIC_INTRON_STRAND, CS];
 
 /// Header of `{prefix}.genomic_junction_compare.per_read.tsv.gz`, in output order:
 /// A's locus and strands, then B's, the junction counts, the full junction and
@@ -381,7 +397,7 @@ pub(crate) fn gjc_per_read_header() -> Vec<String> {
     let pair = |c: Col| [sided(c, SIDE_A), sided(c, SIDE_B)];
     let mut h = vec![QUERY_NAME.name.to_string()];
     for side in [SIDE_A, SIDE_B] {
-        h.extend([TARGET_NAME, STRAND, INTRON_STRAND].map(|c| sided(c, side)));
+        h.extend([TARGET_NAME, STRAND, GENOMIC_INTRON_STRAND].map(|c| sided(c, side)));
     }
     h.extend(pair(N_JUNCTIONS));
     for c in [N_JUNCTIONS_SHARED, N_JUNCTIONS_NOT_SHARED, N_JUNCTIONS_ONLY_A, N_JUNCTIONS_ONLY_B] {
@@ -510,26 +526,40 @@ mod tests {
     }
 
     #[test]
-    fn compare_side_block_is_readinfo_minus_the_join_keys_and_tp_tag() {
-        // Every readinfo column except query_name/query_len (the join keys) and
-        // tp_tag appears once per side.
-        assert_eq!(COMPARE_SIDE_COLS.len(), READINFO_COLS.len() - 3);
-        assert!(!COMPARE_SIDE_COLS.contains(&TP_TAG));
+    fn readinfo_is_the_join_keys_then_the_compare_side_block_then_tp_tag() {
+        assert_eq!(READINFO_COLS[..2], [QUERY_NAME, QUERY_LEN]);
+        assert_eq!(READINFO_COLS[2..36], COMPARE_SIDE_COLS);
+        assert_eq!(READINFO_COLS[36], TP_TAG);
+    }
+
+    #[test]
+    fn alninfo_is_the_paf_fields_then_the_compare_side_order() {
+        let names: Vec<&str> = ALNINFO_COLS[..12].iter().map(|c| c.name).collect();
+        assert_eq!(names, [
+            "query_name", "query_len", "query_start", "query_end", "strand", "target_name",
+            "target_len", "target_start", "target_end", "n_residue_matches", "aln_block_len", "mapq",
+        ]);
+        // The rest keeps the side block's relative order.
+        let side_order: Vec<usize> = ALNINFO_COLS[12..]
+            .iter()
+            .filter_map(|c| COMPARE_SIDE_COLS.iter().position(|s| s == c))
+            .collect();
+        assert!(side_order.windows(2).all(|w| w[0] < w[1]), "alninfo is out of side-block order");
     }
 
     #[test]
     fn index_of_finds_columns_by_name() {
         assert_eq!(index_of(&ALNINFO_COLS, QUERY_NAME), 0);
-        assert_eq!(index_of(&ALNINFO_COLS, TP_TAG), 36);
-        assert_eq!(index_of(&ALNINFO_COLS, TRANSCRIPT_STRAND), index_of(&ALNINFO_COLS, STRAND) + 1);
-        assert_eq!(index_of(&READINFO_COLS, N_ALNS_TP_S), 36);
+        assert_eq!(index_of(&ALNINFO_COLS, TP_TAG), 12);
+        assert_eq!(index_of(&ALNINFO_COLS, GENOMIC_INTRON_STRAND), index_of(&ALNINFO_COLS, CS) + 2);
+        assert_eq!(index_of(&READINFO_COLS, TP_TAG), 36);
     }
 
     #[test]
     fn compare_header_is_keys_then_a_then_b_then_diff() {
         let h = compare_header();
         assert_eq!(h.len(), N_COMPARE_COLS);
-        assert_eq!(h.len(), 95);
+        assert_eq!(h.len(), 91);
         assert_eq!(h[4], sided(TARGET_NAME, SIDE_A));
         assert_eq!(h[4 + COMPARE_SIDE_COLS.len()], sided(TARGET_NAME, SIDE_B));
     }

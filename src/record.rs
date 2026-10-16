@@ -2,7 +2,7 @@ use std::io::Write;
 
 use crate::columns::{header_line, ALNINFO_COLS};
 use crate::cs_parser::{parse_cs, CsStats};
-use crate::paf::PafRecord;
+use crate::paf::{intron_strand, PafRecord};
 
 /// Escape TSV field value: replace newlines, carriage returns, and tabs
 /// to prevent breaking TSV format when fields contain special characters.
@@ -23,8 +23,6 @@ pub struct AlnInfo {
     pub query_start:         u64,
     pub query_end:           u64,
     pub strand:              char,
-    /// Transcript strand relative to the read (`ts:A` / `XS:A`); '*' if unknown.
-    pub transcript_strand:   char,
     pub target_name:         String,
     pub target_len:          u64,
     pub target_start:        u64,
@@ -32,6 +30,11 @@ pub struct AlnInfo {
     pub num_residue_matches: u64,
     pub aln_block_len:       u64,
     pub mapq:                u32,
+    // ── Strands ───────────────────────────────────────────────────────────
+    /// Transcript strand relative to the read (`ts:A` / `XS:A`); '*' if unknown.
+    pub query_transcript_strand: char,
+    /// Strand of the introns on the reference (`paf::intron_strand`); '*' if unknown.
+    pub genomic_intron_strand:   char,
     // ── Optional tags ─────────────────────────────────────────────────────
     pub ms:                  i64,
     pub aln_score:           i64,
@@ -52,7 +55,6 @@ pub struct AlnInfo {
     pub n_softclipped_events:      u32,
     /// Splice junction query-coordinate positions, plus-strand adjusted, sorted ascending.
     pub junctions:                Vec<i64>,
-    pub splice_junction_count:    usize,
     // ── Derived scalars ───────────────────────────────────────────────────
     pub target_start_1based:  u64,
     pub seqid:                f64,
@@ -124,8 +126,6 @@ impl AlnInfo {
             v
         };
 
-        let splice_junction_count = junctions.len();
-
         // ── Genomic junctions ─────────────────────────────────────────────
         // Convert ref-relative (start, end) from the cs walk to absolute reference
         // coords by adding target_start. Embed target_name as the chrom in each tuple
@@ -156,7 +156,6 @@ impl AlnInfo {
             query_start:         rec.query_start,
             query_end:           rec.query_end,
             strand:              rec.strand,
-            transcript_strand:   rec.transcript_strand,
             target_name:         rec.target_name.to_owned(),
             target_len:          rec.target_len,
             target_start:        rec.target_start,
@@ -164,6 +163,8 @@ impl AlnInfo {
             num_residue_matches: rec.num_residue_matches,
             aln_block_len:       rec.aln_block_len,
             mapq:                rec.mapq,
+            query_transcript_strand: rec.transcript_strand,
+            genomic_intron_strand:   intron_strand(rec.strand, rec.transcript_strand),
             ms:                  rec.ms,
             aln_score:           rec.aln_score,
             cs:                  rec.cs.to_owned(),
@@ -181,7 +182,6 @@ impl AlnInfo {
             n_softclipped_bases_end:   sc_end,
             n_softclipped_events,
             junctions,
-            splice_junction_count,
             target_start_1based,
             seqid,
             query_aln_len,
@@ -199,39 +199,36 @@ impl AlnInfo {
     /// Write one TSV data row, fields in `ALNINFO_COLS` order (pinned by
     /// `write_row_matches_the_alninfo_columns`).
     pub fn write_row<W: Write>(&self, w: &mut W) -> std::io::Result<()> {
-        let escaped_cs = escape_tsv_field(&self.cs);
+        // The 12 PAF fields, tp_tag, scores, identity & coverage.
         write!(w,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
-             {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t",
             self.query_name,
-            self.query_len, self.query_start, self.query_end, self.strand, self.transcript_strand,
+            self.query_len, self.query_start, self.query_end, self.strand,
             self.target_name,
             self.target_len, self.target_start, self.target_end,
             self.num_residue_matches, self.aln_block_len, self.mapq,
-            self.ms, self.aln_score, escaped_cs,
+            self.tp_tag, self.aln_score, self.ms,
+            fmt_float(self.seqid), fmt_float(self.query_aln_cov), self.query_aln_len,
+        )?;
+        // cs & strands, cs-derived event counts, introns.
+        write!(w,
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t",
+            escape_tsv_field(&self.cs), self.query_transcript_strand, self.genomic_intron_strand,
             self.n_match_events,        self.n_match_bases,
             self.n_substitution_events, self.n_substitution_bases,
             self.n_insertion_events,    self.n_insertion_bases,
             self.n_deletion_events,     self.n_deletion_bases,
-            self.n_splice_junction_events, self.n_splice_junction_bases,
-            self.n_softclipped_bases_start, self.n_softclipped_bases_end,
             self.n_softclipped_events,
+            self.n_softclipped_bases_start, self.n_softclipped_bases_end,
+            self.n_splice_junction_events, self.n_splice_junction_bases,
         )?;
 
         // junctions: Python's str(tuple) format
         write_junction_tuple(w, &self.junctions)?;
-
-        write!(w, "\t{}\t{}\t{}\t{}\t{}\t",
-            self.splice_junction_count,
-            self.target_start_1based,
-            fmt_float(self.seqid),
-            self.query_aln_len,
-            fmt_float(self.query_aln_cov),
-        )?;
-
+        write!(w, "\t")?;
         // genomic_junctions: nested Python tuple format with chrom embedded
         write_genomic_junction_tuple(w, &self.genomic_junctions)?;
-        write!(w, "\t{}", self.tp_tag)?;
+        write!(w, "\t{}", self.target_start_1based)?;
         writeln!(w)
     }
 }
@@ -421,6 +418,23 @@ mod tests {
         assert!(a.seqid.is_nan(), "identity is undefined without an alignment");
     }
 
+    // ── the two strand columns ───────────────────────────────────────────────
+
+    #[test]
+    fn strands_are_read_relative_and_reference_relative() {
+        let base = "read1\t100\t0\t100\t-\tchr1\t1000\t200\t300\t100\t100\t60\tcs:Z::100";
+        // Antisense read on '-': the transcript (and its introns) are on '+'.
+        let a = aln(&format!("{base}\tts:A:-"));
+        assert_eq!((a.query_transcript_strand, a.genomic_intron_strand), ('-', '+'));
+        // Sense read on '-': on '-'.
+        let a = aln(&format!("{base}\tts:A:+"));
+        assert_eq!((a.query_transcript_strand, a.genomic_intron_strand), ('+', '-'));
+        // No tag, or unmapped: unknown.
+        assert_eq!(aln(base).genomic_intron_strand, '*');
+        let u = aln("read1\t67\t0\t0\t*\t*\t0\t0\t0\t0\t0\t0");
+        assert_eq!((u.query_transcript_strand, u.genomic_intron_strand), ('*', '*'));
+    }
+
     // ── the row lines up with ALNINFO_COLS ───────────────────────────────────
 
     #[test]
@@ -430,31 +444,33 @@ mod tests {
         // position cannot match by accident.
         let a = AlnInfo {
             query_name: "read7".into(), query_len: 101, query_start: 2, query_end: 99,
-            strand: '-', transcript_strand: '+', target_name: "chr9".into(), target_len: 5000,
+            strand: '-', target_name: "chr9".into(), target_len: 5000,
             target_start: 200, target_end: 1300, num_residue_matches: 90,
-            aln_block_len: 95, mapq: 42, ms: 77, aln_score: 66, cs: ":10".into(),
+            aln_block_len: 95, mapq: 42, query_transcript_strand: '-', genomic_intron_strand: '+',
+            ms: 77, aln_score: 66, cs: ":10".into(),
             n_match_events: 11, n_match_bases: 12, n_substitution_events: 13,
             n_substitution_bases: 14, n_insertion_events: 15, n_insertion_bases: 16,
             n_deletion_events: 17, n_deletion_bases: 18, n_splice_junction_events: 19,
             n_splice_junction_bases: 20, n_softclipped_bases_start: 21,
             n_softclipped_bases_end: 22, n_softclipped_events: 2,
-            junctions: vec![5, 6], splice_junction_count: 3, target_start_1based: 201,
+            junctions: vec![5, 6], target_start_1based: 201,
             seqid: 0.5, query_aln_len: 97, query_aln_cov: 0.25,
             genomic_junctions: vec![("chr9".into(), 300, 400)], tp_tag: 'S',
         };
         let expected: [(Col, &str); 37] = [
             (QUERY_NAME, "read7"), (QUERY_LEN, "101"), (QUERY_START, "2"), (QUERY_END, "99"),
-            (STRAND, "-"), (TRANSCRIPT_STRAND, "+"), (TARGET_NAME, "chr9"), (TARGET_LEN, "5000"),
+            (STRAND, "-"), (TARGET_NAME, "chr9"), (TARGET_LEN, "5000"),
             (TARGET_START, "200"), (TARGET_END, "1300"), (N_RESIDUE_MATCHES, "90"),
-            (ALN_BLOCK_LEN, "95"), (MAPQ, "42"), (MS_SCORE, "77"), (AS_SCORE, "66"), (CS, ":10"),
+            (ALN_BLOCK_LEN, "95"), (MAPQ, "42"), (TP_TAG, "S"), (AS_SCORE, "66"), (MS_SCORE, "77"),
+            (ALN_IDENTITY, "0.5"), (QUERY_ALN_COV, "0.25"), (QUERY_ALN_LEN, "97"),
+            (CS, ":10"), (QUERY_TRANSCRIPT_STRAND, "-"), (GENOMIC_INTRON_STRAND, "+"),
             (N_MATCH_EVENTS, "11"), (N_MATCH_BASES, "12"), (N_SUBSTITUTION_EVENTS, "13"),
             (N_SUBSTITUTION_BASES, "14"), (N_INSERTION_EVENTS, "15"), (N_INSERTION_BASES, "16"),
             (N_DELETION_EVENTS, "17"), (N_DELETION_BASES, "18"),
+            (N_SOFTCLIP_EVENTS, "2"), (N_SOFTCLIP_BASES_START, "21"), (N_SOFTCLIP_BASES_END, "22"),
             (N_INTRON_EVENTS, "19"), (N_INTRON_BASES, "20"),
-            (N_SOFTCLIP_BASES_START, "21"), (N_SOFTCLIP_BASES_END, "22"),
-            (N_SOFTCLIP_EVENTS, "2"), (QUERY_JUNCTIONS, "(5, 6)"), (N_QUERY_JUNCTIONS, "3"),
-            (TARGET_START_1BASED, "201"), (ALN_IDENTITY, "0.5"), (QUERY_ALN_LEN, "97"),
-            (QUERY_ALN_COV, "0.25"), (GENOMIC_JUNCTIONS, "((300, 400),)"), (TP_TAG, "S"),
+            (QUERY_JUNCTIONS, "(5, 6)"), (GENOMIC_JUNCTIONS, "((300, 400),)"),
+            (TARGET_START_1BASED, "201"),
         ];
         let mut buf = Vec::new();
         a.write_row(&mut buf).unwrap();

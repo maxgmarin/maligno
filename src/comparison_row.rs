@@ -34,7 +34,7 @@ use crate::columns::{
 };
 use crate::io_utils::{escape_tsv_field, fmt_float};
 use crate::junction::{
-    format_junction_tuple, junction_distance, junction_set_diffs, junction_set_stats,
+    format_junction_tuple, junction_set_diffs, junction_set_stats,
     parse_junction_str,
 };
 
@@ -55,15 +55,6 @@ const I_JUNCTIONS: usize = index_of(&COMPARE_SIDE_COLS, QUERY_JUNCTIONS);
 /// arithmetic, so a bare float division would render `inf` for every read whose
 /// denominator side scored 0, where this renders `NaN`.
 fn ratio_i64(num: i64, den: i64) -> f64 {
-    if den == 0 {
-        f64::NAN
-    } else {
-        num as f64 / den as f64
-    }
-}
-
-/// Unsigned counterpart of [`ratio_i64`], with the same zero-denominator rule.
-fn ratio_u64(num: u64, den: u64) -> f64 {
     if den == 0 {
         f64::NAN
     } else {
@@ -154,18 +145,14 @@ pub(crate) struct AlignmentDiff {
     pub(crate) as_ratio: f64,
     pub(crate) ms_ratio: f64,
     pub(crate) n_sub_bases_diff: i64,
-    pub(crate) n_sub_bases_ratio: f64,
     pub(crate) n_ins_bases_diff: i64,
-    pub(crate) n_ins_bases_ratio: f64,
     pub(crate) n_del_bases_diff: i64,
-    pub(crate) n_del_bases_ratio: f64,
     pub(crate) n_sc_start_diff: i64,
     pub(crate) n_sc_end_diff: i64,
     pub(crate) n_matched_junctions: u64,
     pub(crate) n_unmatched_junctions: u64,
     pub(crate) n_junctions_only_a: u64,
     pub(crate) n_junctions_only_b: u64,
-    pub(crate) junction_distance: u64,
     pub(crate) junctions_only_a: String,
     pub(crate) junctions_only_b: String,
 }
@@ -190,18 +177,14 @@ impl AlignmentDiff {
             as_ratio: ratio_i64(mb.aln_score, ma.aln_score),
             ms_ratio: ratio_i64(mb.ms, ma.ms),
             n_sub_bases_diff: mb.n_sub_bases as i64 - ma.n_sub_bases as i64,
-            n_sub_bases_ratio: ratio_u64(mb.n_sub_bases, ma.n_sub_bases),
             n_ins_bases_diff: mb.n_ins_bases as i64 - ma.n_ins_bases as i64,
-            n_ins_bases_ratio: ratio_u64(mb.n_ins_bases, ma.n_ins_bases),
             n_del_bases_diff: mb.n_del_bases as i64 - ma.n_del_bases as i64,
-            n_del_bases_ratio: ratio_u64(mb.n_del_bases, ma.n_del_bases),
             n_sc_start_diff: mb.n_sc_start as i64 - ma.n_sc_start as i64,
             n_sc_end_diff: mb.n_sc_end as i64 - ma.n_sc_end as i64,
             n_matched_junctions: n_matched,
             n_unmatched_junctions: n_only_a + n_only_b,
             n_junctions_only_a: n_only_a,
             n_junctions_only_b: n_only_b,
-            junction_distance: junction_distance(&juncs_a, &juncs_b),
             junctions_only_a: format_junction_tuple(&j_only_a_vec),
             junctions_only_b: format_junction_tuple(&j_only_b_vec),
         }
@@ -225,7 +208,7 @@ pub(crate) enum DiffValue<'a> {
 }
 
 impl AlignmentDiff {
-    /// The 23 comparison values in `COMPARE_DIFF_COLS` order.
+    /// The 19 comparison values in `COMPARE_DIFF_COLS` order.
     pub(crate) fn values(&self) -> Vec<DiffValue<'_>> {
         use DiffValue::*;
         vec![
@@ -241,11 +224,8 @@ impl AlignmentDiff {
             F64(self.ms_ratio),
             // Event-count diffs.
             I64(self.n_sub_bases_diff),
-            F64(self.n_sub_bases_ratio),
             I64(self.n_ins_bases_diff),
-            F64(self.n_ins_bases_ratio),
             I64(self.n_del_bases_diff),
-            F64(self.n_del_bases_ratio),
             I64(self.n_sc_start_diff),
             I64(self.n_sc_end_diff),
             // Query-space junction set comparison.
@@ -253,7 +233,6 @@ impl AlignmentDiff {
             U64(self.n_unmatched_junctions),
             U64(self.n_junctions_only_a),
             U64(self.n_junctions_only_b),
-            U64(self.junction_distance),
             // Object lists last.
             Str(&self.junctions_only_a),
             Str(&self.junctions_only_b),
@@ -328,25 +307,21 @@ impl<'r> ComparisonRow<'r> {
         // Event-count diffs.
         write!(
             out,
-            "\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "\t{}\t{}\t{}\t{}\t{}",
             d.n_sub_bases_diff,
-            fmt_float(d.n_sub_bases_ratio),
             d.n_ins_bases_diff,
-            fmt_float(d.n_ins_bases_ratio),
             d.n_del_bases_diff,
-            fmt_float(d.n_del_bases_ratio),
             d.n_sc_start_diff,
             d.n_sc_end_diff,
         )?;
         // Query-space junction set comparison.
         write!(
             out,
-            "\t{}\t{}\t{}\t{}\t{}",
+            "\t{}\t{}\t{}\t{}",
             d.n_matched_junctions,
             d.n_unmatched_junctions,
             d.n_junctions_only_a,
             d.n_junctions_only_b,
-            d.junction_distance,
         )?;
         // Object lists last.
         write!(
@@ -400,7 +375,7 @@ mod tests {
         AlignmentDiff::compute(&side(a), &side(b))
     }
 
-    /// Render one full row and split it into its 95 fields.
+    /// Render one full row and split it into its 91 fields.
     fn render(a: &[(&str, &'static str)], b: &[(&str, &'static str)]) -> Vec<String> {
         let mut buf: Vec<u8> = Vec::new();
         ComparisonRow::build("read1", 100, "SetA", "SetB", |c| lookup(a, c), |c| lookup(b, c))
@@ -419,7 +394,7 @@ mod tests {
         s.trim_end_matches('\n').split('\t').map(String::from).collect()
     }
 
-    /// Index of an output column in the 95-column header.
+    /// Index of an output column in the 91-column header.
     fn col(name: &str) -> usize {
         header_fields()
             .iter()
@@ -433,7 +408,7 @@ mod tests {
     fn header_and_row_field_counts_agree() {
         let h = header_fields();
         let r = render(&[], &[]);
-        assert_eq!(h.len(), 95, "header should have 95 columns");
+        assert_eq!(h.len(), 91, "header should have 91 columns");
         assert_eq!(
             r.len(),
             h.len(),
@@ -443,7 +418,7 @@ mod tests {
         );
         assert_eq!(
             4 + 2 * COMPARE_SIDE_COLS.len() + COMPARE_DIFF_COLS.len(),
-            95
+            91
         );
     }
 
@@ -452,18 +427,21 @@ mod tests {
         let h = header_fields();
         assert_eq!(&h[..4], &["query_name", "query_len", "label_A", "label_B"]);
         assert_eq!(h[4], "target_name_A");
-        assert_eq!(h[6], "transcript_strand_A");
-        assert_eq!(h[37], "cs_A");
+        assert_eq!(h[37], "genomic_junctions_A");
         assert_eq!(h[38], "target_name_B");
-        assert_eq!(h[40], "transcript_strand_B");
-        assert_eq!(h[71], "cs_B");
+        assert_eq!(h[71], "genomic_junctions_B");
         assert_eq!(h[72], "strand_match");
-        assert_eq!(h[94], "query_junctions_only_B");
-        // The alignment-type counts sit directly after n_alns on each side.
+        assert_eq!(h[90], "query_junctions_only_B");
         for side in ["A", "B"] {
+            // The alignment-type counts sit directly after n_alns.
             let n = col(&format!("n_alns_{side}"));
-            assert_eq!(h[n + 1], format!("n_alns_tp_p_{side}"));
-            assert_eq!(h[n + 2], format!("n_alns_tp_s_{side}"));
+            assert_eq!(h[n + 1], format!("n_alns_primsupp_{side}"));
+            assert_eq!(h[n + 2], format!("n_alns_secondary_{side}"));
+            // cs follows query_aln_len, then the two strands.
+            let l = col(&format!("query_aln_len_{side}"));
+            assert_eq!(h[l + 1], format!("cs_{side}"));
+            assert_eq!(h[l + 2], format!("query_transcript_strand_{side}"));
+            assert_eq!(h[l + 3], format!("genomic_intron_strand_{side}"));
         }
     }
 
@@ -484,7 +462,7 @@ mod tests {
         let a = [("cs", "a\tb")];
         let r = render(&a, &[]);
         assert_eq!(r[col("cs_A")], "a\\tb");
-        assert_eq!(r.len(), 95, "an embedded tab must not add a field");
+        assert_eq!(r.len(), 91, "an embedded tab must not add a field");
     }
 
     #[test]
@@ -511,36 +489,16 @@ mod tests {
         assert!(ratio_i64(5, 0).is_nan(), "5/0 must be NaN, not inf");
         assert!(ratio_i64(-5, 0).is_nan(), "-5/0 must be NaN, not -inf");
         assert!(ratio_i64(0, 0).is_nan());
-        assert!(ratio_u64(5, 0).is_nan());
-        assert!(ratio_u64(0, 0).is_nan());
         assert_eq!(fmt_float(ratio_i64(5, 0)), "NaN");
         assert_eq!(fmt_float(ratio_i64(-5, 0)), "NaN");
     }
 
     #[test]
-    fn all_four_ratio_columns_render_nan_when_the_a_side_is_zero() {
-        let a = [
-            ("as_score", "0"),
-            ("ms_score", "0"),
-            ("n_substitution_bases", "0"),
-            ("n_insertion_bases", "0"),
-            ("n_deletion_bases", "0"),
-        ];
-        let b = [
-            ("as_score", "50"),
-            ("ms_score", "60"),
-            ("n_substitution_bases", "7"),
-            ("n_insertion_bases", "8"),
-            ("n_deletion_bases", "9"),
-        ];
+    fn both_ratio_columns_render_nan_when_the_a_side_is_zero() {
+        let a = [("as_score", "0"), ("ms_score", "0")];
+        let b = [("as_score", "50"), ("ms_score", "60")];
         let r = render(&a, &b);
-        for c in [
-            "as_score_ratio",
-            "ms_score_ratio",
-            "n_substitution_bases_ratio",
-            "n_insertion_bases_ratio",
-            "n_deletion_bases_ratio",
-        ] {
+        for c in ["as_score_ratio", "ms_score_ratio"] {
             assert_eq!(r[col(c)], "NaN", "{c} should be NaN when the A side is 0");
         }
     }
