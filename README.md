@@ -137,7 +137,7 @@ A `compare` run can write the following files in the user defined output directo
 | `{prefix}.query_diff_reads.tsv.gz` | 9 | table of all reads with difference in alignment between set A and B  |
 | `{prefix}.query_diff_regions.{A,B}.bed.gz` | 10 | genomic regions where differing reads cluster, per set |
 
-Separately, **`toolkit query-junction-diff`** takes an existing
+Separately, **`toolkit query-junction-compare`** takes an existing
 `compare.parquet` (Parquet input only), selects reads whose
 **query-space** splice junctions differ, and reconstructs those junctions
 per side, paired in both query and genomic coordinate space, plus a rollup
@@ -145,16 +145,16 @@ of which specific junctions are unsupported by the other side and how many
 reads *total* (across the whole table) carry each one:
 
 ```bash
-maligno toolkit query-junction-diff \
+maligno toolkit query-junction-compare \
   -i test_data/test_results/Splice_vs_SpliceHQ.compare.parquet \
   --outdir test_data/test_results/ --prefix Splice_vs_SpliceHQ
 ```
 
 ```
-test_data/test_results/Splice_vs_SpliceHQ.query_junction_diff.summary.tsv
-test_data/test_results/Splice_vs_SpliceHQ.query_junction_diff.per_read_per_junc_info.tsv.gz
-test_data/test_results/Splice_vs_SpliceHQ.query_junction_diff.unmatched_junctions.A.tsv.gz
-test_data/test_results/Splice_vs_SpliceHQ.query_junction_diff.unmatched_junctions.B.tsv.gz
+test_data/test_results/Splice_vs_SpliceHQ.query_junction_compare.summary.tsv
+test_data/test_results/Splice_vs_SpliceHQ.query_junction_compare.per_read_per_junc_info.tsv.gz
+test_data/test_results/Splice_vs_SpliceHQ.query_junction_compare.unmatched_junctions.A.tsv.gz
+test_data/test_results/Splice_vs_SpliceHQ.query_junction_compare.unmatched_junctions.B.tsv.gz
 ```
 
 To compare A's and B's splice junctions in **genomic (reference)
@@ -213,9 +213,9 @@ zcat < test_data/test_results/Splice_vs_SpliceHQ.compare.tsv.gz \
 ## Extended documentation
 
 A per-column spec for every output file `compare`, `toolkit
-query-junction-diff` and `toolkit genomic-junction-compare` can write — alninfo,
+query-junction-compare` and `toolkit genomic-junction-compare` can write — alninfo,
 readinfo, the comparison table, the summary TSV, the diff-reads/regions tables,
-the query-junction-diff tables and the genomic-junction-compare tables — lives
+the query-junction-compare tables and the genomic-junction-compare tables — lives
 in **[`docs/output-tables/`](docs/output-tables/)**.
 
 The full manual lives in **[`docs/REFERENCE.md`](docs/REFERENCE.md)**:
@@ -267,10 +267,10 @@ The headline is the **per-read alignment status**, followed by **identity** stat
 | `present_only_in_A_by_id` / `present_only_in_B_by_id` | sequences found in only one set's PAF (will be 0 unless `--allow-id-mismatch` is used) |
 
 To get the same summary from an existing comparison table, use
-**`toolkit summary`**:
+**`toolkit compare-summary`**:
 
 ```bash
-maligno toolkit summary -i AvsB.compare.parquet -o AvsB.compare.summary.tsv
+maligno toolkit compare-summary -i AvsB.compare.parquet -o AvsB.compare.summary.tsv
 ```
 
 Full definitions are in the [reference](docs/REFERENCE.md#classification).

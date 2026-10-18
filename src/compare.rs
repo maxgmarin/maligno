@@ -14,8 +14,8 @@
 //!      requested (`--emit-alninfo` / `--emit-readinfo`; off by default).
 //!
 //! This is the porcelain over the `toolkit` plumbing subcommands
-//! (`paf2tables`, `merge-readinfo`, …): the comparison table is byte-identical
-//! to running `toolkit merge-readinfo` on the sorted readinfo files,
+//! (`paf2tables`, `compare-readinfo`, …): the comparison table is byte-identical
+//! to running `toolkit compare-readinfo` on the sorted readinfo files,
 //! and the side outputs are byte-identical to `toolkit paf2tables` on
 //! the sorted PAFs.
 //!
@@ -31,7 +31,7 @@
 //! Precondition (documented, not enforced): a `query_name` uniquely identifies a
 //! single read/sequence, so reads are sorted and matched by name alone.
 //!
-//! The lock-step merge ([`run_merge`]) is shared with `toolkit merge-readinfo`:
+//! The lock-step merge ([`run_merge`]) is shared with `toolkit compare-readinfo`:
 //! both commands feed it through the [`ReadSource`] interface (PAFs here,
 //! readinfo TSVs there), so the two produce the same alignment comparison table.
 
@@ -444,7 +444,7 @@ pub(crate) struct SourceRead {
 }
 
 /// Yields one readinfo row per read, in read-name order. `compare` reads PAFs
-/// through [`PafReadSource`]; `toolkit merge-readinfo` reads readinfo TSVs.
+/// through [`PafReadSource`]; `toolkit compare-readinfo` reads readinfo TSVs.
 pub(crate) trait ReadSource {
     /// Column names for each [`SourceRead::line`].
     fn columns(&self) -> Vec<String>;
@@ -544,7 +544,7 @@ fn compare_sorted_pafs(
     // writers are free to flush after.
     let counts = {
         let mut src_a = PafReadSource {
-            groups: PafGroups::new(a_sorted, /* warn_unsorted = */ false),
+            groups: PafGroups::new(a_sorted, /* require_sorted = */ false),
             alninfo: &mut al_a,
             readinfo: &mut ri_a,
         };
@@ -587,7 +587,7 @@ fn compare_sorted_pafs(
 }
 
 /// The lock-step merge of two read-name-sorted sources, shared by `compare` and
-/// `toolkit merge-readinfo`. Reads are matched on read name; each matched pair is
+/// `toolkit compare-readinfo`. Reads are matched on read name; each matched pair is
 /// classified, tallied into `summary`, fed to `diff_acc` when present, and written
 /// to `out` (an `io::sink()` box when the TSV is not wanted) and `parquet`.
 /// `mismatch_hint` is appended to the read-ID mismatch errors.

@@ -1,34 +1,25 @@
-//! Subcommand `paf2tables`: the primary PAF entry point.
+//! Subcommand `paf2tables`: one PAF → the per-alignment **alninfo** table (36
+//! cols), the per-read **readinfo** table (37 cols), or both in a single pass,
+//! depending on which output paths are supplied.
 //!
-//! Takes a PAF and writes the per-alignment **alninfo** table (36 cols), the
-//! per-read **readinfo** summary (37 cols), or **both in a single pass**,
-//! depending on which output paths are supplied:
+//! The input is first sorted by `query_name` in byte order, with the same
+//! external sort `compare` uses (`--sort-mem` in RAM, sorted runs spilled to
+//! `--sort-tmp-dir`). The outputs are therefore byte-identical to `compare
+//! --emit-alninfo` / `--emit-readinfo`, and the readinfo is ready for `toolkit
+//! compare-readinfo`. For SAM/BAM, convert first with `maligno sam2paf -p -U`.
 //!
-//! ```text
-//!   --alninfo  only   → stream every alignment row (no grouping required)
-//!   --readinfo only   → group by query_name, collapse to the best alignment
-//!   --alninfo+--readinfo → do both in one pass (tee alninfo while collapsing)
-//! ```
-//!
-//! This module owns the shared streaming logic; `compare --emit-alninfo` /
-//! `--emit-readinfo` produce byte-identical tables through the same code path.
-//!
-//! ## Grouping requirement
-//!
-//! readinfo correctness depends on every read's alignments being **contiguous**
-//! in the input (the same precondition `readinfo` has always had); alninfo never
-//! cares about order. By default the reader groups contiguous `query_name` runs
-//! and emits a one-shot warning if the input isn't byte-lex sorted.
-//! `--strict-grouping` adds a rigorous guard that errors if a `query_name`
-//! reappears non-contiguously (at the cost of O(#distinct reads) memory).
+//! `--presorted` skips the sort for input that is already sorted by
+//! `query_name` in byte order (`LC_ALL=C sort -t$'\t' -k1,1`), and errors as
+//! soon as a `query_name` is lower than the previous one.
 
-use std::collections::HashSet;
-use std::io::{BufRead, Write};
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
+use crate::external_sort::{parse_mem, sort_lines_to_file};
 use crate::io_utils::{open_input, open_output};
-use crate::paf::parse_line;
 use crate::paf_groups::PafGroups;
 use crate::readinfo::{collapse_group, readinfo_header};
 use crate::record::AlnInfo;
@@ -47,128 +38,204 @@ pub struct Paf2TablesArgs {
 
     /// Write the per-alignment info table (36 cols) here. '.gz' for gzip.
     /// Omit to skip the alninfo output.
-    #[arg(short = 'a', long = "alninfo", value_name = "alninfo.tsv[.gz]")]
+    #[arg(long = "alninfo", value_name = "alninfo.tsv[.gz]")]
     alninfo: Option<String>,
 
     /// Write the per-read best-alignment summary (37 cols) here. '.gz' for gzip.
-    /// Omit to skip the readinfo output. Requires the PAF be grouped by query_name.
+    /// Omit to skip the readinfo output.
     #[arg(short = 'r', long = "readinfo", value_name = "readinfo.tsv[.gz]")]
     readinfo: Option<String>,
 
-    /// Error if a query_name reappears non-contiguously (rigorous grouping check;
-    /// uses memory proportional to the number of distinct reads). Only affects
-    /// the readinfo output.
-    #[arg(long = "strict-grouping")]
-    strict_grouping: bool,
+    /// Skip the sort: the input is already sorted by query_name in byte order
+    /// (`LC_ALL=C sort -t$'\t' -k1,1`). Errors if it is not.
+    #[arg(long = "presorted", conflicts_with = "keep_sorted_paf")]
+    presorted: bool,
+
+    /// In-memory sort buffer (K/M/G suffix, or plain bytes).
+    #[arg(long = "sort-mem", value_name = "SIZE", default_value = "1G")]
+    sort_mem: String,
+
+    /// Directory for the sort's temporary spill files (default: the folder of
+    /// --readinfo, or of --alninfo when --readinfo is not given).
+    #[arg(long = "sort-tmp-dir", value_name = "DIR")]
+    tmp_dir: Option<String>,
+
+    /// Number of sort threads.
+    #[arg(long = "sort-threads", value_name = "N", default_value_t = 1)]
+    sort_threads: usize,
+
+    /// Keep the sorted PAF as `<input stem>.sorted.paf.gz` in the folder of
+    /// --readinfo (or --alninfo) instead of deleting it at the end. Needs a file
+    /// --input, not stdin.
+    #[arg(long = "keep-sorted-paf")]
+    keep_sorted_paf: bool,
 }
 
 pub fn run(args: &Paf2TablesArgs) -> Result<()> {
-    match (args.alninfo.as_deref(), args.readinfo.as_deref()) {
-        // Unreachable: clap's `outputs` ArgGroup (required = true) already rejects
-        // an invocation with neither --alninfo nor --readinfo before run() is called.
-        (None, None) => {
-            bail!(
-                "nothing to do: specify --alninfo <path> and/or --readinfo <path> \
-                 to choose which table(s) to write."
-            );
-        }
-        // alninfo-only: pure streaming, no grouping required (works on unsorted input).
-        (Some(alninfo_path), None) => {
-            let mut reader = open_input(&args.input)?;
-            let mut w = open_output(Some(alninfo_path))?;
-            stream_alninfo(&mut reader, &mut w)?;
-            w.flush()?;
-            Ok(())
-        }
-        // readinfo-only or both: group by query_name; tee alninfo when requested.
-        (alninfo_path, Some(readinfo_path)) => {
-            let reader = open_input(&args.input)?;
-            let mut readinfo_out = open_output(Some(readinfo_path))?;
-            match alninfo_path {
-                Some(p) => {
-                    let mut alninfo_out = open_output(Some(p))?;
-                    stream_readinfo(
-                        reader,
-                        &mut readinfo_out,
-                        Some(&mut *alninfo_out),
-                        args.strict_grouping,
-                    )?;
-                    alninfo_out.flush()?;
-                }
-                None => {
-                    stream_readinfo(reader, &mut readinfo_out, None, args.strict_grouping)?;
-                }
+    if args.keep_sorted_paf && args.input == "-" {
+        bail!("--keep-sorted-paf names the sorted PAF after --input, so it needs a file, not stdin ('-')");
+    }
+
+    if args.presorted {
+        return write_tables(&args.input, args, true);
+    }
+
+    // The output folder: where the kept (or temporary) sorted PAF goes, and the
+    // default --sort-tmp-dir.
+    let first_output = args.readinfo.as_deref().or(args.alninfo.as_deref()).unwrap_or("-");
+    let out_dir = output_folder(first_output);
+    let tmp_dir = args.tmp_dir.as_deref().map(PathBuf::from).unwrap_or_else(|| out_dir.clone());
+    fs::create_dir_all(&tmp_dir)
+        .with_context(|| format!("cannot create --sort-tmp-dir '{}'", tmp_dir.display()))?;
+    let mem = parse_mem(&args.sort_mem)?;
+
+    let sorted = if args.keep_sorted_paf {
+        out_dir.join(format!("{}.sorted.paf.gz", input_stem(&args.input)))
+    } else {
+        out_dir.join(format!(".paf2tables.{}.sorted.paf", std::process::id()))
+    };
+    let sorted = sorted.to_string_lossy().into_owned();
+
+    eprintln!("[INFO] sorting the input by query_name...");
+    let result = open_input(&args.input)
+        .and_then(|lines| sort_lines_to_file(lines, &sorted, mem, &tmp_dir, Some(args.sort_threads)))
+        .with_context(|| format!("sorting input ({})", args.input))
+        .and_then(|()| write_tables(&sorted, args, false));
+    if !args.keep_sorted_paf || result.is_err() {
+        let _ = fs::remove_file(&sorted);
+    }
+    result
+}
+
+/// Write the requested tables from a PAF sorted by `query_name`, in one grouped
+/// pass. Removes any partial output on failure.
+fn write_tables(paf: &str, args: &Paf2TablesArgs, require_sorted: bool) -> Result<()> {
+    let result = (|| -> Result<()> {
+        let mut alninfo_out = args.alninfo.as_deref().map(|p| open_output(Some(p))).transpose()?;
+        let mut readinfo_out = args.readinfo.as_deref().map(|p| open_output(Some(p))).transpose()?;
+        stream_tables(
+            open_input(paf)?,
+            alninfo_out.as_deref_mut().map(|w| w as &mut dyn Write),
+            readinfo_out.as_deref_mut().map(|w| w as &mut dyn Write),
+            require_sorted,
+        )
+    })();
+    if result.is_err() {
+        for p in [args.alninfo.as_deref(), args.readinfo.as_deref()].into_iter().flatten() {
+            if p != "-" {
+                let _ = fs::remove_file(p);
             }
-            readinfo_out.flush()?;
-            Ok(())
         }
     }
+    result
 }
 
-/// Stream a PAF into the alninfo table, one row per alignment, in input order.
-/// Malformed lines emit a WARNING and are skipped.
-pub(crate) fn stream_alninfo<R: BufRead, W: Write>(reader: &mut R, w: &mut W) -> Result<()> {
-    AlnInfo::write_header(w)?;
-
-    let mut line = String::with_capacity(4096);
-    let mut lineno: u64 = 0;
-    loop {
-        line.clear();
-        let n = reader.read_line(&mut line)?;
-        if n == 0 {
-            break;
-        }
-        lineno += 1;
-        let trimmed = line.trim_end_matches(|c| c == '\n' || c == '\r');
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        match parse_line(trimmed, lineno) {
-            Ok(rec) => AlnInfo::from_paf(&rec).write_row(w)?,
-            Err(e) => eprintln!("WARNING: {e}"),
-        }
-    }
-    Ok(())
-}
-
-/// Stream a PAF into the "readinfo" table by grouping contiguous `query_name`
-/// runs and collapsing each to its best alignment. If `alninfo_out` is `Some`,
-/// every alignment's alninfo row is tee'd to it in the same pass (byte-identical
-/// to the `--alninfo`-only output). With `strict_grouping`, errors if a `query_name` reappears
-/// non-contiguously.
-pub(crate) fn stream_readinfo<W: Write + ?Sized>(
-    reader: Box<dyn BufRead>,
-    readinfo_out: &mut W,
+/// Stream a PAF grouped by `query_name` into the alninfo table (every alignment,
+/// in input order) and/or the readinfo table (each group collapsed to its
+/// representative alignment). Malformed lines emit a WARNING and are skipped.
+pub(crate) fn stream_tables(
+    reader: Box<dyn std::io::BufRead>,
     mut alninfo_out: Option<&mut dyn Write>,
-    strict_grouping: bool,
+    mut readinfo_out: Option<&mut dyn Write>,
+    require_sorted: bool,
 ) -> Result<()> {
     if let Some(w) = alninfo_out.as_deref_mut() {
         AlnInfo::write_header(w)?;
     }
-    writeln!(readinfo_out, "{}", readinfo_header())?;
-
-    let mut groups = PafGroups::new(reader, /* warn_unsorted = */ true);
-    let mut seen: Option<HashSet<String>> = if strict_grouping {
-        Some(HashSet::new())
-    } else {
-        None
-    };
-
-    while let Some(mut group) = groups.next_group_tee(&mut alninfo_out)? {
-        if let Some(seen) = seen.as_mut() {
-            // group is non-empty by construction; first row carries the name.
-            let name = group[0].query_name();
-            if !seen.insert(name.to_owned()) {
-                bail!(
-                    "read {name:?} appears non-contiguously; input PAF is not \
-                     grouped by query_name. Pre-sort with \
-                     `LC_ALL=C sort -t$'\\t' -k1,1`, or drop --strict-grouping to \
-                     group only contiguous runs.",
-                );
-            }
-        }
-        collapse_group(&mut group).write(readinfo_out)?;
+    if let Some(w) = readinfo_out.as_deref_mut() {
+        writeln!(w, "{}", readinfo_header())?;
     }
 
+    let mut groups = PafGroups::new(reader, require_sorted);
+    while let Some(mut group) = groups.next_group_tee(&mut alninfo_out)? {
+        if let Some(w) = readinfo_out.as_deref_mut() {
+            collapse_group(&mut group).write(w)?;
+        }
+    }
+    if let Some(w) = alninfo_out {
+        w.flush()?;
+    }
+    if let Some(w) = readinfo_out {
+        w.flush()?;
+    }
     Ok(())
+}
+
+/// The folder an output path is written into (`.` for stdout or a bare name).
+fn output_folder(path: &str) -> PathBuf {
+    match Path::new(path).parent() {
+        Some(p) if path != "-" && !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => PathBuf::from("."),
+    }
+}
+
+/// The input file name without its folder and its `.gz` and `.paf` extensions.
+fn input_stem(path: &str) -> String {
+    let name = Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = name.strip_suffix(".gz").unwrap_or(&name);
+    name.strip_suffix(".paf").unwrap_or(name).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufReader, Cursor};
+
+    fn paf_line(name: &str, tstart: u64) -> String {
+        format!("{name}\t100\t0\t100\t+\tchr1\t1000\t{tstart}\t{}\t100\t100\t60\ttp:A:P\tcs:Z::100\n", tstart + 100)
+    }
+
+    fn run_stream(paf: &str, require_sorted: bool) -> Result<(String, String)> {
+        let reader: Box<dyn std::io::BufRead> = Box::new(BufReader::new(Cursor::new(paf.to_owned())));
+        let (mut aln, mut ri) = (Vec::new(), Vec::new());
+        stream_tables(reader, Some(&mut aln), Some(&mut ri), require_sorted)?;
+        Ok((String::from_utf8(aln)?, String::from_utf8(ri)?))
+    }
+
+    #[test]
+    fn presorted_input_must_be_in_byte_order() {
+        let sorted = [paf_line("r1", 0), paf_line("r1", 500), paf_line("r2", 0)].concat();
+        let (aln, ri) = run_stream(&sorted, true).unwrap();
+        assert_eq!(aln.lines().count(), 4);
+        assert_eq!(ri.lines().count(), 3);
+
+        // Grouped but not in byte order.
+        let unsorted = [paf_line("r2", 0), paf_line("r1", 0)].concat();
+        let err = run_stream(&unsorted, true).unwrap_err().to_string();
+        assert!(err.contains("not sorted by query_name"), "{err}");
+
+        // A read whose rows are split up.
+        let split = [paf_line("r1", 0), paf_line("r2", 0), paf_line("r1", 500)].concat();
+        assert!(run_stream(&split, true).is_err());
+    }
+
+    #[test]
+    fn alninfo_keeps_every_row_in_input_order() {
+        let paf = [paf_line("r1", 0), paf_line("r1", 500), paf_line("r2", 0)].concat();
+        let reader: Box<dyn std::io::BufRead> = Box::new(BufReader::new(Cursor::new(paf)));
+        let mut aln = Vec::new();
+        stream_tables(reader, Some(&mut aln), None, true).unwrap();
+        let starts: Vec<String> = String::from_utf8(aln)
+            .unwrap()
+            .lines()
+            .skip(1)
+            .map(|l| l.split('\t').nth(7).unwrap().to_string())
+            .collect();
+        assert_eq!(starts, ["0", "500", "0"]);
+    }
+
+    #[test]
+    fn input_stem_drops_folder_and_extensions() {
+        assert_eq!(input_stem("/a/b/reads.paf.gz"), "reads");
+        assert_eq!(input_stem("reads.paf"), "reads");
+        assert_eq!(input_stem("x.sorted.paf.gz"), "x.sorted");
+        assert_eq!(input_stem("reads"), "reads");
+    }
+
+    #[test]
+    fn output_folder_defaults_to_cwd() {
+        assert_eq!(output_folder("-"), PathBuf::from("."));
+        assert_eq!(output_folder("ri.tsv.gz"), PathBuf::from("."));
+        assert_eq!(output_folder("out/ri.tsv.gz"), PathBuf::from("out"));
+    }
 }

@@ -3,7 +3,7 @@
 `{prefix}.compare.summary.tsv` — aggregate summary statistics over the
 comparison table, tallied as `compare` streams its rows (constant memory).
 2 columns: `category`, `count`. The same schema is written by
-`toolkit summary` (computed from an existing `compare.tsv`/`.parquet`)
+`toolkit compare-summary` (computed from an existing `compare.tsv`/`.parquet`)
 and, with `space`/`compare_by` rows added after `label_A`/`label_B`, by
 `toolkit find-aln-diff`.
 
@@ -28,7 +28,7 @@ Every `category` below is one **row** in the file, in this order:
 | `ref_same_position_diff_aln` | Same position, different `cs` |
 | `ref_diff_position_same_aln` | Same `cs`, different position — relocated |
 | `ref_diff_position_diff_aln` | Both position and `cs` differ |
-| `present_only_in_A_by_id` | Read present only in input A (`compare` and `toolkit merge-readinfo` only; `0` unless `--allow-id-mismatch`) |
+| `present_only_in_A_by_id` | Read present only in input A (`compare` and `toolkit compare-readinfo` only; `0` unless `--allow-id-mismatch`) |
 | `present_only_in_B_by_id` | Read present only in input B |
 
 **Notes**

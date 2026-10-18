@@ -2,7 +2,7 @@
 # -----------------------------------------------------------------------------
 # Check how many read names two readinfo tables share.
 #
-# Use it when `toolkit merge-readinfo` reports fewer `reads_compared` than
+# Use it when `toolkit compare-readinfo` reports fewer `reads_compared` than
 # expected: if `reads_compared` is lower than the shared count printed here, the
 # two files are not sorted by query_name in the same byte order.
 #
@@ -45,12 +45,12 @@ Read-name overlap
   read names in B:      $n_b
   shared read names:    $n_shared
 
-  ⇒ \`toolkit merge-readinfo\`'s reads_compared should equal $n_shared. If it is lower,
+  ⇒ \`toolkit compare-readinfo\`'s reads_compared should equal $n_shared. If it is lower,
     the two files are not sorted by query_name in the same byte order. Re-sort each with:
 
         LC_ALL=C sort -t\$'\\t' -k1,1 input.readinfo.tsv > sorted.tsv
         # (keep the header separately)
 
-    or regenerate both from PAFs sorted with \`LC_ALL=C sort -t\$'\\t' -k1,1\`
-    using \`toolkit paf2tables --readinfo\`.
+    or regenerate both with \`toolkit paf2tables --readinfo\`, which sorts the PAF
+    by query_name itself.
 EOF

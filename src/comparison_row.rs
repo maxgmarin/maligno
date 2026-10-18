@@ -20,7 +20,7 @@
 //! **The per-side columns are transported as `&str`, not re-rendered from parsed
 //! values.** That is load-bearing for two reasons. First, the writer loops over
 //! `COMPARE_SIDE_COLS` exactly as the header does, so the two cannot drift apart.
-//! Second, `toolkit merge-readinfo` accepts user-written TSVs: re-rendering would turn
+//! Second, `toolkit compare-readinfo` accepts user-written TSVs: re-rendering would turn
 //! `1e-05` into `0.00001`, `+5` into `5`, and would fabricate `0` where an empty
 //! cell passes through. Most of these columns feed no computation at all;
 //! parsing them would be a lossy operation performed for looks.

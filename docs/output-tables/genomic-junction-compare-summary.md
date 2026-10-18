@@ -38,6 +38,6 @@ Every `category` below is one **row**, in this order:
 - "Identical" is set equality only; it doesn't require the alignments to
   start at the same position. Position is covered by the `ref_*` rows of
   [compare-summary.md](compare-summary.md).
-- The distinct-junction counts differ from query-junction-diff's
+- The distinct-junction counts differ from query-junction-compare's
   `n_unique_junctions_*`, which key junctions by alignment strand instead of
   intron strand.

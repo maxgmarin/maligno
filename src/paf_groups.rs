@@ -21,7 +21,7 @@
 
 use std::io::{BufRead, Write};
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 
 use crate::paf::parse_line;
 use crate::readinfo::{parse_aln_row, AlnRow};
@@ -39,13 +39,16 @@ pub(crate) struct PafGroups<R: BufRead> {
     serialize_buf: Vec<u8>,  // reusable AlnInfo::write_row target
     pending: Option<AlnRow>, // first row of the next group (lookahead)
     eof: bool,
-    warn_unsorted: bool,     // emit the readinfo-style lex-decrease warning once
-    warned: bool,
-    last_group_name: Option<String>, // last yielded group's query_name (for the warning)
+    require_sorted: bool,    // error if query_name ever decreases in byte order
+    last_group_name: Option<String>, // last yielded group's query_name (for the order check)
 }
 
 impl<R: BufRead> PafGroups<R> {
-    pub(crate) fn new(reader: R, warn_unsorted: bool) -> Self {
+    /// With `require_sorted`, [`next_group_tee`](Self::next_group_tee) errors as
+    /// soon as a group's `query_name` is lower in byte order than the previous
+    /// group's. Any read whose rows are not contiguous trips this check, in O(1)
+    /// memory.
+    pub(crate) fn new(reader: R, require_sorted: bool) -> Self {
         PafGroups {
             reader,
             lineno: 0,
@@ -53,8 +56,7 @@ impl<R: BufRead> PafGroups<R> {
             serialize_buf: Vec::with_capacity(512),
             pending: None,
             eof: false,
-            warn_unsorted,
-            warned: false,
+            require_sorted,
             last_group_name: None,
         }
     }
@@ -129,19 +131,15 @@ impl<R: BufRead> PafGroups<R> {
 
         let group_name = first.query_name().to_owned();
 
-        // One-shot byte-lex-decrease warning across group boundaries.
-        if self.warn_unsorted && !self.warned {
+        // Byte-order check across group boundaries.
+        if self.require_sorted {
             if let Some(prev) = &self.last_group_name {
                 if group_name.as_bytes() < prev.as_bytes() {
-                    eprintln!(
-                        "WARNING: input PAF is not byte-lex sorted by query_name \
-                         (saw {prev:?} then {group_name:?}). Grouping by *contiguous* \
-                         query_name runs still works, but the downstream `compare` \
-                         step requires byte-lex sort. To pre-sort:\n\
-                         \n\
-                         \tLC_ALL=C sort -t$'\\t' -k1,1 in.paf > sorted.paf\n"
+                    bail!(
+                        "input PAF is not sorted by query_name in byte order (saw \
+                         {prev:?} then {group_name:?}); drop --presorted to let \
+                         maligno sort it"
                     );
-                    self.warned = true;
                 }
             }
         }

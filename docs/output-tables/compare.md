@@ -3,7 +3,7 @@
 `{prefix}.compare.parquet` (default) and/or `{prefix}.compare.tsv.gz` — one row per
 read, 93 columns: both sides' representative-alignment stats plus a computed
 A-vs-B comparison block. This is the **primary output** of `compare` (and of
-`toolkit merge-readinfo`, which produces the identical table from
+`toolkit compare-readinfo`, which produces the identical table from
 readinfo TSVs directly).
 
 Columns are organized in groups, left to right:

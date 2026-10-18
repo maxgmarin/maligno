@@ -1,7 +1,7 @@
-# `query_junction_diff.summary.tsv`
+# `query_junction_compare.summary.tsv`
 
-`{prefix}.query_junction_diff.summary.tsv` — read-selection funnel counts, then
-distinct-junction counts per side, written by `toolkit query-junction-diff`
+`{prefix}.query_junction_compare.summary.tsv` — read-selection funnel counts, then
+distinct-junction counts per side, written by `toolkit query-junction-compare`
 over an existing `compare.parquet`. Always uncompressed. 2 columns:
 `category`, `count`.
 
@@ -15,7 +15,7 @@ Every `category` below is one **row** in the file, in this order:
 | `n_neither_aligned` | Excluded: unmapped on both sides |
 | `n_both_aligned_query_junctions_identical` | Excluded: mapped both sides, query-space junction sets match (`n_query_junctions_only_A == 0 && n_query_junctions_only_B == 0`) |
 | `n_aligned_only_no_junctions` | Excluded: mapped on exactly one side, but that side has zero splice junctions — nothing to report |
-| `n_query_junctions_different` | Selected — these reads got full junction reconstruction, written to [`query_junction_diff.per_read_per_junc_info.tsv.gz`](per-read-query-junction-diff.md) |
+| `n_query_junctions_different` | Selected — these reads got full junction reconstruction, written to [`query_junction_compare.per_read_per_junc_info.tsv.gz`](per-read-query-junction-compare.md) |
 | `n_query_junctions_different_aligned_both` | ...of those, mapped on both sides with differing query-space junction sets |
 | `n_query_junctions_different_aligned_only_A` | ...of those, mapped only in A, with `n_intron_events_A > 0` |
 | `n_query_junctions_different_aligned_only_B` | ...of those, mapped only in B, with `n_intron_events_B > 0` |
@@ -24,7 +24,7 @@ Every `category` below is one **row** in the file, in this order:
 | `n_unique_junctions_shared` | Distinct junctions present on both sides, anywhere in the table |
 | `n_unique_junctions_only_A` | Distinct junctions on side A that appear in no side-B alignment |
 | `n_unique_junctions_only_B` | Distinct junctions on side B that appear in no side-A alignment |
-| `n_unmatched_junctions_A` | Rows in [`unmatched_junctions.A.tsv.gz`](query-junction-diff-unmatched.md): distinct side-A junctions unmatched within at least one differing read |
+| `n_unmatched_junctions_A` | Rows in [`unmatched_junctions.A.tsv.gz`](query-junction-compare-unmatched.md): distinct side-A junctions unmatched within at least one differing read |
 | `n_unmatched_junctions_B` | Rows in `unmatched_junctions.B.tsv.gz` |
 
 **Invariants**

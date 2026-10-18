@@ -62,16 +62,16 @@ pub struct GenomicJunctionCompareArgs {
     input_format: InputFormat,
 
     /// Output directory (created if it does not exist).
-    #[arg(long = "outdir", value_name = "DIR")]
+    #[arg(short = 'o', long = "outdir", value_name = "DIR")]
     outdir: String,
 
     /// Filename prefix for all outputs.
-    #[arg(long = "prefix", value_name = "STR")]
+    #[arg(short = 'p', long = "prefix", value_name = "STR")]
     prefix: String,
 }
 
 /// A `target_name` value indicates an unmapped read when it is empty or `"*"`
-/// (same convention as `compare_summary` and `query_junction_diff`).
+/// (same convention as `compare_summary` and `query_junction_compare`).
 #[inline]
 fn is_mapped(target_name: &str) -> bool {
     !(target_name.is_empty() || target_name == "*")

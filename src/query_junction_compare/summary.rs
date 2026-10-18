@@ -1,4 +1,4 @@
-//! Summary counts for `query-junction-diff`: the read-selection funnel (every
+//! Summary counts for `query-junction-compare`: the read-selection funnel (every
 //! row read from the input table lands in exactly one bucket), then pass 2's
 //! distinct-junction counts.
 

@@ -1,7 +1,7 @@
 //! Parquet output for the comparison table.
 //!
 //! Selected by `compare --format tsv|parquet|both` (default `parquet`), and by
-//! `toolkit merge-readinfo -o x.parquet`, which picks Parquet from
+//! `toolkit compare-readinfo -o x.parquet`, which picks Parquet from
 //! the extension.
 //!
 //! Why it exists: the comparison table is written once and re-read many times —
@@ -292,8 +292,8 @@ impl<W: Write + Send> ComparisonParquetWriter<W> {
 ///
 /// The `#[default]` variant (`parquet`) is the single source of truth for the
 /// CLI default: `compare`'s `--format` uses a bare `default_value_t`, which
-/// takes `OutputFormat::default()`. `find-aln-diff`, `toolkit summary`,
-/// `toolkit query-junction-diff` and `toolkit genomic-junction-compare` all read Parquet, so a Parquet-only run works
+/// takes `OutputFormat::default()`. `find-aln-diff`, `toolkit compare-summary`,
+/// `toolkit query-junction-compare` and `toolkit genomic-junction-compare` all read Parquet, so a Parquet-only run works
 /// standalone with each of them; pass `--format tsv` (or `both`) for the
 /// gzipped TSV.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]

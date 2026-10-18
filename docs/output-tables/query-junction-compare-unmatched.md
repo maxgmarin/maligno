@@ -1,15 +1,15 @@
-# `query_junction_diff.unmatched_junctions.{A,B}.tsv`
+# `query_junction_compare.unmatched_junctions.{A,B}.tsv`
 
-`{prefix}.query_junction_diff.unmatched_junctions.A.tsv.gz` /
-`{prefix}.query_junction_diff.unmatched_junctions.B.tsv.gz` — distinct genomic splice
+`{prefix}.query_junction_compare.unmatched_junctions.A.tsv.gz` /
+`{prefix}.query_junction_compare.unmatched_junctions.B.tsv.gz` — distinct genomic splice
 junctions, per side, that were never matched on the other side, with how many
 reads support each — plus how many reads *total*, across the whole
 comparison table, carry that same junction on this side. Written by
-`toolkit query-junction-diff`, one file per side (mirrors the
+`toolkit query-junction-compare`, one file per side (mirrors the
 `query_diff_regions.{A,B}.bed.gz` per-side-file convention).
 
 Columns 1–5 roll up the `matched_in_genomic == false` rows of
-[`query_junction_diff.per_read_per_junc_info.tsv.gz`](per-read-query-junction-diff.md)
+[`query_junction_compare.per_read_per_junc_info.tsv.gz`](per-read-query-junction-compare.md)
 for that side, grouped by `(chrom, genomic_start, genomic_end, strand)`. The A
 file covers junctions called in A but unsupported by B, and the B file the
 reverse. Column 6 counts how many reads in the whole comparison table carry the
@@ -43,7 +43,7 @@ same junction on this side.
   never shows up anywhere else in the dataset.
 - For scale, the number of rows in each file and the total number of distinct
   junctions per side are in
-  [`query_junction_diff.summary.tsv`](query-junction-diff-summary.md)
+  [`query_junction_compare.summary.tsv`](query-junction-compare-summary.md)
   (`n_unmatched_junctions_{A,B}` and `n_unique_junctions_{A,B}`).
 - Side is fixed by the filename, not a column — "A unsupported by B" and "B
   unsupported by A" at the same coordinates are different, non-interchangeable

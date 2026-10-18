@@ -6,8 +6,9 @@ alignments.
 
 Produced by `toolkit paf2tables --readinfo` and, opt-in, by
 `compare --emit-readinfo` (once per side). Off by default in `compare`.
-Requires the PAF be grouped by `query_name` (contiguous runs); built by the
-**readinfo collapse** step shared by both commands.
+Both commands sort the PAF by `query_name` first, so rows come in that order;
+each read's alignments are reduced by the **readinfo collapse** step shared by
+both commands.
 
 **Representative-alignment selection**: within a read's group of alignments,
 the representative is the one with the highest `ms_score`, ties broken by

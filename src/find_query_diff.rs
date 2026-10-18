@@ -1,4 +1,4 @@
-//! `find-aln-diff` — from a `compare` / `toolkit merge-readinfo`
+//! `find-aln-diff` — from a `compare` / `toolkit compare-readinfo`
 //! table, find every read whose alignment differs between sets A and B, in
 //! query space or reference space, and the genomic regions where those reads
 //! cluster.
@@ -47,7 +47,7 @@
 //!   2. `{prefix}.{stem}_regions.A.bed[.gz]`  — merged A-coordinate loci
 //!   3. `{prefix}.{stem}_regions.B.bed[.gz]`  — merged B-coordinate loci
 //!   4. `{prefix}.{stem}_summary.tsv`         — the same category-tally schema
-//!      `compare`/`toolkit summary` write (`CompareSummary::rows()`),
+//!      `compare`/`toolkit compare-summary` write (`CompareSummary::rows()`),
 //!      with `space`/`compare_by` provenance rows prepended, so all three
 //!      commands share one column layout. Its counters are mode-independent
 //!      (always the raw `classify()` output) — mode-specific behavior only
@@ -125,11 +125,11 @@ pub struct FindAlnDiffArgs {
     space: DiffSpace,
 
     /// Output directory (created if it does not exist).
-    #[arg(long = "outdir", value_name = "DIR")]
+    #[arg(short = 'o', long = "outdir", value_name = "DIR")]
     outdir: String,
 
     /// Filename prefix for all outputs.
-    #[arg(long = "prefix", value_name = "STR")]
+    #[arg(short = 'p', long = "prefix", value_name = "STR")]
     prefix: String,
 
     /// Do not gzip the read and region output tables (gzipped by default).
@@ -474,7 +474,7 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
     };
 
     // The one, mode-independent summary — same schema `compare`/
-    // `toolkit summary` write (see the module doc comment).
+    // `toolkit compare-summary` write (see the module doc comment).
     let mut summary = CompareSummary::default();
 
     // ── Pass 1: stream rows → read TSV + differing-interval vectors ────────────
@@ -489,7 +489,7 @@ pub fn run(args: &FindAlnDiffArgs) -> Result<()> {
 
         // `base` is the raw, mode-independent classification — observed as-is
         // into `summary` so its meaning matches `compare`'s and
-        // `toolkit summary`'s (always "query+all" semantics).
+        // `toolkit compare-summary`'s (always "query+all" semantics).
         let base = classify(&get_a, &get_b);
         summary.observe(&base);
 

@@ -1,4 +1,4 @@
-//! `toolkit merge-readinfo`: two readinfo tables → the alignment comparison table.
+//! `toolkit compare-readinfo`: two readinfo tables → the alignment comparison table.
 //!
 //! The pairing, classification and row writing are `compare`'s own
 //! ([`crate::compare::run_merge`]); this module only supplies a readinfo-TSV
@@ -40,7 +40,7 @@ pub(crate) fn validate_set_label(s: &str) -> Result<String, String> {
 }
 
 #[derive(clap::Args, Debug)]
-pub struct MergeReadinfoArgs {
+pub struct CompareReadinfoArgs {
     /// Readinfo TSV A (must be sorted by query_name)
     #[arg(short = 'a', long = "readinfo-a", value_name = "readinfo_a.tsv[.gz]")]
     pub readinfo_a: String,
@@ -204,7 +204,7 @@ impl ReadSource for TsvReadSource {
 
 // ── Command ─────────────────────────────────────────────────────────────────
 
-pub fn run(args: &MergeReadinfoArgs) -> Result<()> {
+pub fn run(args: &CompareReadinfoArgs) -> Result<()> {
     eprintln!("[INFO] Opening readinfo files...");
     eprintln!("  A: {}", args.readinfo_a);
     eprintln!("  B: {}", args.readinfo_b);
@@ -279,7 +279,7 @@ mod tests {
 
     fn write_tsv_with_header(name: &str, header: &str, rows: &[&str]) -> String {
         let path = std::env::temp_dir().join(format!(
-            "maligno_test_merge_readinfo_{}_{name}.tsv",
+            "maligno_test_compare_readinfo_{}_{name}.tsv",
             std::process::id()
         ));
         let pad = "\t".repeat(header.split('\t').count() - 3);
@@ -293,8 +293,8 @@ mod tests {
         path.to_string_lossy().into_owned()
     }
 
-    fn args(a: &str, b: &str, out: &str, allow_id_mismatch: bool) -> MergeReadinfoArgs {
-        MergeReadinfoArgs {
+    fn args(a: &str, b: &str, out: &str, allow_id_mismatch: bool) -> CompareReadinfoArgs {
+        CompareReadinfoArgs {
             readinfo_a: a.to_string(),
             readinfo_b: b.to_string(),
             label_a: "A".to_string(),

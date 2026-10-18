@@ -340,7 +340,7 @@ pub(crate) fn compare_header() -> Vec<String> {
 }
 
 /// The per-side columns the read classifier (`compare_summary::classify`) and
-/// `find-aln-diff`'s interval builder read. `toolkit summary` and
+/// `find-aln-diff`'s interval builder read. `toolkit compare-summary` and
 /// `find-aln-diff` resolve exactly these, per side, from a comparison table.
 pub(crate) const CLASSIFY_SIDE_COLS: [Col; 8] = [
     TARGET_NAME,
@@ -448,8 +448,8 @@ pub(crate) const CLASSIFICATION_COLS: [&str; 7] = [
 
 // ── Summary tables ───────────────────────────────────────────────────────────
 
-/// Header of the two-column summary tables (`compare`, `toolkit summary`,
-/// `find-aln-diff`, `query-junction-diff`).
+/// Header of the two-column summary tables (`compare`, `toolkit compare-summary`,
+/// `find-aln-diff`, `query-junction-compare`).
 pub(crate) const SUMMARY_HEADER: [&str; 2] = ["category", "count"];
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

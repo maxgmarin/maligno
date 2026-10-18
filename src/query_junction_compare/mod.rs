@@ -1,4 +1,4 @@
-//! `query-junction-diff` — from a `compare` / `toolkit merge-readinfo`
+//! `query-junction-compare` — from a `compare` / `toolkit compare-readinfo`
 //! table, reconstruct each differing read's splice junctions on both sides
 //! (A/B), paired correctly in query and genomic coordinate space, and report
 //! which junctions are unsupported by the other side.
@@ -15,12 +15,13 @@
 //! from `cs`, with a single stable sort permutation applied to the query and
 //! genomic vectors together.
 //!
-//! **Why "query-junction-diff"**: read selection is anchored at the
-//! **query** coordinate space — a read counts as differing based on its
-//! query-space junction sets (`n_query_junctions_only_A`/`n_query_junctions_only_B`), not a
-//! genomic-space comparison. The genomic coordinates reported alongside each
-//! junction are the reconstructed pairing, not an independent selection
-//! criterion.
+//! **Read selection is in query space**: a read counts as differing based on
+//! its query-space junction sets (`n_query_junctions_only_A`/`n_query_junctions_only_B`),
+//! not a genomic-space comparison. The genomic coordinates reported alongside
+//! each junction are the reconstructed pairing, not an independent selection
+//! criterion. Unlike `genomic-junction-compare`, which writes a row for every
+//! read with a junction on either side, only the differing reads are
+//! reconstructed.
 //!
 //! A read counts as "differing" (and gets full junction reconstruction) iff:
 //!   - mapped on both sides, and its query-space junction sets differ
@@ -33,16 +34,16 @@
 //! still tallied in the summary).
 //!
 //! Outputs (to `--outdir`, `--prefix`-named):
-//!   1. `{prefix}.query_junction_diff.summary.tsv`                    — read-selection
+//!   1. `{prefix}.query_junction_compare.summary.tsv`                    — read-selection
 //!      funnel counts, then distinct-junction counts per side (unique, shared,
 //!      only-A/only-B, unmatched) from pass 2 (always uncompressed).
-//!   2. `{prefix}.query_junction_diff.per_read_per_junc_info.tsv.gz` — one row per
+//!   2. `{prefix}.query_junction_compare.per_read_per_junc_info.tsv.gz` — one row per
 //!      reconstructed junction per side per differing read (always gzipped).
-//!   3. `{prefix}.query_junction_diff.unmatched_junctions.A.tsv.gz`  — distinct
+//!   3. `{prefix}.query_junction_compare.unmatched_junctions.A.tsv.gz`  — distinct
 //!      genomic junctions called in A that were never matched in B, with how
 //!      many reads support each, plus how many reads *total* (across the
 //!      whole table) carry that junction on side A (always gzipped).
-//!   4. `{prefix}.query_junction_diff.unmatched_junctions.B.tsv.gz`  — same,
+//!   4. `{prefix}.query_junction_compare.unmatched_junctions.B.tsv.gz`  — same,
 //!      for B.
 //!
 //! **Two-pass design.** Pass 1 (above) reconstructs junctions only for the
@@ -98,28 +99,28 @@ fn is_mapped(target_chr: &str) -> bool {
 /// Reconstruct each differing read's splice junctions on both sides, from a
 /// comparison table (Parquet), not the original PAFs.
 #[derive(clap::Args, Debug)]
-pub struct QueryJunctionDiffArgs {
+pub struct QueryJunctionCompareArgs {
     /// Alignment comparison table in Parquet format
     #[arg(short = 'i', long = "input", value_name = "compare.parquet")]
     input: String,
 
     /// Output directory (created if it does not exist).
-    #[arg(long = "outdir", value_name = "DIR")]
+    #[arg(short = 'o', long = "outdir", value_name = "DIR")]
     outdir: String,
 
     /// Filename prefix for all outputs.
-    #[arg(long = "prefix", value_name = "STR")]
+    #[arg(short = 'p', long = "prefix", value_name = "STR")]
     prefix: String,
 }
 
 /// The per-side columns pass 1 reads, resolved for each side up front.
 const SIDE_COLS: [Col; 7] = [CS, STRAND, QUERY_START, QUERY_END, TARGET_START, TARGET_NAME, N_INTRON_EVENTS];
 
-pub fn run(args: &QueryJunctionDiffArgs) -> Result<()> {
+pub fn run(args: &QueryJunctionCompareArgs) -> Result<()> {
     if !args.input.ends_with(".parquet") {
         bail!(
             "--input must be a Parquet file ('.parquet') — got '{}'. \
-             query-junction-diff doesn't support TSV input.",
+             query-junction-compare doesn't support TSV input.",
             args.input
         );
     }
@@ -128,10 +129,10 @@ pub fn run(args: &QueryJunctionDiffArgs) -> Result<()> {
     fs::create_dir_all(outdir).with_context(|| format!("cannot create --outdir '{}'", args.outdir))?;
 
     let path = |name: String| outdir.join(name).to_string_lossy().into_owned();
-    let summary_out = path(format!("{}.query_junction_diff.summary.tsv", args.prefix));
-    let per_read_out = path(format!("{}.query_junction_diff.per_read_per_junc_info.tsv.gz", args.prefix));
-    let unmatched_a_out = path(format!("{}.query_junction_diff.unmatched_junctions.A.tsv.gz", args.prefix));
-    let unmatched_b_out = path(format!("{}.query_junction_diff.unmatched_junctions.B.tsv.gz", args.prefix));
+    let summary_out = path(format!("{}.query_junction_compare.summary.tsv", args.prefix));
+    let per_read_out = path(format!("{}.query_junction_compare.per_read_per_junc_info.tsv.gz", args.prefix));
+    let unmatched_a_out = path(format!("{}.query_junction_compare.unmatched_junctions.A.tsv.gz", args.prefix));
+    let unmatched_b_out = path(format!("{}.query_junction_compare.unmatched_junctions.B.tsv.gz", args.prefix));
 
     let wanted = wanted_columns(
         &[QUERY_NAME, QUERY_LEN, LABEL_A, LABEL_B, N_QUERY_JUNCTIONS_ONLY_A, N_QUERY_JUNCTIONS_ONLY_B],
@@ -291,7 +292,7 @@ pub fn run(args: &QueryJunctionDiffArgs) -> Result<()> {
     summary.write_tsv(&summary_out, &label_a, &label_b)?;
 
     eprintln!(
-        "Query junction diff (A={label_a}, B={label_b}): {} of {} reads had differing query junctions",
+        "Query junction compare (A={label_a}, B={label_b}): {} of {} reads had differing query junctions",
         summary.n_query_junctions_different(),
         summary.n_total()
     );

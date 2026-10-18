@@ -6,10 +6,10 @@
 //!   1. Built into `compare`: each matched read is `observe`d as its row streams
 //!      out (O(1) memory — only counters are kept), and the summary is written as
 //!      `{prefix}.compare.summary.tsv` plus an stderr block.
-//!   2. The `toolkit summary` command: streams an existing comparison
-//!      table (`compare` / `toolkit merge-readinfo` output) row-by-row
+//!   2. The `toolkit compare-summary` command: streams an existing comparison
+//!      table (`compare` / `toolkit compare-readinfo` output) row-by-row
 //!      and emits the same summary. Serves the manual `toolkit
-//!      paf2tables` → `toolkit merge-readinfo` workflow.
+//!      paf2tables` → `toolkit compare-readinfo` workflow.
 //!
 //! `classify` reads per-side values by **unsuffixed** readinfo column name through
 //! two accessor closures, resolving them via a name→index map, so it is insensitive
@@ -321,7 +321,7 @@ impl CompareSummary {
     /// the two label provenance rows and any caller-supplied `extra`
     /// provenance rows (e.g. `find-aln-diff`'s `space`/`compare_by`), so the
     /// file is self-describing. This is the single column layout shared by
-    /// `compare`, `toolkit summary`, and `find-aln-diff` — pass `&[]`
+    /// `compare`, `toolkit compare-summary`, and `find-aln-diff` — pass `&[]`
     /// for no extra rows.
     pub fn write_tsv(
         &self,
@@ -376,7 +376,7 @@ impl CompareSummary {
     }
 }
 
-// ── `toolkit summary` command ──────────────────────────────────────────
+// ── `toolkit compare-summary` command ──────────────────────────────────────────
 
 #[derive(clap::Args, Debug)]
 pub struct CompareSummaryArgs {
@@ -397,7 +397,7 @@ pub struct CompareSummaryArgs {
 }
 
 /// Confirm a compare-table header uses the fixed `_A` / `_B` side suffixes.
-/// Shared by `toolkit summary`, `find-aln-diff` and `query-junction-diff`.
+/// Shared by `toolkit compare-summary`, `find-aln-diff` and `query-junction-compare`.
 pub(crate) fn require_ab_schema(cols: &[&str]) -> Result<()> {
     let (a, b) = (sided(TARGET_NAME, SIDE_A), sided(TARGET_NAME, SIDE_B));
     if cols.contains(&a.as_str()) && cols.contains(&b.as_str()) {

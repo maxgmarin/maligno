@@ -12,10 +12,10 @@ see [`docs/output-tables/`](output-tables/README.md).
   - [`compare`](#compare): end-to-end comparison of two alignment files (primary entry point)
   - [`sam2paf`](#sam2paf): SAM/BAM → PAF converter
   - [`toolkit paf2tables`](#toolkit-paf2tables): PAF → alninfo and/or readinfo tables
-  - [`toolkit merge-readinfo`](#toolkit-merge-readinfo): two readinfo tables → comparison table
-  - [`toolkit summary`](#toolkit-summary): comparison table → summary statistics
+  - [`toolkit compare-readinfo`](#toolkit-compare-readinfo): two readinfo tables → comparison table
+  - [`toolkit compare-summary`](#toolkit-compare-summary): comparison table → summary statistics
   - [`toolkit find-aln-diff`](#toolkit-find-aln-diff): comparison table → differing reads and regions
-  - [`toolkit query-junction-diff`](#toolkit-query-junction-diff): comparison table → per-read splice-junction diff
+  - [`toolkit query-junction-compare`](#toolkit-query-junction-compare): comparison table → per-read splice junctions of the reads whose query-space junctions differ
   - [`toolkit genomic-junction-compare`](#toolkit-genomic-junction-compare): comparison table → A-vs-B junctions in reference coordinates, with strand and motifs
 - Shared definitions
   - [Representative alignment](#representative-alignment)
@@ -52,24 +52,32 @@ they carry the same reads, and writes a results directory.
 maligno compare -a A.bam -b B.bam --label-a A --label-b B --outdir results/ --prefix AvsB
 ```
 
-**2. Building blocks:** `toolkit paf2tables`, then `toolkit merge-readinfo`.
-You sort the inputs yourself and keep the intermediate per-read tables.
+**2. Building blocks:** `toolkit paf2tables`, then `toolkit compare-readinfo`.
+You keep the intermediate per-read tables. `paf2tables` reads PAF, so SAM/BAM
+is converted first with `sam2paf -p -U`, the same records `compare` keeps by
+default.
 
 ```
-  A.paf ──paf2tables──▶ A.readinfo.tsv ─┐
-                                         ├─ merge-readinfo ─▶ compare.tsv
-  B.paf ──paf2tables──▶ B.readinfo.tsv ─┘
+  A.sam|bam ──sam2paf -p -U──▶ A.paf ──paf2tables──▶ A.readinfo.tsv ─┐
+                                                                     ├─ compare-readinfo ─▶ compare.tsv
+  B.sam|bam ──sam2paf -p -U──▶ B.paf ──paf2tables──▶ B.readinfo.tsv ─┘
+```
+
+```bash
+maligno sam2paf -p -U A.bam | maligno toolkit paf2tables -i - --readinfo A.readinfo.tsv.gz
+maligno sam2paf -p -U B.bam | maligno toolkit paf2tables -i - --readinfo B.readinfo.tsv.gz
+maligno toolkit compare-readinfo -a A.readinfo.tsv.gz -b B.readinfo.tsv.gz --label-a A --label-b B -o AvsB.compare.parquet
 ```
 
 Either way, the comparison table can then be analysed further with
-`toolkit summary`, `toolkit find-aln-diff`, `toolkit query-junction-diff` and
+`toolkit compare-summary`, `toolkit find-aln-diff`, `toolkit query-junction-compare` and
 `toolkit genomic-junction-compare`.
 
 **Input and output conventions.** Inputs and outputs ending in `.gz` are
 read and written as gzip; `.gz` inputs may be single-member gzip or
 multi-member (bgzip, pigz). Most commands accept `-` for stdin/stdout. The
 exceptions are `compare`'s `-a`/`-b` (real file paths only), Parquet inputs
-(real file paths only), and `toolkit query-junction-diff` (Parquet only).
+(real file paths only), and `toolkit query-junction-compare` (Parquet only).
 
 **Read identity.** maligno matches alignments across files by read name
 (`query_name` in PAF, `QNAME` in SAM/BAM), so each name must identify one
@@ -255,47 +263,48 @@ minimap2's default. Don't compare it against a PAF made with
 ## `toolkit paf2tables`
 
 ```bash
-maligno toolkit paf2tables -i <in.paf[.gz]|-> [-a/--alninfo <alninfo.tsv[.gz]>] [-r/--readinfo <readinfo.tsv[.gz]>] [--strict-grouping]
+maligno toolkit paf2tables -i <in.paf[.gz]|-> [--alninfo <alninfo.tsv[.gz]>] [-r/--readinfo <readinfo.tsv[.gz]>] \
+  [--presorted] [--sort-mem 1G] [--sort-tmp-dir DIR] [--sort-threads 1] [--keep-sorted-paf]
 ```
 
-Turns a PAF into maligno's tables, writing either or both in a single pass
-over the PAF. At least one output must be given.
+Turns a PAF into maligno's tables, writing either or both in a single pass.
+At least one output must be given.
 
 - **`--alninfo`** writes one row per PAF record (36 columns; see
   [alninfo.md](output-tables/alninfo.md)). Each record's `cs` tag is walked to
   count matches, substitutions, insertions, deletions and splice junctions;
   soft-clip lengths, junction coordinates and identity/coverage are derived
-  from it. Rows are written in input order with constant memory, and input
-  order doesn't matter. Unmapped records (`target_name == "*"`) get a row with
-  zeroed statistics.
+  from it. Unmapped records (`target_name == "*"`) get a row with zeroed
+  statistics.
 - **`--readinfo`** writes one row per read (37 columns; see
   [readinfo.md](output-tables/readinfo.md)): the read's
   [representative alignment](#representative-alignment) plus per-read
   aggregates.
 
-**Grouping.** `--readinfo` requires each read's records to be **contiguous**
-in the input. By default contiguous runs are grouped, and a one-time warning
-is printed if the read names are not in byte order. That catches the common
-cases (e.g. a name-sorted but not byte-sorted aligner output, or shuffled
-multi-threaded output), but a scattered read can still slip through.
-**`--strict-grouping`** turns any non-contiguous read into an error. It keeps
-the set of completed read names in memory, so memory grows with the number of
-reads.
+**Sorting.** The PAF is first sorted by `query_name` in byte order, with the
+same sort `compare` uses, so both tables are sorted by read and the readinfo
+is ready for `toolkit compare-readinfo`. The tables are identical to
+`compare --emit-alninfo` / `--emit-readinfo` for the same input.
 
-The simplest way to guarantee grouping, and the byte order
-`toolkit merge-readinfo` needs, is to sort the PAF once up front:
-
-```bash
-LC_ALL=C sort -t$'\t' -k1,1 in.paf | maligno toolkit paf2tables -i - --readinfo readinfo.tsv.gz
-gzip -dc in.paf.gz | LC_ALL=C sort -t$'\t' -k1,1 | maligno toolkit paf2tables -i - --readinfo readinfo.tsv.gz
-```
+- **`--sort-mem`** caps the memory the sort uses. Larger inputs are sorted in
+  chunks that are written to **`--sort-tmp-dir`** and merged. The default
+  directory is the folder of `--readinfo`, or of `--alninfo` when `--readinfo`
+  is not given.
+- **`--keep-sorted-paf`** keeps the sorted PAF as `<input stem>.sorted.paf.gz`
+  in that same folder, where the stem is the input file name without `.gz`
+  and `.paf`. It needs a file `--input`, not stdin.
+- **`--presorted`** skips the sort for a PAF that is already sorted by
+  `query_name` in byte order (as `LC_ALL=C sort -t$'\t' -k1,1` sorts it). The
+  order is checked as the PAF is read: the command stops with an error at the
+  first read name that is lower than the one before it, and removes the
+  partial outputs.
 
 ---
 
-## `toolkit merge-readinfo`
+## `toolkit compare-readinfo`
 
 ```bash
-maligno toolkit merge-readinfo -a/--readinfo-a <readinfo_a.tsv[.gz]> -b/--readinfo-b <readinfo_b.tsv[.gz]> \
+maligno toolkit compare-readinfo -a/--readinfo-a <readinfo_a.tsv[.gz]> -b/--readinfo-b <readinfo_b.tsv[.gz]> \
   [--label-a A] [--label-b B] -o <compare.parquet|compare.tsv[.gz]> [--allow-id-mismatch]
 ```
 
@@ -314,8 +323,8 @@ readinfo rows always carry them all.
 **Matching.** Reads are matched on **`query_name`** with a streaming merge:
 constant memory, one pass over each file. If a read's `query_len` differs between
 the two files, the output carries side A's. Both inputs must be **sorted by
-`query_name` in byte order**. Sort the PAF before `paf2tables` (see above), or
-sort existing readinfo files with the header kept on top:
+`query_name` in byte order**. `toolkit paf2tables` writes them that way. Sort
+readinfo files from elsewhere with the header kept on top:
 
 ```bash
 ( gzip -dc in.readinfo.tsv.gz | head -1
@@ -353,10 +362,10 @@ If `reads_compared` is lower than you expect, see
 
 ---
 
-## `toolkit summary`
+## `toolkit compare-summary`
 
 ```bash
-maligno toolkit summary -i <compare.parquet|compare.tsv[.gz]|-> [-o summary.tsv[.gz]] [--input-format auto|tsv|parquet]
+maligno toolkit compare-summary -i <compare.parquet|compare.tsv[.gz]|-> [-o summary.tsv[.gz]] [--input-format auto|tsv|parquet]
 ```
 
 Computes the summary statistics from an existing comparison table. The schema
@@ -370,7 +379,7 @@ to stderr, and also written to `-o` when given (`.tsv[.gz]`, or `-` for stdout).
   matter. The set names come from `label_A` / `label_B`.
 - **Reads in only one input:** the table only contains reads present in both
   inputs, so `present_only_in_A_by_id` / `present_only_in_B_by_id` are always
-  `0` here. Only `compare` and `toolkit merge-readinfo` can fill them in.
+  `0` here. Only `compare` and `toolkit compare-readinfo` can fill them in.
 
 The categories are defined in [Classification](#classification).
 
@@ -379,7 +388,7 @@ The categories are defined in [Classification](#classification).
 ## `toolkit find-aln-diff`
 
 ```bash
-maligno toolkit find-aln-diff -i <compare.parquet|compare.tsv[.gz]|-> --outdir <DIR> --prefix <STR> \
+maligno toolkit find-aln-diff -i <compare.parquet|compare.tsv[.gz]|-> -o/--outdir <DIR> -p/--prefix <STR> \
   [--space query|reference] [--compare-by all|junctions] [--emit-identical-reads] [--no-gzip] \
   [--input-format auto|tsv|parquet]
 ```
@@ -459,10 +468,10 @@ skipped.
 
 ---
 
-## `toolkit query-junction-diff`
+## `toolkit query-junction-compare`
 
 ```bash
-maligno toolkit query-junction-diff -i <compare.parquet> --outdir <DIR> --prefix <STR>
+maligno toolkit query-junction-compare -i <compare.parquet> -o/--outdir <DIR> -p/--prefix <STR>
 ```
 
 For each read whose splice junctions differ between A and B, this
@@ -472,7 +481,7 @@ reports the junctions the other side doesn't support, and how often each one
 occurs across the whole table.
 
 - **Input:** **Parquet only**, from `compare` or
-  `toolkit merge-readinfo -o x.parquet`. The command reads the file twice, so
+  `toolkit compare-readinfo -o x.parquet`. The command reads the file twice, so
   stdin and TSV are not accepted.
 - **Not run by `compare`:** this is a standalone command.
 - **Coordinates:** junction positions are re-derived from each side's `cs`
@@ -501,10 +510,10 @@ definition. Every other read is still counted in the summary.
 
 | File | Contents |
 |---|---|
-| `{prefix}.query_junction_diff.summary.tsv` | counts of reads at each selection step, then distinct junctions per side (unique, shared, only in A or B, unmatched); see [query-junction-diff-summary.md](output-tables/query-junction-diff-summary.md) |
-| `{prefix}.query_junction_diff.per_read_per_junc_info.tsv.gz` | one row per reconstructed junction, per side, per differing read; see [per-read-query-junction-diff.md](output-tables/per-read-query-junction-diff.md) |
-| `{prefix}.query_junction_diff.unmatched_junctions.A.tsv.gz` | distinct junctions found in A but unsupported in B, with the number of differing reads carrying each one and the number of reads in the whole table carrying it; see [query-junction-diff-unmatched.md](output-tables/query-junction-diff-unmatched.md) |
-| `{prefix}.query_junction_diff.unmatched_junctions.B.tsv.gz` | the same, for B unsupported in A |
+| `{prefix}.query_junction_compare.summary.tsv` | counts of reads at each selection step, then distinct junctions per side (unique, shared, only in A or B, unmatched); see [query-junction-compare-summary.md](output-tables/query-junction-compare-summary.md) |
+| `{prefix}.query_junction_compare.per_read_per_junc_info.tsv.gz` | one row per reconstructed junction, per side, per differing read; see [per-read-query-junction-compare.md](output-tables/per-read-query-junction-compare.md) |
+| `{prefix}.query_junction_compare.unmatched_junctions.A.tsv.gz` | distinct junctions found in A but unsupported in B, with the number of differing reads carrying each one and the number of reads in the whole table carrying it; see [query-junction-compare-unmatched.md](output-tables/query-junction-compare-unmatched.md) |
+| `{prefix}.query_junction_compare.unmatched_junctions.B.tsv.gz` | the same, for B unsupported in A |
 
 The per-read and unmatched-junction tables are always gzipped; the summary
 never is. In the per-read table, `junction_index` is 1-based and counted
@@ -517,7 +526,7 @@ across sides.
 
 ```bash
 maligno toolkit genomic-junction-compare -i <compare.parquet|compare.tsv[.gz]> \
-  [--input-format auto|tsv|parquet] --outdir <DIR> --prefix <STR>
+  [--input-format auto|tsv|parquet] -o/--outdir <DIR> -p/--prefix <STR>
 ```
 
 Compares A's and B's splice junctions in **genomic (reference)
@@ -548,7 +557,7 @@ written donor-acceptor in the junction's orientation, so a canonical intron
 is `gt-ag` on either strand. Aligners that don't report the bases give
 `nn-nn`.
 
-- **Input:** the comparison table from `compare` or `toolkit merge-readinfo`,
+- **Input:** the comparison table from `compare` or `toolkit compare-readinfo`,
   Parquet or TSV. It reads only the columns it needs.
 - **Not run by `compare`:** this is a standalone command.
 
@@ -759,9 +768,9 @@ with `ast.literal_eval`. An empty set is `()`. `genomic_junctions` tuples are
 The comparison table can be written as Parquet (`compare`'s default), gzipped
 TSV, or both, with the same 93 columns, names and order (`pd.read_parquet` is
 a drop-in for `pd.read_csv`). Parquet is much faster to read when you only need
-a few columns. `toolkit summary`, `toolkit find-aln-diff` and
+a few columns. `toolkit compare-summary`, `toolkit find-aln-diff` and
 `toolkit genomic-junction-compare` read either form;
-`toolkit query-junction-diff` reads Parquet only.
+`toolkit query-junction-compare` reads Parquet only.
 
 **Nulls in Parquet mean "undefined", nothing else.** A Parquet null appears
 where the TSV has `NaN` in a float column, or an empty `cs`. Meaningful values
@@ -838,13 +847,14 @@ gzip -dc < "$CMP" | awk -F'\t' '{print NF}' | sort | uniq -c
 
 ## Troubleshooting
 
-### `merge-readinfo` compared fewer reads than expected
+### `compare-readinfo` compared fewer reads than expected
 
-`toolkit merge-readinfo` assumes both readinfo files are sorted by `query_name`
+`toolkit compare-readinfo` assumes both readinfo files are sorted by `query_name`
 in the **same byte order**. By default an out-of-order read is an error. With
 `--allow-id-mismatch`, though, unsorted input silently lowers `reads_compared`.
-Common causes are sorting without `LC_ALL=C`, or combining files from several
-sources. (`compare` sorts its inputs itself and isn't affected.)
+Common causes are readinfo files sorted outside maligno without `LC_ALL=C`, or
+combining files from several sources. (`compare` and `toolkit paf2tables` sort
+by `query_name` themselves, so their output isn't affected.)
 
 To check, count the read names the two files share. If it equals
 `reads_compared`, the sort is fine and the low overlap is real.
