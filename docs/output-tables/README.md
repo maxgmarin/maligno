@@ -10,8 +10,9 @@ what produces it, when it's written, and a table with one row per column.
 | `{prefix}.{label}.readinfo.tsv.gz` | [readinfo.md](readinfo.md) |
 | `{prefix}.compare.parquet` / `.compare.tsv.gz` | [compare.md](compare.md) |
 | `{prefix}.compare.summary.tsv` | [compare-summary.md](compare-summary.md) |
-| `{prefix}.query_diff_reads.tsv.gz` | [query-diff-reads.md](query-diff-reads.md) |
-| `{prefix}.query_diff_regions.{A,B}.bed.gz` | [query-diff-regions.md](query-diff-regions.md) |
+| `{prefix}.{query\|reference}_aln_diff_reads.tsv.gz` (and `_aln_identical_reads`) | [aln-diff-reads.md](aln-diff-reads.md) |
+| `{prefix}.{query\|reference}_aln_diff_regions.{A,B}.bed.gz` | [aln-diff-regions.md](aln-diff-regions.md) |
+| `{prefix}.{query\|reference}_aln_diff_summary.tsv` | [aln-diff-summary.md](aln-diff-summary.md) |
 | `{prefix}.query_junction_compare.summary.tsv` | [query-junction-compare-summary.md](query-junction-compare-summary.md) |
 | `{prefix}.query_junction_compare.per_read_per_junc_info.tsv.gz` | [per-read-query-junction-compare.md](per-read-query-junction-compare.md) |
 | `{prefix}.query_junction_compare.unmatched_junctions.{A,B}.tsv.gz` | [query-junction-compare-unmatched.md](query-junction-compare-unmatched.md) |

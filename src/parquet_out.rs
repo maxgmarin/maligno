@@ -5,11 +5,10 @@
 //! the extension.
 //!
 //! Why it exists: the comparison table is written once and re-read many times —
-//! by the notebooks, and by `find-aln-diff` re-run standalone with
-//! `--compare-by junctions`. Parquet stores each column separately, so a reader
-//! touching a few of the 93 columns never pays for the rest. The cost being
-//! avoided is **splitting every row into 93 fields**, not decompression, which
-//! is cheap.
+//! by the notebooks and by the `toolkit` follow-up commands. Parquet stores each
+//! column separately, so a reader touching a few of the 93 columns never pays
+//! for the rest. The cost being avoided is **splitting every row into 93
+//! fields**, not decompression, which is cheap.
 //!
 //! Reading a few columns from Parquet is several times faster than from the
 //! gzipped TSV, and writing it is faster too. The cost is size: Parquet+zstd is
@@ -328,8 +327,8 @@ pub(crate) fn is_parquet_path(path: &str) -> bool {
 /// Render one Arrow cell back to the string a TSV reader would see for the
 /// same value: a null becomes `NaN` for a float column (the "undefined"
 /// convention from `append_raw`/`append_diff`) and an empty cell otherwise.
-/// Used by the round-trip test below and by `find-aln-diff`'s Parquet
-/// reader (`ParquetRowReader`), so both input formats hand identical strings
+/// Used by the round-trip test below and by the Parquet reader
+/// (`ParquetRowReader`), so both input formats hand identical strings
 /// to the same downstream parsing/comparison code.
 pub(crate) fn arrow_cell_to_string(a: &dyn Array, row: usize) -> String {
     if a.is_null(row) {

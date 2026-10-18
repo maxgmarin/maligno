@@ -11,3 +11,7 @@ maligno compare \
 maligno toolkit query-junction-compare \
   -i test_results/Splice_vs_SpliceHQ.compare.parquet \
   --outdir test_results --prefix Splice_vs_SpliceHQ
+
+maligno toolkit find-aln-diff \
+  -i test_results/Splice_vs_SpliceHQ.compare.parquet \
+  --outdir test_results --prefix Splice_vs_SpliceHQ

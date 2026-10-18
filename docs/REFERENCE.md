@@ -42,10 +42,9 @@ There are two ways to produce the comparison table, and both give the
 they carry the same reads, and writes a results directory.
 
 ```
-  A.paf|sam|bam ─┐                                  {prefix}.compare.parquet (and/or .tsv.gz)
+  A.paf|sam|bam ─┐                                       {prefix}.compare.parquet (and/or .tsv.gz)
                  ├─ compare (sort → verify → compare) ─▶  {prefix}.compare.summary.tsv
-  B.paf|sam|bam ─┘                                  {prefix}.query_diff_reads.tsv.gz
-                                                    {prefix}.query_diff_regions.{A,B}.bed.gz
+  B.paf|sam|bam ─┘
 ```
 
 ```bash
@@ -77,7 +76,8 @@ Either way, the comparison table can then be analysed further with
 read and written as gzip; `.gz` inputs may be single-member gzip or
 multi-member (bgzip, pigz). Most commands accept `-` for stdin/stdout. The
 exceptions are `compare`'s `-a`/`-b` (real file paths only), Parquet inputs
-(real file paths only), and `toolkit query-junction-compare` (Parquet only).
+(real file paths only), and `toolkit find-aln-diff` and
+`toolkit query-junction-compare` (Parquet only).
 
 **Read identity.** maligno matches alignments across files by read name
 (`query_name` in PAF, `QNAME` in SAM/BAM), so each name must identify one
@@ -136,8 +136,8 @@ to build one from. A record with neither stops the run (see
 3. **Compare.** In one pass over both sorted inputs, each read's alignments
    are collapsed to a [representative alignment](#representative-alignment)
    on each side, the two are [classified](#classification), and one row per
-   read is written to the comparison table. The summary statistics and the
-   differing-reads and region tables are produced in the same pass.
+   read is written to the comparison table. The summary statistics are
+   produced in the same pass.
 
 ### Outputs
 
@@ -148,20 +148,15 @@ Written to `--outdir`, named by `--prefix`:
 | `{prefix}.compare.parquet` | by default (`--format parquet` or `both`) | [compare.md](output-tables/compare.md) |
 | `{prefix}.compare.tsv.gz` | with `--format tsv` or `both` | [compare.md](output-tables/compare.md) |
 | `{prefix}.compare.summary.tsv` | always | [compare-summary.md](output-tables/compare-summary.md) |
-| `{prefix}.query_diff_reads.tsv.gz` | by default | [query-diff-reads.md](output-tables/query-diff-reads.md) |
-| `{prefix}.query_diff_regions.A.bed.gz`, `.B.bed.gz` | by default | [query-diff-regions.md](output-tables/query-diff-regions.md) |
 | `{prefix}.{label_a}.alninfo.tsv.gz`, `{prefix}.{label_b}.alninfo.tsv.gz` | with `--emit-alninfo` | [alninfo.md](output-tables/alninfo.md) |
 | `{prefix}.{label_a}.readinfo.tsv.gz`, `{prefix}.{label_b}.readinfo.tsv.gz` | with `--emit-readinfo` | [readinfo.md](output-tables/readinfo.md) |
 
 - `--format parquet|tsv|both` (default `parquet`) chooses the comparison table's
   serialization. Pass `--format tsv` or `both` for the gzipped TSV, e.g. for
   the shell recipes in [Working with the output tables](#working-with-the-output-tables).
-- The differing-reads and region tables are `toolkit find-aln-diff`'s output
-  at its default settings (`--space query --compare-by all`). They are
-  byte-identical to running that command on the comparison table.
-  `--skip-find-aln-diff` turns them off. For the other `--space` /
-  `--compare-by` modes, run [`toolkit find-aln-diff`](#toolkit-find-aln-diff)
-  on the comparison table.
+- To list the reads whose alignments differ, and the regions where they
+  cluster, run [`toolkit find-aln-diff`](#toolkit-find-aln-diff) on the
+  Parquet table.
 - The per-set alninfo and readinfo tables are off by default. They are the
   largest outputs, and no other maligno command reads them.
 - An abbreviated summary is also printed to stderr.
@@ -212,7 +207,6 @@ occasionally resolve differently (a few reads per million in testing).
 | `--sort-tmp-dir` | directory for sort spill files (default: `--outdir`) |
 | `--sort-threads` | sort threads (default `1`) |
 | `--keep-sorted-paf` | keep the sorted intermediate PAFs |
-| `--skip-find-aln-diff` | don't write the differing-reads and region tables |
 
 ---
 
@@ -388,79 +382,64 @@ The categories are defined in [Classification](#classification).
 ## `toolkit find-aln-diff`
 
 ```bash
-maligno toolkit find-aln-diff -i <compare.parquet|compare.tsv[.gz]|-> -o/--outdir <DIR> -p/--prefix <STR> \
-  [--space query|reference] [--compare-by all|junctions] [--emit-identical-reads] [--no-gzip] \
-  [--input-format auto|tsv|parquet]
+maligno toolkit find-aln-diff -i <compare.parquet> -o/--outdir <DIR> -p/--prefix <STR> \
+  [--mode any-diff-query|any-diff-reference] [--aligned-both-only] [--emit-identical-reads] [--no-gzip]
 ```
 
-Reads a comparison table and reports every read whose alignment **differs**
-between A and B. It also writes merged genomic regions showing where those
-reads cluster. `compare` already writes this command's default-mode output;
-run it standalone for the other modes, or to regenerate the output from an
-existing table.
+Reads a comparison table (**Parquet only**, from `compare` or
+`toolkit compare-readinfo -o x.parquet`) and reports every read whose core
+alignment **differs** between A and B. It also writes merged genomic regions
+showing where those reads cluster. MAPQ and score differences don't count.
 
-### `--space`
+### `--mode`
 
-Which coordinate space defines a difference:
+When a read mapped in both sets counts as **identical**:
 
-| Value | A read is identical when |
+| Mode | Identical when |
 |---|---|
-| `query` (default) | it is `query_identical`: same query span and same alignment relative to the read; a reverse-complement match counts as identical (see [Classification](#classification)) |
-| `reference` | it is reference-identical: same `target_name` / `strand` / `target_start` and same `cs` (motif-blind). Strict and literal: no reverse-complement accommodation. Only with `--compare-by all`. |
+| `any-diff-query` (default) | same query span (`query_start`, `query_end`) and same `cs`, motif-blind. On opposite strands, B's `cs` must be the exact reverse complement of A's. |
+| `any-diff-reference` | the same as `any-diff-query` on the **same strand**, and also the same `target_name` and `target_start`. Use it when A and B were aligned to the same reference. |
 
-### `--compare-by`
+In both modes, a read mapped in only one set is a difference
+(`diff_aln_only_A` / `diff_aln_only_B`), and a read mapped in neither set is
+identical (`neither_mapped`): both aligners agree it doesn't map. The `cs`
+comparison is motif-blind (see [Classification](#classification)).
 
-What counts as "same alignment" for reads mapped in **both** sets. Reads
-mapped on only one side are always differences (`diff_aln_only_A` /
-`diff_aln_only_B`), whatever the mode.
-
-| Value | `--space query` | `--space reference` |
-|---|---|---|
-| `all` (default) | the full `cs` tag matches (motif-blind) | same position **and** same `cs` (motif-blind) |
-| `junctions` | the query-space splice-junction set matches | not supported: the command stops with an error. Use [`toolkit genomic-junction-compare`](#toolkit-genomic-junction-compare) to compare genomic junction sets. |
-
-Under `junctions`, mismatches, indels and soft-clips that don't move a splice
-junction don't count. Under both modes, comparison is motif-blind: a
-differently reported intron motif at the same position and length is not a
-difference (see [Classification](#classification)).
+**`--aligned-both-only`** compares only the reads mapped in both sets. The
+others are left out of every output and counted in the summary as
+`reads_not_aligned_both_excluded`.
 
 ### Outputs
 
-Filenames use the `query_diff` / `query_identical` stem under `--space query`
-and `reference_diff` / `reference_identical` under `--space reference`. Under
-`--compare-by junctions`, every filename gains a `.junctions` segment. So runs
-in different modes at the same `--outdir` / `--prefix` never overwrite each
-other. Read and region tables are gzipped unless `--no-gzip` is given.
+Filenames use the `query_aln_diff` stem with `--mode any-diff-query` and
+`reference_aln_diff` with `--mode any-diff-reference`, so runs in the two modes
+at the same `--outdir` / `--prefix` never overwrite each other. Read and region
+tables are gzipped unless `--no-gzip` is given.
 
-| File (`--space query --compare-by all`) | Contents |
+| File (`--mode any-diff-query`) | Contents |
 |---|---|
-| `{prefix}.query_diff_reads.tsv.gz` | one row per differing read, with its category and 7 classification flags; see [query-diff-reads.md](output-tables/query-diff-reads.md) |
-| `{prefix}.query_diff_regions.A.bed.gz`, `.B.bed.gz` | merged loci of the differing reads, per side; see [query-diff-regions.md](output-tables/query-diff-regions.md) |
-| `{prefix}.query_diff_summary.tsv` | the [summary schema](output-tables/compare-summary.md), with `space` and `compare_by` rows after `label_A` / `label_B`; never gzipped |
-| `{prefix}.query_identical_reads.tsv.gz` | with `--emit-identical-reads` only: the complementary set of identical reads, same layout as the diff-reads table except column 2 is named `category` |
+| `{prefix}.query_aln_diff_reads.tsv.gz` | one row per differing read, with its `outcome` and 7 classification columns; see [aln-diff-reads.md](output-tables/aln-diff-reads.md) |
+| `{prefix}.query_aln_diff_regions.A.bed.gz`, `.B.bed.gz` | merged loci of the differing reads, per side; see [aln-diff-regions.md](output-tables/aln-diff-regions.md) |
+| `{prefix}.query_aln_diff_summary.tsv` | the mode and parameters, then the counts of identical and differing reads; see [aln-diff-summary.md](output-tables/aln-diff-summary.md) |
+| `{prefix}.query_aln_identical_reads.tsv.gz` | with `--emit-identical-reads` only: the identical reads, in the same layout |
 
-Examples of other modes' names: `{prefix}.reference_diff_reads.tsv.gz`,
-`{prefix}.query_diff_reads.junctions.tsv.gz`,
-`{prefix}.reference_diff_regions.A.bed.gz`.
+With `--mode any-diff-reference` the names are
+`{prefix}.reference_aln_diff_reads.tsv.gz`,
+`{prefix}.reference_aln_diff_regions.{A,B}.bed.gz`,
+`{prefix}.reference_aln_diff_summary.tsv` and
+`{prefix}.reference_aln_identical_reads.tsv.gz`.
 
-The summary counts don't depend on the mode. The number of rows in the
-diff-reads file is printed on stderr. To get it from the summary, add the
-mode's "not identical" row to `aligned_only_A + aligned_only_B`, e.g.
-`query_not_identical + aligned_only_A + aligned_only_B` for the default mode.
+### Outcomes
 
-### Categories
+The `outcome` column is the same in both modes:
 
-| `--space query` | `--space reference` | Meaning |
+| `outcome` | Meaning | File |
 |---|---|---|
-| `diff_aln_to_both` | `reference_diff` | mapped in both, not identical under the active mode |
-| `diff_aln_only_A` / `diff_aln_only_B` | (same) | mapped in one set only |
-| `query_identical_same_strand` / `query_identical_revcomp` / `query_identical_junctions` | `reference_identical` | identical under the active mode (identical-reads file only) |
-| `neither_mapped` | (none) | mapped in neither set (identical-reads file only, and only under `--space query --compare-by all`) |
-
-A read mapped in neither set counts as identical under
-`--space query --compare-by all`: both aligners agree it doesn't map. In the
-other modes it is in neither file, because those identity tests apply only to
-reads mapped on both sides.
+| `diff_aln_both` | mapped in both sets, not identical under the mode | differing reads |
+| `diff_aln_only_A` / `diff_aln_only_B` | mapped in one set only | differing reads |
+| `identical_same_strand` | identical, on the same strand | identical reads |
+| `identical_revcomp` | identical as an exact reverse complement on opposite strands (`any-diff-query` only) | identical reads |
+| `neither_mapped` | mapped in neither set | identical reads |
 
 In the region tables, a read mapped on only one side contributes only to that
 side's table. Intervals that can't be parsed, or where `end <= start`, are
@@ -680,7 +659,7 @@ Each read in the comparison table is classified from the two sides'
 representative alignments, using `target_name`, `strand`, `cs`,
 `query_start` / `query_end`, `target_start` / `target_end` and
 `query_junctions`. These classes feed the summary statistics and
-`toolkit find-aln-diff`. The summary rows are listed in
+`toolkit find-aln-diff`'s modes. The summary rows are listed in
 [compare-summary.md](output-tables/compare-summary.md).
 
 **Mapping status.** A side with `target_name` equal to `*` or empty is
@@ -768,9 +747,9 @@ with `ast.literal_eval`. An empty set is `()`. `genomic_junctions` tuples are
 The comparison table can be written as Parquet (`compare`'s default), gzipped
 TSV, or both, with the same 93 columns, names and order (`pd.read_parquet` is
 a drop-in for `pd.read_csv`). Parquet is much faster to read when you only need
-a few columns. `toolkit compare-summary`, `toolkit find-aln-diff` and
+a few columns. `toolkit compare-summary` and
 `toolkit genomic-junction-compare` read either form;
-`toolkit query-junction-compare` reads Parquet only.
+`toolkit find-aln-diff` and `toolkit query-junction-compare` read Parquet only.
 
 **Nulls in Parquet mean "undefined", nothing else.** A Parquet null appears
 where the TSV has `NaN` in a float column, or an empty `cs`. Meaningful values

@@ -247,7 +247,6 @@ pub fn run(args: &CompareReadinfoArgs) -> Result<()> {
         &args.label_a,
         &args.label_b,
         &mut summary,
-        &mut None,
     )?;
 
     // Parquet must be finished explicitly — its footer (schema + row-group index

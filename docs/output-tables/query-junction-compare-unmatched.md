@@ -5,8 +5,8 @@
 junctions, per side, that were never matched on the other side, with how many
 reads support each — plus how many reads *total*, across the whole
 comparison table, carry that same junction on this side. Written by
-`toolkit query-junction-compare`, one file per side (mirrors the
-`query_diff_regions.{A,B}.bed.gz` per-side-file convention).
+`toolkit query-junction-compare`, one file per side (like `find-aln-diff`'s
+per-side region tables).
 
 Columns 1–5 roll up the `matched_in_genomic == false` rows of
 [`query_junction_compare.per_read_per_junc_info.tsv.gz`](per-read-query-junction-compare.md)

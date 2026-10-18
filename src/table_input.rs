@@ -1,9 +1,9 @@
 //! TSV-vs-Parquet dispatch for reading a two-sided comparison table.
 //!
-//! Shared by `find-aln-diff` and `toolkit compare-summary`: both stream an
-//! existing `compare` / `toolkit compare-readinfo` table row-by-row,
-//! needing only a subset of its columns by name, insensitive to which format
-//! produced the file.
+//! Shared by every command that reads an existing `compare` / `toolkit
+//! compare-readinfo` table row by row, needing only a subset of its columns by
+//! name: `toolkit compare-summary` and `genomic-junction-compare` accept
+//! either format; `find-aln-diff` and `query-junction-compare` open Parquet only.
 
 use std::io::BufRead;
 

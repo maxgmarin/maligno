@@ -6,10 +6,8 @@
 //!   1. `compare` (primary entry point):
 //!        `maligno compare -a A.bam -b B.bam --outdir results/ --prefix AvsB`
 //!      Sorts both inputs by read name, verifies they share the same read-ID set,
-//!      then writes the alignment comparison table and, by default,
-//!      `find-aln-diff`'s differing-reads and region tables
-//!      (`--skip-find-aln-diff` to opt out). The per-set alninfo and readinfo
-//!      tables are opt-in (`--emit-alninfo` / `--emit-readinfo`).
+//!      then writes the alignment comparison table and its summary. The per-set
+//!      alninfo and readinfo tables are opt-in (`--emit-alninfo` / `--emit-readinfo`).
 //!
 //!   2. Building blocks, grouped under `toolkit`:
 //!        `maligno toolkit paf2tables -i A.paf --readinfo A.readinfo.tsv.gz`
@@ -19,15 +17,15 @@
 //! Commands:
 //!
 //!   - `compare`                      two alignment files -> alignment comparison table
-//!                                    (+ summary and differing reads/regions)
+//!                                    (+ summary)
 //!   - `sam2paf`                      SAM/BAM -> PAF converter (also run internally
 //!                                    by `compare` on SAM/BAM inputs)
 //!   - `toolkit paf2tables`           PAF -> alninfo and/or readinfo tables (sorts by
 //!                                    query_name first)
 //!   - `toolkit compare-readinfo`     two readinfo tables -> alignment comparison table
 //!   - `toolkit compare-summary`      alignment comparison table -> summary statistics
-//!   - `toolkit find-aln-diff`        alignment comparison table -> differing reads and
-//!                                    the regions where they cluster
+//!   - `toolkit find-aln-diff`        alignment comparison table (Parquet) -> differing
+//!                                    reads and the regions where they cluster
 //!   - `toolkit query-junction-compare`  alignment comparison table (Parquet) -> per-read,
 //!                                    per-side splice junctions of the reads whose
 //!                                    query-space junctions differ
@@ -45,7 +43,7 @@ mod comparison_row;     // comparison row type, A-vs-B metrics, TSV writers
 mod parquet_out;        // Parquet writer for the comparison table (schema derived from columns)
 mod compare_streaming;  // `toolkit compare-readinfo` command + merge-join machinery
 mod compare_summary;    // `toolkit compare-summary` command + shared classifier/accumulator
-mod find_query_diff;   // `find-aln-diff` command (differing reads + regions, query or reference space)
+mod find_aln_diff;      // `find-aln-diff` command (differing reads + regions, query or reference mode)
 mod query_junction_compare; // `query-junction-compare` command (per-read, per-side splice junctions of reads whose query-space junctions differ)
 mod genomic_junction_compare; // `genomic-junction-compare` command (A-vs-B junctions in reference coordinates, with strand + motif)
 mod interval_merge;     // generic sort+sweep interval merge (bedtools merge -c -o count)
@@ -70,7 +68,7 @@ use clap::{Parser, Subcommand};
 use compare::CompareArgs;
 use compare_streaming::CompareReadinfoArgs;
 use compare_summary::CompareSummaryArgs;
-use find_query_diff::FindAlnDiffArgs;
+use find_aln_diff::FindAlnDiffArgs;
 use paf2tables::Paf2TablesArgs;
 use query_junction_compare::QueryJunctionCompareArgs;
 use genomic_junction_compare::GenomicJunctionCompareArgs;
@@ -128,7 +126,7 @@ fn main() -> Result<()> {
             ToolkitCommands::Paf2tables(args)    => paf2tables::run(args),
             ToolkitCommands::CompareReadinfo(args) => compare_streaming::run(args),
             ToolkitCommands::CompareSummary(args)  => compare_summary::run(args),
-            ToolkitCommands::FindAlnDiff(args)   => find_query_diff::run(args),
+            ToolkitCommands::FindAlnDiff(args)   => find_aln_diff::run(args),
             ToolkitCommands::QueryJunctionCompare(args) => query_junction_compare::run(args),
             ToolkitCommands::GenomicJunctionCompare(args) => genomic_junction_compare::run(args),
         },

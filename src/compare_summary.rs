@@ -88,11 +88,6 @@ impl RefClass {
     pub(crate) fn same_position(&self) -> bool {
         matches!(self, Self::SamePositionSameAln | Self::SamePositionDiffAln)
     }
-
-    /// Whether this classification's alignment (`cs`) axis matched.
-    pub(crate) fn same_aln(&self) -> bool {
-        matches!(self, Self::SamePositionSameAln | Self::DiffPositionSameAln)
-    }
 }
 
 /// The classification of one matched read (one comparison row).
@@ -318,25 +313,13 @@ impl CompareSummary {
     }
 
     /// Write the summary as a 2-column TSV (`category<TAB>count`), preceded by
-    /// the two label provenance rows and any caller-supplied `extra`
-    /// provenance rows (e.g. `find-aln-diff`'s `space`/`compare_by`), so the
-    /// file is self-describing. This is the single column layout shared by
-    /// `compare`, `toolkit compare-summary`, and `find-aln-diff` — pass `&[]`
-    /// for no extra rows.
-    pub fn write_tsv(
-        &self,
-        path: &str,
-        label_a: &str,
-        label_b: &str,
-        extra: &[(&str, &str)],
-    ) -> Result<()> {
+    /// the two label provenance rows, so the file is self-describing. The same
+    /// layout for `compare` and `toolkit compare-summary`.
+    pub fn write_tsv(&self, path: &str, label_a: &str, label_b: &str) -> Result<()> {
         let mut w = open_output(Some(path))?;
         writeln!(w, "{}", SUMMARY_HEADER.join("\t"))?;
         writeln!(w, "label_A\t{label_a}")?;
         writeln!(w, "label_B\t{label_b}")?;
-        for (k, v) in extra {
-            writeln!(w, "{k}\t{v}")?;
-        }
         for (k, v) in self.rows() {
             writeln!(w, "{k}\t{v}")?;
         }
@@ -346,13 +329,10 @@ impl CompareSummary {
 
     /// Print a human-readable block to stderr, in the same layout as
     /// `write_tsv` (see its doc comment).
-    pub fn render_stderr(&self, label_a: &str, label_b: &str, extra: &[(&str, &str)]) {
+    pub fn render_stderr(&self, label_a: &str, label_b: &str) {
         eprintln!("Comparison summary:");
         eprintln!("  {:<34} {label_a}", "label_A");
         eprintln!("  {:<34} {label_b}", "label_B");
-        for (k, v) in extra {
-            eprintln!("  {k:<34} {v}");
-        }
         for (k, v) in self.rows() {
             eprintln!("  {k:<34} {v}");
         }
@@ -514,10 +494,10 @@ pub fn run(args: &CompareSummaryArgs) -> Result<()> {
     }
 
     if let Some(path) = &args.output {
-        summary.write_tsv(path, &label_a, &label_b, &[])?;
+        summary.write_tsv(path, &label_a, &label_b)?;
         eprintln!("Wrote summary: {path}");
     }
-    summary.render_stderr(&label_a, &label_b, &[]);
+    summary.render_stderr(&label_a, &label_b);
     eprintln!(
         "  (note: a comparison table holds only reads present in both sets, so \
          present_only_in_* by-ID counts are 0 here.)"
@@ -808,20 +788,17 @@ mod tests {
     }
 
     #[test]
-    fn write_tsv_extra_rows_appear_between_labels_and_counters() {
+    fn write_tsv_puts_the_labels_before_the_counters() {
         let s = CompareSummary::default();
-        let path = std::env::temp_dir().join("maligno_test_write_tsv_extra.tsv");
+        let path = std::env::temp_dir().join("maligno_test_write_tsv_labels.tsv");
         let path_str = path.to_str().unwrap();
-        s.write_tsv(path_str, "Splice", "SpliceHQ", &[("space", "query"), ("compare_by", "all")])
-            .unwrap();
+        s.write_tsv(path_str, "Splice", "SpliceHQ").unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = content.lines().collect();
         let _ = std::fs::remove_file(&path);
         assert_eq!(lines[0], "category\tcount");
         assert_eq!(lines[1], "label_A\tSplice");
         assert_eq!(lines[2], "label_B\tSpliceHQ");
-        assert_eq!(lines[3], "space\tquery");
-        assert_eq!(lines[4], "compare_by\tall");
-        assert_eq!(lines[5], "reads_compared\t0");
+        assert_eq!(lines[3], "reads_compared\t0");
     }
 }

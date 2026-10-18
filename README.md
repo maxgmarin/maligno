@@ -57,15 +57,33 @@ maligno compare \
 ```
 
 This will write a results directory with the alignment comparison table and
-the differing reads and the genomic regions where they cluster :
+its summary statistics:
 
 ```
 test_data/test_results/Splice_vs_SpliceHQ.compare.parquet
 test_data/test_results/Splice_vs_SpliceHQ.compare.summary.tsv
-test_data/test_results/Splice_vs_SpliceHQ.query_diff_reads.tsv.gz
-test_data/test_results/Splice_vs_SpliceHQ.query_diff_regions.A.bed.gz
-test_data/test_results/Splice_vs_SpliceHQ.query_diff_regions.B.bed.gz
 ```
+
+#### Use `maligno toolkit find-aln-diff` to list the reads whose alignments differ, and where they cluster
+
+```bash
+maligno toolkit find-aln-diff \
+  -i test_data/test_results/Splice_vs_SpliceHQ.compare.parquet \
+  -o test_data/test_results/ -p Splice_vs_SpliceHQ
+```
+
+```
+test_data/test_results/Splice_vs_SpliceHQ.query_aln_diff_reads.tsv.gz
+test_data/test_results/Splice_vs_SpliceHQ.query_aln_diff_regions.A.bed.gz
+test_data/test_results/Splice_vs_SpliceHQ.query_aln_diff_regions.B.bed.gz
+test_data/test_results/Splice_vs_SpliceHQ.query_aln_diff_summary.tsv
+```
+
+By default (`--mode any-diff-query`) a read differs when its alignment relative
+to the read differs: a different query span or a different `cs` (an exact
+reverse complement on the opposite strand counts as the same). With
+`--mode any-diff-reference` it also differs when A and B place it at a
+different position or strand on the reference.
 
 ---
 
@@ -118,7 +136,6 @@ It then runs the whole pipeline in four main steps:
 | `--format` | which serialization(s) of the comparison table: `parquet` (default), `tsv` (gzipped), or `both` |
 | `--emit-alninfo`, `--emit-readinfo` | write those per-set tables (off by default) |
 | `--keep-sorted-paf` | keep the intermediate sorted PAFs |
-| `--skip-find-aln-diff` | don't also emit `find-aln-diff`'s default-mode output (differing reads + region tables) |
 
 
 ---
@@ -134,8 +151,12 @@ A `compare` run can write the following files in the user defined output directo
 | `{prefix}.compare.parquet` | 93 | the **comparison** table (unless `--format tsv`) |
 | `{prefix}.compare.tsv.gz` | 93 | the same table as gzipped TSV (only with `--format tsv` or `both`) |
 | `{prefix}.compare.summary.tsv` | 2 | **aggregate summary statistics** (see below) |
-| `{prefix}.query_diff_reads.tsv.gz` | 9 | table of all reads with difference in alignment between set A and B  |
-| `{prefix}.query_diff_regions.{A,B}.bed.gz` | 10 | genomic regions where differing reads cluster, per set |
+
+**`toolkit find-aln-diff`** takes the comparison table (Parquet) and writes the
+reads whose alignments differ between A and B (`{prefix}.query_aln_diff_reads.tsv.gz`,
+9 columns), the genomic regions where they cluster, per set
+(`{prefix}.query_aln_diff_regions.{A,B}.bed.gz`, 8 columns), and a summary of
+its selection. `--aligned-both-only` restricts it to reads mapped in both sets.
 
 Separately, **`toolkit query-junction-compare`** takes an existing
 `compare.parquet` (Parquet input only), selects reads whose
@@ -198,7 +219,7 @@ maligno compare \
 # Inspect a comparison header (column number → name).
 zcat < test_data/test_results/Splice_vs_SpliceHQ.compare.tsv.gz | head -1 | tr '\t' '\n' | nl
 
-# Sanity-check column counts (expect 36 for alninfo, 37 for readinfo, 93 for compare, 9 for query_diff_reads).
+# Sanity-check column counts (expect 36 for alninfo, 37 for readinfo, 93 for compare).
 for f in test_data/test_results/Splice_vs_SpliceHQ.*.tsv.gz; do
   printf '%s\t' "$f"; zcat < "$f" | awk -F'\t' '{print NF}' | sort -u | paste -sd, -
 done
@@ -212,9 +233,9 @@ zcat < test_data/test_results/Splice_vs_SpliceHQ.compare.tsv.gz \
 
 ## Extended documentation
 
-A per-column spec for every output file `compare`, `toolkit
+A per-column spec for every output file `compare`, `toolkit find-aln-diff`, `toolkit
 query-junction-compare` and `toolkit genomic-junction-compare` can write — alninfo,
-readinfo, the comparison table, the summary TSV, the diff-reads/regions tables,
+readinfo, the comparison table, the summary TSV, the find-aln-diff tables,
 the query-junction-compare tables and the genomic-junction-compare tables — lives
 in **[`docs/output-tables/`](docs/output-tables/)**.
 

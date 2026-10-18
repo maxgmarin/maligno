@@ -3,9 +3,9 @@
 `{prefix}.compare.summary.tsv` — aggregate summary statistics over the
 comparison table, tallied as `compare` streams its rows (constant memory).
 2 columns: `category`, `count`. The same schema is written by
-`toolkit compare-summary` (computed from an existing `compare.tsv`/`.parquet`)
-and, with `space`/`compare_by` rows added after `label_A`/`label_B`, by
-`toolkit find-aln-diff`.
+`toolkit compare-summary` (computed from an existing `compare.tsv`/`.parquet`).
+`toolkit find-aln-diff` writes its own summary of the reads it selects; see
+[aln-diff-summary.md](aln-diff-summary.md).
 
 Every `category` below is one **row** in the file, in this order:
 

@@ -146,4 +146,4 @@ A and B is done by
 - Full classification logic (`query_identical`, `ref_same_position_same_aln`,
   etc.) derived from this table's columns is documented in
   [compare-summary.md](compare-summary.md) and
-  [query-diff-reads.md](query-diff-reads.md).
+  [aln-diff-reads.md](aln-diff-reads.md).
