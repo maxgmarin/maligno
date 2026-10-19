@@ -176,6 +176,16 @@ pub(crate) fn oriented_motif(m: [u8; 4], intron_strand: char) -> String {
     s
 }
 
+/// Keep the first motif seen for a junction, but prefer real letters over
+/// `nnnn` (an aligner that doesn't report the bases).
+pub(crate) fn note_motif(slot: &mut Option<[u8; 4]>, m: [u8; 4]) {
+    match slot {
+        None => *slot = Some(m),
+        Some(cur) if cur == b"nnnn" && &m != b"nnnn" => *slot = Some(m),
+        _ => {}
+    }
+}
+
 /// Append the reverse-complement of `seq` to `out` (bases emitted in reverse
 /// order, each complemented case-preservingly).
 #[inline]
@@ -341,6 +351,15 @@ pub fn cs_strip_splice_motifs(cs: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn motif_prefers_real_letters_over_nn() {
+        let mut slot = None;
+        note_motif(&mut slot, *b"nnnn");
+        note_motif(&mut slot, *b"gtag");
+        note_motif(&mut slot, *b"gcag");
+        assert_eq!(slot, Some(*b"gtag"));
+    }
 
     fn juncs(cs: &str) -> Vec<(u64, u64)> {
         parse_cs(cs).raw_genomic_junctions

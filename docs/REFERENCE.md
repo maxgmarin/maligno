@@ -467,6 +467,15 @@ occurs across the whole table.
 - **Coordinates:** junction positions are re-derived from each side's `cs`
   tag, so the query and genomic coordinates are correctly paired on both
   strands.
+- **Junction identity:** in reference coordinates a junction is
+  `(target_name, intron_start, intron_end, intron_strand)`, as in
+  [`genomic-junction-compare`](#toolkit-genomic-junction-compare), where
+  `intron_strand` is the side's `genomic_intron_strand` (see
+  [Transcript strand](#transcript-strand)). Matching on the read
+  (`matched_in_query`) compares positions only.
+- **Motifs:** each junction carries its splice-site motif from the `cs` tag,
+  written donor-acceptor in the junction's orientation (e.g. `gt-ag`;
+  `nn-nn` from aligners that don't report the bases, such as STAR).
 
 ### Read selection
 
@@ -491,8 +500,8 @@ definition. Every other read is still counted in the summary.
 | File | Contents |
 |---|---|
 | `{prefix}.query_junction_compare.summary.tsv` | counts of reads at each selection step, then distinct junctions per side (unique, shared, only in A or B, unmatched); see [query-junction-compare-summary.md](output-tables/query-junction-compare-summary.md) |
-| `{prefix}.query_junction_compare.per_read_per_junc_info.tsv.gz` | one row per reconstructed junction, per side, per differing read; see [per-read-query-junction-compare.md](output-tables/per-read-query-junction-compare.md) |
-| `{prefix}.query_junction_compare.unmatched_junctions.A.tsv.gz` | distinct junctions found in A but unsupported in B, with the number of differing reads carrying each one and the number of reads in the whole table carrying it; see [query-junction-compare-unmatched.md](output-tables/query-junction-compare-unmatched.md) |
+| `{prefix}.query_junction_compare.per_read_per_junc_info.tsv.gz` | one row per reconstructed junction, per side, per differing read, with its intron strand, motif and the alignment's strand; see [per-read-query-junction-compare.md](output-tables/per-read-query-junction-compare.md) |
+| `{prefix}.query_junction_compare.unmatched_junctions.A.tsv.gz` | distinct junctions found in A but unsupported in B, with their motif, the number of differing reads carrying each one and the number of reads in the whole table carrying it; see [query-junction-compare-unmatched.md](output-tables/query-junction-compare-unmatched.md) |
 | `{prefix}.query_junction_compare.unmatched_junctions.B.tsv.gz` | the same, for B unsupported in A |
 
 The per-read and unmatched-junction tables are always gzipped; the summary

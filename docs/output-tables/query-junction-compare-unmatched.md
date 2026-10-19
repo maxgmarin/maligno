@@ -8,23 +8,26 @@ comparison table, carry that same junction on this side. Written by
 `toolkit query-junction-compare`, one file per side (like `find-aln-diff`'s
 per-side region tables).
 
-Columns 1–5 roll up the `matched_in_genomic == false` rows of
+Columns 1–6 roll up the `matched_in_genomic == false` rows of
 [`query_junction_compare.per_read_per_junc_info.tsv.gz`](per-read-query-junction-compare.md)
-for that side, grouped by `(chrom, genomic_start, genomic_end, strand)`. The A
-file covers junctions called in A but unsupported by B, and the B file the
-reverse. Column 6 counts how many reads in the whole comparison table carry the
-same junction on this side.
+for that side, grouped by junction: `(target_name, intron_start, intron_end,
+intron_strand)`, the same identity and column names as `genomic-junction-compare`'s
+[per-junction table](genomic-junction-compare-per-junction.md). The A file
+covers junctions called in A but unsupported by B, and the B file the reverse.
+Column 7 counts how many reads in the whole comparison table carry the same
+junction on this side.
 
-6 columns.
+7 columns.
 
 | # | Column | Description |
 |---|---|---|
-| 1 | `chrom` | Genomic contig |
-| 2 | `genomic_start` | Junction start (0-based half-open) |
-| 3 | `genomic_end` | Junction end |
-| 4 | `strand` | This side's alignment strand at this junction |
-| 5 | `n_reads_query_junctions_different` | Count of **distinct reads** on this side reporting this exact junction, unmatched on the other side |
-| 6 | `n_reads_with_junction_total` | Count of reads, across **every** row of the comparison table, with this exact junction on this side — differing or not |
+| 1 | `target_name` | Genomic contig |
+| 2 | `intron_start` | Intron start (0-based half-open) |
+| 3 | `intron_end` | Intron end |
+| 4 | `intron_strand` | The intron's strand on the reference (this side's `genomic_intron_strand`; `*` when unknown) |
+| 5 | `motif` | Splice-site motif, donor-acceptor in the junction's orientation (e.g. `gt-ag`): the first seen among this side's unmatched reads, preferring real letters over `nn-nn` |
+| 6 | `n_reads_query_junctions_different` | Count of **distinct reads** on this side reporting this exact junction, unmatched on the other side |
+| 7 | `n_reads_with_junction_total` | Count of reads, across **every** row of the comparison table, with this exact junction on this side — differing or not |
 
 **Notes**
 - A read that reports the same unmatched junction more than once (from a

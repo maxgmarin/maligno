@@ -23,6 +23,16 @@
 //! read with a junction on either side, only the differing reads are
 //! reconstructed.
 //!
+//! **Junction identity in reference coordinates** is the same as in
+//! `genomic-junction-compare`: `(target_name, intron_start, intron_end,
+//! intron_strand)`, where `intron_strand` is the side's `genomic_intron_strand`
+//! (`*` when the aligner gave no transcript strand). It is used for
+//! `matched_in_genomic`, the unmatched tables, their whole-table totals and the
+//! summary's distinct-junction counts. `matched_in_query` compares read
+//! positions only. Each junction also carries its splice-site motif from the
+//! `cs` tag, written donor-acceptor in the junction's orientation (`gt-ag`);
+//! the alignment's own strand is reported separately as `strand`.
+//!
 //! A read counts as "differing" (and gets full junction reconstruction) iff:
 //!   - mapped on both sides, and its query-space junction sets differ
 //!     (`n_query_junctions_only_A`/`n_query_junctions_only_B` not both `0`); or
@@ -38,11 +48,12 @@
 //!      funnel counts, then distinct-junction counts per side (unique, shared,
 //!      only-A/only-B, unmatched) from pass 2 (always uncompressed).
 //!   2. `{prefix}.query_junction_compare.per_read_per_junc_info.tsv.gz` — one row per
-//!      reconstructed junction per side per differing read (always gzipped).
+//!      reconstructed junction per side per differing read, with its intron
+//!      strand and motif (always gzipped).
 //!   3. `{prefix}.query_junction_compare.unmatched_junctions.A.tsv.gz`  — distinct
-//!      genomic junctions called in A that were never matched in B, with how
-//!      many reads support each, plus how many reads *total* (across the
-//!      whole table) carry that junction on side A (always gzipped).
+//!      genomic junctions called in A that were never matched in B, with their
+//!      motif and how many reads support each, plus how many reads *total*
+//!      (across the whole table) carry that junction on side A (always gzipped).
 //!   4. `{prefix}.query_junction_compare.unmatched_junctions.B.tsv.gz`  — same,
 //!      for B.
 //!
@@ -70,9 +81,9 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 
 use crate::columns::{
-    sided, Col, CS, GENOMIC_JUNCTIONS, N_INTRON_EVENTS, LABEL_A, LABEL_B, N_QUERY_JUNCTIONS_ONLY_A,
-    N_QUERY_JUNCTIONS_ONLY_B, QUERY_END, QUERY_START, QUERY_LEN, QUERY_NAME, SIDE_A, SIDE_B, STRAND,
-    TARGET_NAME, TARGET_START,
+    header_line, sided, Col, CS, GENOMIC_INTRON_STRAND, GENOMIC_JUNCTIONS, N_INTRON_EVENTS, LABEL_A,
+    LABEL_B, N_QUERY_JUNCTIONS_ONLY_A, N_QUERY_JUNCTIONS_ONLY_B, QJC_PER_JUNCTION_COLS, QUERY_END,
+    QUERY_START, QUERY_LEN, QUERY_NAME, SIDE_A, SIDE_B, STRAND, TARGET_NAME, TARGET_START,
 };
 use crate::compare_summary::{
     labels_from_row, require_ab_schema, require_col, wanted_columns, SideIndex,
@@ -81,7 +92,10 @@ use crate::io_utils::open_output;
 use crate::junction::parse_genomic_junction_str;
 use crate::table_input::{open_table, InputFormat};
 
-use reconstruct::{build_junction_records, build_side_junctions, side_position_sets, write_per_read_row};
+use reconstruct::{
+    build_junction_records, build_side_junctions, normalize_intron_strand, side_position_sets,
+    write_per_read_row,
+};
 use rollup::{
     accumulate_side_total, accumulate_unmatched, unique_junction_counts, write_unmatched_table, TotalsAcc,
     UniqueJunctions, UnmatchedAcc,
@@ -114,7 +128,16 @@ pub struct QueryJunctionCompareArgs {
 }
 
 /// The per-side columns pass 1 reads, resolved for each side up front.
-const SIDE_COLS: [Col; 7] = [CS, STRAND, QUERY_START, QUERY_END, TARGET_START, TARGET_NAME, N_INTRON_EVENTS];
+const SIDE_COLS: [Col; 8] = [
+    CS,
+    STRAND,
+    GENOMIC_INTRON_STRAND,
+    QUERY_START,
+    QUERY_END,
+    TARGET_START,
+    TARGET_NAME,
+    N_INTRON_EVENTS,
+];
 
 pub fn run(args: &QueryJunctionCompareArgs) -> Result<()> {
     if !args.input.ends_with(".parquet") {
@@ -159,12 +182,7 @@ pub fn run(args: &QueryJunctionCompareArgs) -> Result<()> {
 
     let mut summary = Summary::default();
     let mut per_read_w = open_output(Some(&per_read_out))?;
-    writeln!(
-        per_read_w,
-        "{}\tside\tjunction_index\tstrand\tquery_pos\tchrom\tgenomic_start\tgenomic_end\t\
-         matched_in_query\tmatched_in_genomic\tother_side_aligned",
-        QUERY_NAME.name
-    )?;
+    writeln!(per_read_w, "{}", header_line(&QJC_PER_JUNCTION_COLS))?;
     let mut unmatched_acc_a: UnmatchedAcc = HashMap::new();
     let mut unmatched_acc_b: UnmatchedAcc = HashMap::new();
 
@@ -192,7 +210,7 @@ pub fn run(args: &QueryJunctionCompareArgs) -> Result<()> {
             continue;
         }
 
-        let pairs_a = if mapped_a {
+        let junctions_a = if mapped_a {
             build_side_junctions(
                 get_a(CS.name),
                 get_a(STRAND.name).chars().next().unwrap_or('.'),
@@ -205,7 +223,7 @@ pub fn run(args: &QueryJunctionCompareArgs) -> Result<()> {
         } else {
             Vec::new()
         };
-        let pairs_b = if mapped_b {
+        let junctions_b = if mapped_b {
             build_side_junctions(
                 get_b(CS.name),
                 get_b(STRAND.name).chars().next().unwrap_or('.'),
@@ -219,13 +237,17 @@ pub fn run(args: &QueryJunctionCompareArgs) -> Result<()> {
             Vec::new()
         };
 
-        let (qset_a, gset_a) = side_position_sets(&pairs_a);
-        let (qset_b, gset_b) = side_position_sets(&pairs_b);
+        let intron_strand_a = normalize_intron_strand(get_a(GENOMIC_INTRON_STRAND.name));
+        let intron_strand_b = normalize_intron_strand(get_b(GENOMIC_INTRON_STRAND.name));
+        let (qset_a, gset_a) = side_position_sets(&junctions_a, intron_strand_a);
+        let (qset_b, gset_b) = side_position_sets(&junctions_b, intron_strand_b);
 
         let strand_a = get_a(STRAND.name).chars().next().unwrap_or('.');
         let strand_b = get_b(STRAND.name).chars().next().unwrap_or('.');
-        let recs_a = build_junction_records(pairs_a, strand_a, &qset_b, &gset_b, mapped_b);
-        let recs_b = build_junction_records(pairs_b, strand_b, &qset_a, &gset_a, mapped_a);
+        let recs_a =
+            build_junction_records(junctions_a, intron_strand_a, strand_a, &qset_b, &gset_b, mapped_b);
+        let recs_b =
+            build_junction_records(junctions_b, intron_strand_b, strand_b, &qset_a, &gset_a, mapped_a);
 
         for r in &recs_a {
             write_per_read_row(&mut per_read_w, read_name, 'A', r)?;
@@ -250,7 +272,7 @@ pub fn run(args: &QueryJunctionCompareArgs) -> Result<()> {
     let mut unique_a = UniqueJunctions::default();
     let mut unique_b = UniqueJunctions::default();
 
-    let totals_wanted = wanted_columns(&[], &[TARGET_NAME, GENOMIC_JUNCTIONS, STRAND]);
+    let totals_wanted = wanted_columns(&[], &[TARGET_NAME, GENOMIC_JUNCTIONS, GENOMIC_INTRON_STRAND]);
     let totals_wanted_refs: Vec<&str> = totals_wanted.iter().map(String::as_str).collect();
     let mut totals_source = open_table(&args.input, InputFormat::Parquet, Some(&totals_wanted_refs))
         .with_context(|| format!("re-reading comparison table '{}' for pass 2", args.input))?;
@@ -262,26 +284,26 @@ pub fn run(args: &QueryJunctionCompareArgs) -> Result<()> {
     let chrom_b_idx = totals_idx(TARGET_NAME, SIDE_B)?;
     let gj_a_idx = totals_idx(GENOMIC_JUNCTIONS, SIDE_A)?;
     let gj_b_idx = totals_idx(GENOMIC_JUNCTIONS, SIDE_B)?;
-    let strand_a_idx = totals_idx(STRAND, SIDE_A)?;
-    let strand_b_idx = totals_idx(STRAND, SIDE_B)?;
+    let intron_strand_a_idx = totals_idx(GENOMIC_INTRON_STRAND, SIDE_A)?;
+    let intron_strand_b_idx = totals_idx(GENOMIC_INTRON_STRAND, SIDE_B)?;
 
     while let Some(fields) = totals_source.next_row()? {
         let get = |i: usize| -> &str { fields.get(i).map(String::as_str).unwrap_or("") };
 
         let chrom_a = get(chrom_a_idx);
         if is_mapped(chrom_a) {
-            let strand_a = get(strand_a_idx).chars().next().unwrap_or('.');
+            let intron_strand_a = normalize_intron_strand(get(intron_strand_a_idx));
             let juncs_a = parse_genomic_junction_str(get(gj_a_idx));
-            accumulate_side_total(chrom_a, strand_a, &juncs_a, &mut totals_a);
-            unique_a.observe(chrom_a, strand_a, &juncs_a);
+            accumulate_side_total(chrom_a, intron_strand_a, &juncs_a, &mut totals_a);
+            unique_a.observe(chrom_a, intron_strand_a, &juncs_a);
         }
 
         let chrom_b = get(chrom_b_idx);
         if is_mapped(chrom_b) {
-            let strand_b = get(strand_b_idx).chars().next().unwrap_or('.');
+            let intron_strand_b = normalize_intron_strand(get(intron_strand_b_idx));
             let juncs_b = parse_genomic_junction_str(get(gj_b_idx));
-            accumulate_side_total(chrom_b, strand_b, &juncs_b, &mut totals_b);
-            unique_b.observe(chrom_b, strand_b, &juncs_b);
+            accumulate_side_total(chrom_b, intron_strand_b, &juncs_b, &mut totals_b);
+            unique_b.observe(chrom_b, intron_strand_b, &juncs_b);
         }
     }
 

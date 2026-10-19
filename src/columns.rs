@@ -424,6 +424,57 @@ pub(crate) const GJC_PER_JUNCTION_COLS: [Col; 11] = [
     MOTIF_B,
 ];
 
+// ── toolkit query-junction-compare ───────────────────────────────────────────
+//
+// A junction is identified as in `genomic-junction-compare`:
+// `(target_name, intron_start, intron_end, intron_strand)`.
+
+/// Which side a junction row was rebuilt from: `A` or `B`.
+pub(crate) const SIDE: Col = col("side", Str);
+/// 1-based position of a junction along the read, per side.
+pub(crate) const JUNCTION_INDEX: Col = col("junction_index", U64);
+/// A junction's position in query (read) coordinates.
+pub(crate) const QUERY_POS: Col = col("query_pos", I64);
+/// A junction's splice-site motif, donor-acceptor in its orientation (`gt-ag`).
+pub(crate) const MOTIF: Col = col("motif", Str);
+pub(crate) const MATCHED_IN_QUERY: Col = col("matched_in_query", Bool);
+pub(crate) const MATCHED_IN_GENOMIC: Col = col("matched_in_genomic", Bool);
+pub(crate) const OTHER_SIDE_ALIGNED: Col = col("other_side_aligned", Bool);
+/// Differing reads carrying an unmatched junction on this side.
+pub(crate) const N_READS_QUERY_JUNCTIONS_DIFFERENT: Col = col("n_reads_query_junctions_different", U64);
+/// Reads in the whole table carrying the junction on this side.
+pub(crate) const N_READS_WITH_JUNCTION_TOTAL: Col = col("n_reads_with_junction_total", U64);
+
+/// `{prefix}.query_junction_compare.per_read_per_junc_info.tsv.gz`, in output
+/// order: the read and the junction's place on it, the junction itself, then
+/// the alignment's strand and the match flags.
+pub(crate) const QJC_PER_JUNCTION_COLS: [Col; 13] = [
+    QUERY_NAME,
+    SIDE,
+    JUNCTION_INDEX,
+    QUERY_POS,
+    TARGET_NAME,
+    INTRON_START,
+    INTRON_END,
+    INTRON_STRAND,
+    MOTIF,
+    STRAND,
+    MATCHED_IN_QUERY,
+    MATCHED_IN_GENOMIC,
+    OTHER_SIDE_ALIGNED,
+];
+
+/// `{prefix}.query_junction_compare.unmatched_junctions.{A,B}.tsv.gz`, in output order.
+pub(crate) const QJC_UNMATCHED_COLS: [Col; 7] = [
+    TARGET_NAME,
+    INTRON_START,
+    INTRON_END,
+    INTRON_STRAND,
+    MOTIF,
+    N_READS_QUERY_JUNCTIONS_DIFFERENT,
+    N_READS_WITH_JUNCTION_TOTAL,
+];
+
 // ── Classification columns ───────────────────────────────────────────────────
 
 pub(crate) const QUERY_IDENTICAL_SAME_STRAND: &str = "query_identical_same_strand";
@@ -520,6 +571,14 @@ mod tests {
         for c in CLASSIFY_SIDE_COLS {
             assert!(COMPARE_SIDE_COLS.contains(&c), "{:?} is not a comparison column", c.name);
         }
+    }
+
+    #[test]
+    fn junction_commands_name_a_junction_the_same_way() {
+        assert_unique(&QJC_PER_JUNCTION_COLS, "query-junction-compare per-junction");
+        assert_unique(&QJC_UNMATCHED_COLS, "query-junction-compare unmatched");
+        assert_eq!(QJC_UNMATCHED_COLS[..4], GJC_PER_JUNCTION_COLS[..4]);
+        assert_eq!(QJC_PER_JUNCTION_COLS[4..8], GJC_PER_JUNCTION_COLS[..4]);
     }
 
     #[test]

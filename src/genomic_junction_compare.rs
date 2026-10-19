@@ -38,7 +38,7 @@ use crate::columns::{
     GENOMIC_INTRON_STRAND,
 };
 use crate::compare_summary::{labels_from_row, require_ab_schema, require_col, wanted_columns, SideIndex};
-use crate::cs_parser::{oriented_motif, parse_cs};
+use crate::cs_parser::{note_motif, oriented_motif, parse_cs};
 use crate::io_utils::open_output;
 use crate::junction::{
     format_genomic_junction_tuple, genomic_junction_set_diffs, genomic_junction_set_stats,
@@ -132,15 +132,6 @@ struct JunctionAcc {
     n_reads_both: u64,
     motif_a: Option<[u8; 4]>,
     motif_b: Option<[u8; 4]>,
-}
-
-/// Keep the first motif seen, but prefer real letters over `nnnn`.
-fn note_motif(slot: &mut Option<[u8; 4]>, m: [u8; 4]) {
-    match slot {
-        None => *slot = Some(m),
-        Some(cur) if cur == b"nnnn" && &m != b"nnnn" => *slot = Some(m),
-        _ => {}
-    }
 }
 
 /// The `category`/`count` summary.
@@ -427,15 +418,6 @@ mod tests {
         );
         let same = compare_sides(&a, &a);
         assert_eq!((same.shared, same.only_a, same.only_b), (1, 0, 0));
-    }
-
-    #[test]
-    fn motif_prefers_real_letters_over_nn() {
-        let mut slot = None;
-        note_motif(&mut slot, *b"nnnn");
-        note_motif(&mut slot, *b"gtag");
-        note_motif(&mut slot, *b"gcag");
-        assert_eq!(slot, Some(*b"gtag"));
     }
 
     #[test]

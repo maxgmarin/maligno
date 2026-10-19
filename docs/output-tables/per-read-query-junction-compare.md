@@ -5,31 +5,37 @@ reconstructed splice junction, per side (A/B), per read selected as
 "differing" (see [query-junction-compare-summary.md](query-junction-compare-summary.md)
 for the selection formula). Written by `toolkit query-junction-compare`.
 
-11 columns.
+13 columns. A junction is identified as in `genomic-junction-compare`, by
+columns 5–8: `(target_name, intron_start, intron_end, intron_strand)`.
 
 | # | Column | Description |
 |---|---|---|
 | 1 | `query_name` | Read ID |
 | 2 | `side` | Which set this junction was reconstructed from: `A` or `B` |
 | 3 | `junction_index` | 1-based ordinal position of this junction along the read, 5'→3' in original-read orientation (see Notes) |
-| 4 | `strand` | This alignment's strand (`+`/`-`) |
-| 5 | `query_pos` | Query-space junction coordinate (plus-strand-normalized, same convention as [compare.md](compare.md)'s `query_junctions` columns) |
-| 6 | `chrom` | Genomic contig of this junction |
-| 7 | `genomic_start` | Junction's absolute genomic interval start (0-based half-open) |
-| 8 | `genomic_end` | Junction's absolute genomic interval end |
-| 9 | `matched_in_query` | `1` if `query_pos` also appears in the *other* side's query-space junction set for this read |
-| 10 | `matched_in_genomic` | `1` if the genomic interval also appears in the *other* side's genomic junction set for this read |
-| 11 | `other_side_aligned` | `1` if the other side has any alignment at all for this read; `0` means this read only mapped on the `side` shown, so columns 9/10 are trivially `0` (nothing to compare against) |
+| 4 | `query_pos` | Query-space junction coordinate (plus-strand-normalized, same convention as [compare.md](compare.md)'s `query_junctions` columns) |
+| 5 | `target_name` | Genomic contig of this junction |
+| 6 | `intron_start` | Intron start on the reference (0-based half-open) |
+| 7 | `intron_end` | Intron end |
+| 8 | `intron_strand` | The intron's strand on the reference: this side's `genomic_intron_strand` (`+`/`-`, or `*` when the aligner gave no transcript strand; see [REFERENCE.md](../REFERENCE.md#transcript-strand)) |
+| 9 | `motif` | Splice-site motif from the `cs` tag, donor-acceptor in the junction's orientation (e.g. `gt-ag`); `nn-nn` when the aligner doesn't report the bases (STAR); reference-forward when `intron_strand` is `*` |
+| 10 | `strand` | This side's **alignment** strand (`+`/`-`), not the intron's |
+| 11 | `matched_in_query` | `1` if `query_pos` also appears in the *other* side's query-space junction set for this read |
+| 12 | `matched_in_genomic` | `1` if the other side's alignment of this read has the same junction: same `target_name`, `intron_start`, `intron_end` **and** `intron_strand` |
+| 13 | `other_side_aligned` | `1` if the other side has any alignment at all for this read; `0` means this read only mapped on the `side` shown, so columns 11/12 are trivially `0` (nothing to compare against) |
 
 **Notes**
-- Junctions are re-derived from each side's `cs` tag, so `query_pos` and the
-  genomic coordinates on the same row always describe the same intron, on both
-  strands.
+- Junctions are re-derived from each side's `cs` tag, so `query_pos`, the
+  genomic coordinates and the motif on the same row always describe the same
+  intron, on both strands.
+- `matched_in_genomic` needs the same intron strand: a read whose A and B
+  alignments infer opposite transcript strands has no matching junctions in
+  reference coordinates, even at the same coordinates.
 - `junction_index` is computed independently per side — it is a display/sort
   key, not a matching key. A's junction #3 and B's junction #3 are not
   guaranteed to be the same biological junction (an extra/missing junction
   partway through the read shifts every later index on that side).
-- For a `+`-strand alignment, `genomic_start` increases monotonically with
+- For a `+`-strand alignment, `intron_start` increases monotonically with
   `junction_index`; for a `-`-strand alignment it decreases monotonically
   (query 5'→3' order runs opposite to the reference's forward direction on
   the minus strand).

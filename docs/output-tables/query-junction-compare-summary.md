@@ -19,7 +19,7 @@ Every `category` below is one **row** in the file, in this order:
 | `n_query_junctions_different_aligned_both` | ...of those, mapped on both sides with differing query-space junction sets |
 | `n_query_junctions_different_aligned_only_A` | ...of those, mapped only in A, with `n_intron_events_A > 0` |
 | `n_query_junctions_different_aligned_only_B` | ...of those, mapped only in B, with `n_intron_events_B > 0` |
-| `n_unique_junctions_A` | Distinct genomic junctions `(chrom, start, end, strand)` across every row's side-A alignment |
+| `n_unique_junctions_A` | Distinct genomic junctions `(target_name, intron_start, intron_end, intron_strand)` across every row's side-A alignment |
 | `n_unique_junctions_B` | The same, for side B |
 | `n_unique_junctions_shared` | Distinct junctions present on both sides, anywhere in the table |
 | `n_unique_junctions_only_A` | Distinct junctions on side A that appear in no side-B alignment |
@@ -46,9 +46,11 @@ Every `category` below is one **row** in the file, in this order:
   only (the one per read per side that the comparison table keeps). Secondary
   or supplementary alignments that were not chosen are not in the table and
   are not counted.
-- The junction key matches the unmatched tables: `strand` is the alignment's
-  strand. For unstranded reads, the same intron supported by reads aligned to
-  both strands counts as two distinct junctions.
+- The junction key matches the unmatched tables and `genomic-junction-compare`:
+  `intron_strand` is the intron's strand on the reference, so the same intron
+  counts once whichever strand its reads aligned to. The
+  `n_unique_junctions_*` rows equal `genomic-junction-compare`'s
+  `n_distinct_junctions_*` on the same table.
 - `n_unique_junctions_only_A` and `n_unmatched_junctions_A` answer different
   questions. A junction is *unmatched* when a differing read's A alignment
   has it and that same read's B alignment doesn't; it may still appear in
