@@ -40,10 +40,10 @@ Each tarball holds the `maligno` binary and this README.
 cd <directory_on_PATH>
 
 # Download the latest release (Linux x86_64)
-wget https://github.com/maxgmarin/maligno/releases/download/v0.40.0/maligno-v0.40.0-x86_64-unknown-linux-musl.tar.gz
+wget https://github.com/maxgmarin/maligno/releases/download/v0.41.0/maligno-v0.41.0-x86_64-unknown-linux-musl.tar.gz
 
 # Uncompress the .tar.gz to get the binary
-tar -xzf maligno-v0.40.0-x86_64-unknown-linux-musl.tar.gz
+tar -xzf maligno-v0.41.0-x86_64-unknown-linux-musl.tar.gz
 
 # Test that the binary runs
 ./maligno --help
