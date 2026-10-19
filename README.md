@@ -7,27 +7,52 @@
 # maligno
 
 **maligno** is a toolkit for systematically comparing two sets of alignments read-by-read.
-The primary command, **`maligno compare`**, takes two alignment files ([PAF](https://github.com/lh3/miniasm/blob/master/PAF.md), SAM or BAM) for the same set of reads
+The primary command, **`maligno compare`**, takes two alignment files ([PAF](https://github.com/lh3/miniasm/blob/master/PAF.md), [SAM/BAM](https://en.wikipedia.org/wiki/SAM_(file_format))) for the same set of reads
 and produces a detailed per-read alignment comparison table. This table enables easy comparison of alignment stats (alignment scores, coverage, indels, mismatches,
-soft-clipping, and splice-junction agreement) across the analyzed reads.
+soft-clipping, and splice-junction agreement) across the aligned sequences.
 
-This makes it easy to compare alignment results across conditions such as:
-1) Different aligners (`minimap2` vs `bwa mem`)
-2) Different parameters of the same aligner (`splice` vs `splice:hq` for transcript alignment with `minimap2`)
-3) Different reference genomes (`GRCh38` vs `CHM13`)
+This means we can use `maligno` to compare alignment results between: <br>
+1) Different aligners (`minimap2` vs `bwa mem`) <br>
+2) Different parameters of the same aligner (`splice` vs `splice:hq` for transcript alignment with `minimap2`) <br>
+3) Different reference genomes (`GRCh38` vs `CHM13`) <br>
 
-With a single comparison table, you can quickly ask:
+With a single alignment comparison table, you can quickly ask:
 - "How many reads aligned identically?"
-- "Which read IDs differ in their alignment between set A and B, and how do they differ?"
+- "Which read IDs differ in their alignment between sets A and B, and how do they specifically differ?"
 - "How many reads improved their alignment score by X points?"
-- "How do splice junctions differ, in read or genomic coordinate space?"
+- "How do splice junctions differ between sets A and B? For which specific reads?"
 
-In short, `maligno` gives you an efficient framework for detailed alignment comparisons
+In short, `maligno` gives you an framework for detailed alignment comparisons
 across different parameters, aligners, and references.
 
 ---
 
 ## Install
+
+### Installing prebuilt binaries
+
+Prebuilt binaries for linux and mac OS are attached to each
+[GitHub release](https://github.com/maxgmarin/maligno/releases).
+Each tarball holds the `maligno` binary and this README.
+
+```bash
+# Go to the directory where you want to place the maligno binary
+cd <directory_on_PATH>
+
+# Download the latest release (Linux x86_64)
+wget https://github.com/maxgmarin/maligno/releases/download/v0.40.0/maligno-v0.40.0-x86_64-unknown-linux-musl.tar.gz
+
+# Uncompress the .tar.gz to get the binary
+tar -xzf maligno-v0.40.0-x86_64-unknown-linux-musl.tar.gz
+
+# Test that the binary runs
+./maligno --help
+./maligno --version
+
+# Then add the directory with the binary to your $PATH variable
+```
+
+### Building from source
 
 Requires a [Rust toolchain](https://rustup.rs).
 
@@ -64,7 +89,7 @@ test_data/test_results/Splice_vs_SpliceHQ.compare.parquet
 test_data/test_results/Splice_vs_SpliceHQ.compare.summary.tsv
 ```
 
-#### Use `maligno toolkit find-aln-diff` to list the reads whose alignments differ, and where they cluster
+#### Use `maligno toolkit find-aln-diff` to list the reads whose alignments differ, and where they cluster in the coordinate systems of A and B
 
 ```bash
 maligno toolkit find-aln-diff \
@@ -116,7 +141,7 @@ It then runs the whole pipeline in four main steps:
    Every value reported for the read describes that one alignment.
 4. **Compare the representative alignment across sets A and B**. The selected
    alignments for each read are systematically compared and the results are
-   written to a final comparison table (Parquet by default) that keeps track of each alignment's info
+   written to a final comparison table ([Parquet](https://www.databricks.com/blog/what-is-parquet) by default) that keeps track of each alignment's info
    and the differences between them.
 
 #### Options
@@ -150,38 +175,18 @@ A `compare` run can write the following files in the user defined output directo
 | `{prefix}.{label}.readinfo.tsv.gz` | 37 | **per-read** table: the chosen best alignment for each read (per set); opt-in via `--emit-readinfo` |
 | `{prefix}.compare.parquet` | 93 | the **comparison** table (unless `--format tsv`) |
 | `{prefix}.compare.tsv.gz` | 93 | the same table as gzipped TSV (only with `--format tsv` or `both`) |
-| `{prefix}.compare.summary.tsv` | 2 | **aggregate summary statistics** (see below) |
+| `{prefix}.compare.summary.tsv` | 2 | **aggregate summary statistics** |
 
-**`toolkit find-aln-diff`** takes the comparison table (Parquet) and writes the
-reads whose alignments differ between A and B (`{prefix}.query_aln_diff_reads.tsv.gz`,
-9 columns), the genomic regions where they cluster, per set
-(`{prefix}.query_aln_diff_regions.{A,B}.bed.gz`, 8 columns), and a summary of
-its selection. `--aligned-both-only` restricts it to reads mapped in both sets.
-
-Separately, **`toolkit query-junction-compare`** takes an existing
-`compare.parquet` (Parquet input only), selects reads whose
-**query-space** splice junctions differ, and reconstructs those junctions
-per side, paired in both query and genomic coordinate space, plus a rollup
-of which specific junctions are unsupported by the other side and how many
-reads *total* (across the whole table) carry each one:
-
-```bash
-maligno toolkit query-junction-compare \
-  -i test_data/test_results/Splice_vs_SpliceHQ.compare.parquet \
-  --outdir test_data/test_results/ --prefix Splice_vs_SpliceHQ
-```
-
-```
-test_data/test_results/Splice_vs_SpliceHQ.query_junction_compare.summary.tsv
-test_data/test_results/Splice_vs_SpliceHQ.query_junction_compare.per_read_per_junc_info.tsv.gz
-test_data/test_results/Splice_vs_SpliceHQ.query_junction_compare.unmatched_junctions.A.tsv.gz
-test_data/test_results/Splice_vs_SpliceHQ.query_junction_compare.unmatched_junctions.B.tsv.gz
-```
+Column-by-column definitions of the comparison table are in
+[`docs/output-tables/compare.md`](docs/output-tables/compare.md), and the summary
+categories (alignment status, query and reference identity) in
+[`docs/output-tables/compare-summary.md`](docs/output-tables/compare-summary.md).
+`toolkit compare-summary` recomputes the summary from an existing comparison table.
 
 To compare A's and B's splice junctions in **genomic (reference)
 coordinates** (each junction with its strand and splice-site motif, per read
 and per distinct junction), run **`toolkit genomic-junction-compare`** on the
-comparison table (Parquet or TSV). It only makes sense when A and B were
+comparison table ([Parquet](https://www.databricks.com/blog/what-is-parquet) or TSV). It only makes sense when A and B were
 aligned to the same reference:
 
 ```bash
@@ -205,28 +210,18 @@ transcripts aligned with minimap2 `-x splice` vs `-x splice:hq`.
 If run from the repo root, the outputs will go to `test_data/test_results/`:
 
 ```bash
-# Full comparison (sort → verify read-IDs → comparison table), plus the
-# opt-in per-set alninfo/readinfo tables (--emit-alninfo/--emit-readinfo) so
-# this walkthrough can sanity-check all three table shapes below. The
-# comparison table is Parquet-only by default; --format both also writes the
-# gzipped TSV that the zcat/awk checks below read.
+# Full comparison: the comparison table and its summary, plus the opt-in
+# per-set alninfo/readinfo tables.
 maligno compare \
   -a test_data/Splice.AlnToHG38.PriAln.paf.gz   --label-a Splice \
   -b test_data/SpliceHQ.AlnToHG38.PriAln.paf.gz --label-b SpliceHQ \
   -o test_data/test_results/ --prefix Splice_vs_SpliceHQ \
-  --emit-alninfo --emit-readinfo --format both
+  --emit-alninfo --emit-readinfo
 
-# Inspect a comparison header (column number → name).
-zcat < test_data/test_results/Splice_vs_SpliceHQ.compare.tsv.gz | head -1 | tr '\t' '\n' | nl
-
-# Sanity-check column counts (expect 36 for alninfo, 37 for readinfo, 93 for compare).
-for f in test_data/test_results/Splice_vs_SpliceHQ.*.tsv.gz; do
-  printf '%s\t' "$f"; zcat < "$f" | awk -F'\t' '{print NF}' | sort -u | paste -sd, -
-done
-
-# Count reads whose query-coordinate junctions don't exactly agree between the two sets.
-zcat < test_data/test_results/Splice_vs_SpliceHQ.compare.tsv.gz \
-  | awk -F'\t' 'NR==1{for(i=1;i<=NF;i++)c[$i]=i;next} $c["n_query_junctions_not_shared"]>0' | wc -l
+# Reconstruct the splice junctions of the reads whose query-space junctions differ.
+maligno toolkit query-junction-compare \
+  -i test_data/test_results/Splice_vs_SpliceHQ.compare.parquet \
+  -o test_data/test_results/ -p Splice_vs_SpliceHQ
 ```
 
 ---
@@ -243,72 +238,22 @@ The full manual lives in **[`docs/REFERENCE.md`](docs/REFERENCE.md)**:
 
 - Every command, including `sam2paf` and `toolkit`'s individual building blocks.
 - How the representative alignment is chosen and how reads are classified.
-- Junction comparison, TSV vs Parquet, and troubleshooting.
+- Junction comparison, TSV vs [Parquet](https://www.databricks.com/blog/what-is-parquet), and troubleshooting.
 - The static HPC build.
 
 ---
 
-## Extra details for the output tables
+## FAQ
+
+### Preprocessing BAMs produced by the STAR alginer (adding the `MD` tag)
+
+**STAR does not emit a `cs` tag or `MD` on its own, so its BAMs need preprocessing with `samtools calmd` before conversion from SAM to PAF:**
 
 
-#### The alignment comparison table (`{prefix}.compare.parquet` or `{prefix}.compare.tsv.gz`)
-
-One row per read, 93 columns: the representative alignment's stats for set A and
-for set B (suffixed `_A` / `_B`), plus a block of columns comparing how those two
-alignments differ (score, coverage, indels, soft-clipping, and junction agreement
-in query space, i.e. positions in the read). Each side also carries the
-transcript strand from minimap2's `ts:A` or STAR's `XS:A`, twice: relative to the
-read (`query_transcript_strand`) and on the reference (`genomic_intron_strand`)
-(see [REFERENCE.md](docs/REFERENCE.md#transcript-strand)).
-
-For the full column-by-column layout and dictionary, see
-[`docs/output-tables/compare.md`](docs/output-tables/compare.md).
-
----
-
-#### Summary statistics in `{prefix}.compare.summary.tsv`
-
-Alongside the comparison table, `compare` writes a small `…summary.tsv` with
-predefined aggregate counts. 
-
-The headline is the **per-read alignment status**, followed by **identity** stats:
-
-| Category | Meaning |
-|----------|---------|
-| `label_A` / `label_B` | which dataset each side is (the `--label-a` / `--label-b` values), so the summary is self-describing |
-| `reads_compared` | reads written to the comparison table |
-| `aligned_both` / `aligned_only_A` / `aligned_only_B` / `aligned_neither` | how the read's representative alignment maps in each set (an unmapped side is `target_name == "*"`) |
-| `query_identical` / `query_not_identical` | `query_identical`: either both sides mapped over the same query span with the **same alignment relative to the read** (the same `cs` on the same strand, or reverse-complement `cs` on opposite strands; intron motif letters ignored), or neither side mapped at all (`aligned_neither`: both aligners agreeing a read doesn't map is agreement, not disagreement); `query_not_identical` is its complement among `aligned_both` reads only |
-| `query_identical_same_strand` / `query_identical_revcomp` | the both-mapped `query_identical` reads, split by same-strand vs reverse-complement match |
-| `query_junctions_identical` / `query_junctions_not_identical` | same, but comparing only the **query-space splice-junction set** (ignores mismatches/indels/soft-clips) |
-| `ref_same_position_same_aln` | reference-identical: same `target_name` + `strand` + `target_start` (same genomic position) **and** same `cs` |
-| `ref_same_position_diff_aln` | same reference position, different alignment (e.g. a different indel placement at the same site) |
-| `ref_diff_position_same_aln` | same alignment, different reference position |
-| `ref_diff_position_diff_aln` | both reference position and alignment differ |
-| `present_only_in_A_by_id` / `present_only_in_B_by_id` | sequences found in only one set's PAF (will be 0 unless `--allow-id-mismatch` is used) |
-
-To get the same summary from an existing comparison table, use
-**`toolkit compare-summary`**:
-
-```bash
-maligno toolkit compare-summary -i AvsB.compare.parquet -o AvsB.compare.summary.tsv
-```
-
-Full definitions are in the [reference](docs/REFERENCE.md#classification).
-
----
-
-## Preprocessing STAR BAMs for SAM/BAM input (adding the `MD` tag)
-
-`maligno sam2paf` (and `compare` on SAM/BAM input) uses an aligner-supplied `cs:Z:`
-SAM tag as-is when one is present (e.g. minimap2 emits it natively).
-When there's no `cs` tag, it falls back to deriving one from **`CIGAR` +
+When `maligno` is parsing SAM/BAM files it uses an aligner-supplied `cs:Z:`
+SAM tag as-is when one is present. When there's no `cs` tag, `maligno` falls back to deriving one from **`CIGAR` +
 `MD` + `SEQ`**. A mapped record with neither a `cs` tag nor a usable `MD` tag
-(or with `MD` but `SEQ` = `*`, common for secondary alignments) is an **error**.
-
-If the aligner does NOT emit an `MD` tag it will need to be generated with `samtools calmd`.
-
-STAR does not emit a `cs` tag or `MD` on its own, so its BAMs need one preprocessing pass with `samtools calmd` before conversion from SAM to PAF:
+(or with `MD` but `SEQ` = `*`, common for secondary alignments) is an **error**. If the aligner (like STAR) does NOT emit an `MD` tag it will need to be generated with `samtools calmd`.
 
 ```bash
 samtools faidx reference.fasta   # only if reference.fasta.fai doesn't already exist

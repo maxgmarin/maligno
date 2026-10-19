@@ -119,7 +119,8 @@ so `n_alns_secondary` is `0`.
 
 Every kept, mapped SAM/BAM record needs a `cs` tag, or an `MD` tag plus `SEQ`
 to build one from. A record with neither stops the run (see
-[`sam2paf`](#sam2paf), and the README's section on preprocessing STAR BAMs).
+[`sam2paf`](#sam2paf), and the README's FAQ on
+[preprocessing STAR BAMs](../README.md#preprocessing-star-bams-for-sambam-input-adding-the-md-tag)).
 
 ### What it does
 
@@ -865,7 +866,8 @@ summary but get no row.
 ### `sam2paf` / `compare` stops with a missing-`cs` error
 
 A mapped record has neither a `cs` tag nor a usable `MD` tag. See
-[`sam2paf`](#sam2paf) and the README's section on preprocessing STAR BAMs.
+[`sam2paf`](#sam2paf) and the README's FAQ on
+[preprocessing STAR BAMs](../README.md#preprocessing-star-bams-for-sambam-input-adding-the-md-tag).
 
 ---
 
