@@ -245,7 +245,7 @@ The full manual lives in **[`docs/REFERENCE.md`](docs/REFERENCE.md)**:
 
 ## FAQ
 
-### Preprocessing BAMs produced by the STAR alginer (adding the `MD` tag)
+### Preprocessing BAMs produced by the STAR aligner (adding the `MD` tag)
 
 **STAR does not emit a `cs` tag or `MD` on its own, so its BAMs need preprocessing with `samtools calmd` before conversion from SAM to PAF:**
 
