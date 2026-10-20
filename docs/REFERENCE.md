@@ -451,7 +451,7 @@ skipped.
 ## `toolkit query-junction-compare`
 
 ```bash
-maligno toolkit query-junction-compare -i <compare.parquet> -o/--outdir <DIR> -p/--prefix <STR>
+maligno toolkit query-junction-compare -i <compare.parquet> -o/--outdir <DIR> -p/--prefix <STR> [--emit-all-junctions]
 ```
 
 For each read whose splice junctions differ between A and B, this
@@ -503,8 +503,9 @@ definition. Every other read is still counted in the summary.
 | `{prefix}.query_junction_compare.per_read_per_junc_info.tsv.gz` | one row per reconstructed junction, per side, per differing read, with its intron strand, motif and the alignment's strand; see [per-read-query-junction-compare.md](output-tables/per-read-query-junction-compare.md) |
 | `{prefix}.query_junction_compare.unmatched_junctions.A.tsv.gz` | distinct junctions found in A but unsupported in B, with their motif, the number of differing reads carrying each one and the number of reads in the whole table carrying it; see [query-junction-compare-unmatched.md](output-tables/query-junction-compare-unmatched.md) |
 | `{prefix}.query_junction_compare.unmatched_junctions.B.tsv.gz` | the same, for B unsupported in A |
+| `{prefix}.query_junction_compare.all_junctions.{A,B}.tsv.gz` | with `--emit-all-junctions` only: every distinct junction on that side across the whole table, in the unmatched tables' columns; works whether or not A and B share a reference; see [query-junction-compare-all-junctions.md](output-tables/query-junction-compare-all-junctions.md) |
 
-The per-read and unmatched-junction tables are always gzipped; the summary
+The per-read, unmatched-junction and all-junction tables are always gzipped; the summary
 never is. In the per-read table, `junction_index` is 1-based and counted
 separately on each side, in the read's 5'→3' order. It is not a matching key
 across sides.

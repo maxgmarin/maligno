@@ -31,6 +31,8 @@ Every `category` below is one **row** in the file, in this order:
 - `n_total = n_neither_aligned + n_both_aligned_query_junctions_identical + n_aligned_only_no_junctions + n_query_junctions_different`
 - `n_query_junctions_different = n_query_junctions_different_aligned_both + n_query_junctions_different_aligned_only_A + n_query_junctions_different_aligned_only_B`
 - `n_unique_junctions_A = n_unique_junctions_shared + n_unique_junctions_only_A` (symmetric for B)
+- `n_unique_junctions_A` / `_B` = the number of rows in the
+  [all-junctions tables](query-junction-compare-all-junctions.md) (`--emit-all-junctions`)
 
 **Notes**
 - Every row of the input table is tallied into exactly one bucket, whether or

@@ -48,14 +48,6 @@ impl JunctionRecord {
     }
 }
 
-/// A `genomic_intron_strand` value as `+`, `-` or `*` (unknown).
-pub(super) fn normalize_intron_strand(s: &str) -> char {
-    match s.chars().next() {
-        Some(c @ ('+' | '-')) => c,
-        _ => '*',
-    }
-}
-
 /// Reconstruct one side's final, query-ascending junction list from its `cs`
 /// tag — applying the same offset/strand conversion as `record.rs`'s
 /// `AlnInfo::from_paf`, but keeping each junction's query position, reference
@@ -223,13 +215,5 @@ mod tests {
             assert_eq!(cells.len(), crate::columns::QJC_PER_JUNCTION_COLS.len());
             assert_eq!((cells[7], cells[8], cells[9]), (&strand.to_string()[..], expect, "+"));
         }
-    }
-
-    #[test]
-    fn intron_strand_is_normalized() {
-        assert_eq!(normalize_intron_strand("+"), '+');
-        assert_eq!(normalize_intron_strand("-"), '-');
-        assert_eq!(normalize_intron_strand("*"), '*');
-        assert_eq!(normalize_intron_strand(""), '*');
     }
 }

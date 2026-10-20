@@ -1,124 +1,143 @@
-//! Per-side rollup of unmatched genomic junctions: how many distinct reads
-//! report each exact `(target_name, intron_start, intron_end, intron_strand)`
-//! junction unsupported by the other side, with its splice-site motif, plus
-//! (pass 2, see `mod.rs`) how many reads *total*, across the whole comparison
-//! table, carry that same junction on this side.
+//! Per-side catalog of genomic junctions, keyed by
+//! `(target_name, intron_start, intron_end, intron_strand)`.
 //!
-//! Pass 2 also collects every distinct junction seen on each side
-//! (`UniqueJunctions`), for the summary's unique / shared / only-A / only-B
-//! junction counts.
+//! Pass 1 (see `mod.rs`) adds, for each differing read, the junctions the other
+//! side doesn't support; pass 2 adds every junction of every read. From one
+//! catalog per side come the unmatched table (the junctions with an unmatched
+//! occurrence), the all-junctions table (`--emit-all-junctions`), and the
+//! summary's unique / shared / only-A / only-B counts.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
 use anyhow::Result;
 
-use crate::columns::{header_line, QJC_UNMATCHED_COLS};
+use crate::columns::{header_line, QJC_JUNCTION_COLS};
 use crate::cs_parser::{note_motif, oriented_motif};
 use crate::io_utils::open_output;
+use crate::junction::SideJunctions;
 
 use super::reconstruct::{GenomicKey, JunctionRecord};
 
-/// One unmatched junction's rollup: the distinct differing reads carrying it,
-/// and its motif (the first seen, preferring real letters over `nnnn`).
+/// One junction's counts and motif on one side.
 #[derive(Debug, Default, Clone, PartialEq)]
-pub(super) struct Unmatched {
-    pub n_reads: u64,
-    pub motif: Option<[u8; 4]>,
+pub(super) struct JunctionTally {
+    /// Reads in the whole table whose alignment on this side has the junction.
+    pub n_reads_total: u64,
+    /// Differing reads where the junction is unmatched on the other side.
+    pub n_reads_unmatched: u64,
+    /// First motif among the unmatched occurrences, preferring real letters.
+    pub motif_unmatched: Option<[u8; 4]>,
+    /// First motif among all occurrences, preferring real letters.
+    pub motif_any: Option<[u8; 4]>,
 }
 
-pub(super) type UnmatchedAcc = HashMap<GenomicKey, Unmatched>;
-/// Same key, used for pass 2's total-occurrence tally.
-pub(super) type TotalsAcc = HashMap<GenomicKey, u64>;
-
-/// Increment the rollup for one read's `matched_in_genomic == false` junctions
-/// on this side. Dedupes within this read's own record list first, so a read
-/// that happens to report the same unmatched locus more than once still only
-/// increments the read-count by 1 for that key (the column is
-/// "distinct reads", not a raw occurrence tally).
-pub(super) fn accumulate_unmatched(acc: &mut UnmatchedAcc, records: &[JunctionRecord]) {
-    let mut seen_this_read: HashSet<GenomicKey> = HashSet::new();
-    for r in records {
-        if r.matched_in_genomic {
-            continue;
-        }
-        let key = r.genomic_key();
-        if seen_this_read.insert(key.clone()) {
-            let entry = acc.entry(key).or_default();
-            entry.n_reads += 1;
-            note_motif(&mut entry.motif, r.junction.motif);
-        }
+impl JunctionTally {
+    /// The reported motif: from the unmatched occurrences when there are any,
+    /// otherwise from all occurrences.
+    fn motif(&self) -> Option<[u8; 4]> {
+        self.motif_unmatched.or(self.motif_any)
     }
 }
 
-/// Pass 2: for one comparison-table row's one side, take its parsed
-/// genomic junctions (from `parse_genomic_junction_str`), reattach
-/// `target_name` (dropped at serialization — see that function's doc comment),
-/// pair each junction with this side's `intron_strand`, and increment the
-/// running total for any junction that's a key in `totals` (i.e. one of the
-/// junctions already flagged by pass 1's `UnmatchedAcc`). Junctions not
-/// already in `totals` are ignored — this only ever counts occurrences of
-/// already-flagged junctions, never discovers new ones. Needs no `cs`-tag
-/// reconstruction: pure genomic set membership, unaffected by the `-`-strand
-/// query↔genomic pairing issue `reconstruct.rs` exists to solve, since this
-/// never needs a query position.
-pub(super) fn accumulate_side_total(
-    target_name: &str,
-    intron_strand: char,
-    junctions: &[(u64, u64)],
-    totals: &mut TotalsAcc,
-) {
-    for &(start, end) in junctions {
-        let key = (target_name.to_string(), start, end, intron_strand);
-        if let Some(count) = totals.get_mut(&key) {
-            *count += 1;
-        }
-    }
-}
-
-/// Every distinct `(target_name, intron_start, intron_end, intron_strand)`
-/// genomic junction seen on one side, across every row of the comparison
-/// table — same key as the unmatched tables, so the counts line up with those
-/// files.
+/// Every junction seen on one side, with its [`JunctionTally`].
 ///
-/// Two-level (target_name → set of `(start, end, intron_strand)`) rather than
-/// one set keyed on the full tuple: the name is looked up once per row instead of
-/// allocated once per junction, and each entry stays a fixed-size 24 bytes.
-/// Memory scales with the number of *distinct* junctions, not reads.
+/// Two-level (target_name → `(start, end, intron_strand)` → tally) rather than
+/// one map keyed on the full tuple: the name is looked up once per row instead
+/// of allocated once per junction. Memory scales with the number of *distinct*
+/// junctions, not reads.
 #[derive(Default)]
-pub(super) struct UniqueJunctions(HashMap<String, HashSet<(u64, u64, char)>>);
+pub(super) struct JunctionCatalog(HashMap<String, HashMap<(u64, u64, char), JunctionTally>>);
 
-impl UniqueJunctions {
-    /// Add one row's one side: its target name, intron strand, and parsed
-    /// genomic junctions.
-    pub(super) fn observe(&mut self, chrom: &str, intron_strand: char, junctions: &[(u64, u64)]) {
-        if junctions.is_empty() {
-            return;
+impl JunctionCatalog {
+    fn tally(&mut self, target_name: &str) -> &mut HashMap<(u64, u64, char), JunctionTally> {
+        if !self.0.contains_key(target_name) {
+            self.0.insert(target_name.to_string(), HashMap::new());
         }
-        if !self.0.contains_key(chrom) {
-            self.0.insert(chrom.to_string(), HashSet::new());
-        }
-        let set = self.0.get_mut(chrom).expect("inserted above");
-        for &(start, end) in junctions {
-            set.insert((start, end, intron_strand));
+        self.0.get_mut(target_name).expect("inserted above")
+    }
+
+    /// Pass 1: one differing read's junction records on this side. Each
+    /// junction unmatched on the other side counts once per read, however many
+    /// times the read reports it.
+    pub(super) fn add_unmatched(&mut self, records: &[JunctionRecord]) {
+        let mut seen_this_read: HashSet<GenomicKey> = HashSet::new();
+        for r in records {
+            if r.matched_in_genomic {
+                continue;
+            }
+            let key = r.genomic_key();
+            if seen_this_read.insert(key.clone()) {
+                let (target_name, start, end, strand) = key;
+                let t = self.tally(&target_name).entry((start, end, strand)).or_default();
+                t.n_reads_unmatched += 1;
+                note_motif(&mut t.motif_unmatched, r.junction.motif);
+            }
         }
     }
 
+    /// Pass 2: every junction of one read's alignment on this side.
+    pub(super) fn add_side(&mut self, side: &SideJunctions) {
+        let Some((target_name, ..)) = side.junctions.first() else {
+            return;
+        };
+        let by_pos = self.tally(target_name);
+        for (&(_, start, end, strand), &motif) in side.junctions.iter().zip(&side.motifs) {
+            let t = by_pos.entry((start, end, strand)).or_default();
+            t.n_reads_total += 1;
+            note_motif(&mut t.motif_any, motif);
+        }
+    }
+
+    /// Distinct junctions on this side.
     pub(super) fn len(&self) -> u64 {
-        self.0.values().map(|s| s.len() as u64).sum()
+        self.0.values().map(|m| m.len() as u64).sum()
+    }
+
+    /// Distinct junctions with at least one unmatched occurrence.
+    pub(super) fn n_unmatched(&self) -> u64 {
+        self.0.values().flat_map(|m| m.values()).filter(|t| t.n_reads_unmatched > 0).count() as u64
     }
 
     /// How many of this side's distinct junctions also appear in `other`.
-    fn n_shared_with(&self, other: &UniqueJunctions) -> u64 {
+    fn n_shared_with(&self, other: &JunctionCatalog) -> u64 {
         let mut n = 0;
-        for (chrom, set) in &self.0 {
-            if let Some(other_set) = other.0.get(chrom) {
-                // Walk the smaller set, probe the larger.
-                let (small, large) = if set.len() <= other_set.len() { (set, other_set) } else { (other_set, set) };
-                n += small.iter().filter(|k| large.contains(k)).count() as u64;
+        for (target_name, by_pos) in &self.0 {
+            if let Some(other_by_pos) = other.0.get(target_name) {
+                n += by_pos.keys().filter(|k| other_by_pos.contains_key(k)).count() as u64;
             }
         }
         n
+    }
+
+    /// Write the junction table (`QJC_JUNCTION_COLS`), sorted by
+    /// `(target_name, intron_start, intron_end, intron_strand)`: every
+    /// junction, or with `unmatched_only` just those with an unmatched
+    /// occurrence (the unmatched table).
+    pub(super) fn write(&self, path: &str, unmatched_only: bool) -> Result<()> {
+        let mut names: Vec<&String> = self.0.keys().collect();
+        names.sort();
+        let mut w = open_output(Some(path))?;
+        writeln!(w, "{}", header_line(&QJC_JUNCTION_COLS))?;
+        for target_name in names {
+            let by_pos = &self.0[target_name];
+            let mut keys: Vec<&(u64, u64, char)> = by_pos.keys().collect();
+            keys.sort();
+            for key @ (start, end, strand) in keys {
+                let t = &by_pos[key];
+                if unmatched_only && t.n_reads_unmatched == 0 {
+                    continue;
+                }
+                let motif = t.motif().map_or(".".to_string(), |m| oriented_motif(m, *strand));
+                writeln!(
+                    w,
+                    "{target_name}\t{start}\t{end}\t{strand}\t{motif}\t{}\t{}",
+                    t.n_reads_unmatched, t.n_reads_total
+                )?;
+            }
+        }
+        w.flush()?;
+        Ok(())
     }
 }
 
@@ -132,29 +151,11 @@ pub(super) struct UniqueJunctionCounts {
     pub n_only_b: u64,
 }
 
-pub(super) fn unique_junction_counts(a: &UniqueJunctions, b: &UniqueJunctions) -> UniqueJunctionCounts {
+pub(super) fn unique_junction_counts(a: &JunctionCatalog, b: &JunctionCatalog) -> UniqueJunctionCounts {
     let n_a = a.len();
     let n_b = b.len();
     let n_shared = a.n_shared_with(b);
     UniqueJunctionCounts { n_a, n_b, n_shared, n_only_a: n_a - n_shared, n_only_b: n_b - n_shared }
-}
-
-/// Write the unmatched-junction table (`QJC_UNMATCHED_COLS`): each junction
-/// with its motif in the junction's orientation, `acc`'s distinct differing
-/// reads, and `totals`'s whole-table occurrence count.
-pub(super) fn write_unmatched_table(path: &str, acc: &UnmatchedAcc, totals: &TotalsAcc) -> Result<()> {
-    let mut rows: Vec<&GenomicKey> = acc.keys().collect();
-    rows.sort();
-    let mut w = open_output(Some(path))?;
-    writeln!(w, "{}", header_line(&QJC_UNMATCHED_COLS))?;
-    for key @ (target_name, start, end, intron_strand) in rows {
-        let u = &acc[key];
-        let motif = u.motif.map_or(".".to_string(), |m| oriented_motif(m, *intron_strand));
-        let total = totals.get(key).copied().unwrap_or(0);
-        writeln!(w, "{target_name}\t{start}\t{end}\t{intron_strand}\t{motif}\t{}\t{total}", u.n_reads)?;
-    }
-    w.flush()?;
-    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -164,74 +165,62 @@ pub(super) fn write_unmatched_table(path: &str, acc: &UnmatchedAcc, totals: &Tot
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::reconstruct::{build_junction_records, build_side_junctions};
+    use crate::junction::side_genomic_junctions;
 
-    #[test]
-    fn accumulate_side_total_counts_a_junction_of_interest() {
-        let mut totals: TotalsAcc = HashMap::new();
-        totals.insert(("chr1".to_string(), 100, 250, '+'), 0);
+    fn side(target: &str, strand: &str, cs: &str) -> SideJunctions {
+        side_genomic_junctions(target, "0", strand, cs)
+    }
 
-        accumulate_side_total("chr1", '+', &[(100, 250)], &mut totals);
-        assert_eq!(totals[&("chr1".to_string(), 100, 250, '+')], 1);
+    /// One read's records with every junction unmatched (other side unaligned).
+    fn unmatched_records(cs: &str) -> Vec<JunctionRecord> {
+        let none = (HashSet::new(), HashSet::new());
+        let j = build_side_junctions(cs, '+', 0, 20, 0, "chr1", 20);
+        build_junction_records(j, '+', '+', &none.0, &none.1, false)
+    }
 
-        accumulate_side_total("chr1", '+', &[(100, 250)], &mut totals);
-        assert_eq!(totals[&("chr1".to_string(), 100, 250, '+')], 2);
+    /// Write `c` and read it back. `name` keeps the temp file unique per test,
+    /// since tests run in parallel.
+    fn written(c: &JunctionCatalog, unmatched_only: bool, name: &str) -> String {
+        let path = std::env::temp_dir()
+            .join(format!("maligno_test_catalog_{}_{name}_{unmatched_only}.tsv", std::process::id()));
+        let p = path.to_str().unwrap();
+        c.write(p, unmatched_only).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        content
     }
 
     #[test]
-    fn accumulate_side_total_ignores_junctions_not_of_interest() {
-        let mut totals: TotalsAcc = HashMap::new();
-        totals.insert(("chr1".to_string(), 100, 250, '+'), 0);
-
-        accumulate_side_total("chr1", '+', &[(400, 800)], &mut totals);
-        assert_eq!(totals[&("chr1".to_string(), 100, 250, '+')], 0);
+    fn add_side_counts_reads_per_junction() {
+        let mut c = JunctionCatalog::default();
+        c.add_side(&side("chr1", "+", ":10~gt100ag:5~gt50ag:5"));
+        c.add_side(&side("chr1", "+", ":10~gt100ag:5"));
+        c.add_side(&side("*", "*", ""));
+        assert_eq!(c.len(), 2);
+        assert_eq!(c.0["chr1"][&(10, 110, '+')].n_reads_total, 2);
+        assert_eq!(c.0["chr1"][&(115, 165, '+')].n_reads_total, 1);
     }
 
     #[test]
-    fn accumulate_side_total_requires_matching_intron_strand() {
-        let mut totals: TotalsAcc = HashMap::new();
-        totals.insert(("chr1".to_string(), 100, 250, '+'), 0);
-
-        accumulate_side_total("chr1", '-', &[(100, 250)], &mut totals);
-        assert_eq!(totals[&("chr1".to_string(), 100, 250, '+')], 0);
-    }
-
-    #[test]
-    fn accumulate_side_total_requires_matching_chrom() {
-        let mut totals: TotalsAcc = HashMap::new();
-        totals.insert(("chr1".to_string(), 100, 250, '+'), 0);
-
-        accumulate_side_total("chr2", '+', &[(100, 250)], &mut totals);
-        assert_eq!(totals[&("chr1".to_string(), 100, 250, '+')], 0);
-    }
-
-    #[test]
-    fn unique_junctions_dedupes_across_rows() {
-        let mut u = UniqueJunctions::default();
-        u.observe("chr1", '+', &[(100, 250), (400, 800)]);
-        u.observe("chr1", '+', &[(100, 250)]);
-        u.observe("chr1", '+', &[]);
-        assert_eq!(u.len(), 2);
-    }
-
-    #[test]
-    fn unique_junctions_keys_on_target_name_and_intron_strand() {
-        let mut u = UniqueJunctions::default();
-        u.observe("chr1", '+', &[(100, 250)]);
-        u.observe("chr1", '-', &[(100, 250)]);
-        u.observe("chr2", '+', &[(100, 250)]);
-        assert_eq!(u.len(), 3);
+    fn junctions_are_keyed_on_target_name_and_intron_strand() {
+        let mut c = JunctionCatalog::default();
+        c.add_side(&side("chr1", "+", ":10~gt100ag:5"));
+        c.add_side(&side("chr1", "-", ":10~ct100ac:5"));
+        c.add_side(&side("chr2", "+", ":10~gt100ag:5"));
+        assert_eq!(c.len(), 3);
     }
 
     #[test]
     fn unique_junction_counts_splits_shared_and_only() {
-        let mut a = UniqueJunctions::default();
-        a.observe("chr1", '+', &[(100, 250), (400, 800)]);
-        a.observe("chr2", '-', &[(10, 20)]);
-        let mut b = UniqueJunctions::default();
-        b.observe("chr1", '+', &[(100, 250), (900, 950)]);
-        b.observe("chr1", '-', &[(400, 800)]); // same coords, other strand: not shared
-        b.observe("chr3", '+', &[(5, 6)]);
-
+        let mut a = JunctionCatalog::default();
+        a.add_side(&side("chr1", "+", ":100~gt150ag:150~gt400ag:5"));
+        a.add_side(&side("chr2", "-", ":10~ct10ac:5"));
+        let mut b = JunctionCatalog::default();
+        b.add_side(&side("chr1", "+", ":100~gt150ag:5"));
+        b.add_side(&side("chr1", "+", ":900~gt50ag:5"));
+        b.add_side(&side("chr1", "-", ":400~ct400ac:5")); // same coords as A's 2nd, other strand
+        b.add_side(&side("chr3", "+", ":5~gt1ag:5"));
         let c = unique_junction_counts(&a, &b);
         assert_eq!((c.n_a, c.n_b), (3, 4));
         assert_eq!(c.n_shared, 1);
@@ -239,55 +228,52 @@ mod tests {
     }
 
     #[test]
-    fn accumulate_unmatched_counts_reads_and_keeps_a_real_motif() {
-        use super::super::reconstruct::{build_junction_records, build_side_junctions};
-        let none = (HashSet::new(), HashSet::new());
-        let mut acc: UnmatchedAcc = HashMap::new();
-        for cs in [":10~nn100nn:10", ":10~gt100ag:10"] {
-            let j = build_side_junctions(cs, '+', 0, 20, 0, "chr1", 20);
-            let recs = build_junction_records(j, '+', '+', &none.0, &none.1, false);
-            accumulate_unmatched(&mut acc, &recs);
-        }
-        let u = &acc[&("chr1".to_string(), 10, 110, '+')];
-        assert_eq!((u.n_reads, u.motif), (2, Some(*b"gtag")));
+    fn add_unmatched_counts_reads_and_keeps_a_real_motif() {
+        let mut c = JunctionCatalog::default();
+        c.add_unmatched(&unmatched_records(":10~nn100nn:10"));
+        c.add_unmatched(&unmatched_records(":10~gt100ag:10"));
+        let t = &c.0["chr1"][&(10, 110, '+')];
+        assert_eq!((t.n_reads_unmatched, t.motif_unmatched), (2, Some(*b"gtag")));
+        assert_eq!(c.n_unmatched(), 1);
     }
 
     #[test]
-    fn write_unmatched_table_writes_the_junction_motif_and_both_counts() {
-        let mut acc: UnmatchedAcc = HashMap::new();
-        acc.insert(("chr22".to_string(), 100, 250, '-'), Unmatched { n_reads: 3, motif: Some(*b"ctac") });
-        let mut totals: TotalsAcc = HashMap::new();
-        totals.insert(("chr22".to_string(), 100, 250, '-'), 12);
+    fn the_motif_comes_from_unmatched_reads_when_there_are_any() {
+        let mut c = JunctionCatalog::default();
+        // Junction 1: unmatched only with `nn`, but real letters in another read.
+        c.add_unmatched(&unmatched_records(":10~nn100nn:10"));
+        c.add_side(&side("chr1", "+", ":10~nn100nn:10"));
+        c.add_side(&side("chr1", "+", ":10~gt100ag:10"));
+        // Junction 2: never unmatched.
+        c.add_side(&side("chr1", "+", ":300~gc100ag:10"));
+        let all = written(&c, false, "motif_source");
+        let lines: Vec<&str> = all.lines().collect();
+        assert_eq!(lines[1], "chr1\t10\t110\t+\tnn-nn\t1\t2");
+        assert_eq!(lines[2], "chr1\t300\t400\t+\tgc-ag\t0\t1");
+    }
 
-        let path = std::env::temp_dir().join("maligno_test_write_unmatched_table.tsv");
-        let path_str = path.to_str().unwrap();
-        write_unmatched_table(path_str, &acc, &totals).unwrap();
-        let content = std::fs::read_to_string(&path).unwrap();
-        let _ = std::fs::remove_file(&path);
-
-        let lines: Vec<&str> = content.lines().collect();
+    #[test]
+    fn the_unmatched_table_is_the_all_junctions_table_filtered() {
+        let mut c = JunctionCatalog::default();
+        c.add_unmatched(&unmatched_records(":10~gt100ag:10"));
+        c.add_side(&side("chr1", "+", ":10~gt100ag:10"));
+        c.add_side(&side("chr1", "-", ":300~ct100ac:10"));
+        c.add_side(&side("chr2", "+", ":5~gt20ag:5"));
+        let all = written(&c, false, "filtered");
+        let unmatched = written(&c, true, "filtered");
+        let filtered: Vec<&str> = all
+            .lines()
+            .enumerate()
+            .filter(|(i, l)| *i == 0 || !l.split('\t').nth(5).is_some_and(|n| n == "0"))
+            .map(|(_, l)| l)
+            .collect();
+        assert_eq!(unmatched.lines().collect::<Vec<_>>(), filtered);
         assert_eq!(
-            lines[0],
+            all.lines().next().unwrap(),
             "target_name\tintron_start\tintron_end\tintron_strand\tmotif\t\
              n_reads_query_junctions_different\tn_reads_with_junction_total"
         );
-        assert_eq!(lines[1], "chr22\t100\t250\t-\tgt-ag\t3\t12");
-    }
-
-    #[test]
-    fn write_unmatched_table_defaults_total_to_zero_when_missing() {
-        // Defensive: if `totals` somehow lacks a key `acc` has (inputs out of
-        // sync), don't panic — report 0 rather than fabricating a number.
-        let mut acc: UnmatchedAcc = HashMap::new();
-        acc.insert(("chr22".to_string(), 100, 250, '+'), Unmatched { n_reads: 1, motif: Some(*b"gtag") });
-        let totals: TotalsAcc = HashMap::new();
-
-        let path = std::env::temp_dir().join("maligno_test_write_unmatched_table_missing_total.tsv");
-        let path_str = path.to_str().unwrap();
-        write_unmatched_table(path_str, &acc, &totals).unwrap();
-        let content = std::fs::read_to_string(&path).unwrap();
-        let _ = std::fs::remove_file(&path);
-
-        assert!(content.lines().nth(1).unwrap().ends_with("\t1\t0"));
+        assert_eq!(all.lines().count(), 4);
+        assert_eq!(all.lines().nth(2).unwrap(), "chr1\t300\t400\t-\tgt-ag\t0\t1");
     }
 }

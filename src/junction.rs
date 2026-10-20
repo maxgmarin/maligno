@@ -37,78 +37,56 @@ pub fn junction_set_stats(a: &[i64], b: &[i64]) -> (u64, u64, u64) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Genomic-junction (chrom, start, end) tuple parsing + set comparison
+// Genomic junctions: extraction from `cs` + set comparison
 // ───────────────────────────────────────────────────────────────────────────
-
-/// Parse a Python tuple-of-tuples string of `(start, end)` integer pairs.
-///
-/// The serialized form for `genomic_junctions` drops the chromosome
-/// from each inner tuple — chrom is available separately via the per-row
-/// `target_name` (alninfo, readinfo) / `target_name_A` & `target_name_B` (compare) column. The caller
-/// reconstructs full `(chrom, start, end)` tuples by combining this output with
-/// the relevant per-row chrom.
-///
-/// Accepts the format written by `write_genomic_junction_tuple` in record.rs
-/// (the `genomic_junctions` columns):
-///
-/// ```text
-/// "()"                          → []
-/// "((100, 250),)"               → [(100, 250)]
-/// "((100, 250), (400, 800))"    → [(100, 250), (400, 800)]
-/// ```
-///
-/// Defensive against malformed input — returns the pairs it could parse.
-pub fn parse_genomic_junction_str(s: &str) -> Vec<(u64, u64)> {
-    let bytes = s.as_bytes();
-    let n = bytes.len();
-    let mut out: Vec<(u64, u64)> = Vec::new();
-    let mut i = 0;
-
-    while i < n {
-        // Look for "(" followed by a digit — start of an inner (start, end) pair.
-        if bytes[i] == b'(' && i + 1 < n && bytes[i + 1].is_ascii_digit() {
-            i += 1; // past '('
-
-            // Parse start integer.
-            let start_idx = i;
-            while i < n && bytes[i].is_ascii_digit() {
-                i += 1;
-            }
-            let start: u64 = s[start_idx..i].parse().unwrap_or(0);
-
-            // Skip "," + optional whitespace.
-            while i < n && (bytes[i] == b',' || bytes[i].is_ascii_whitespace()) {
-                i += 1;
-            }
-
-            // Parse end integer.
-            let end_idx = i;
-            while i < n && bytes[i].is_ascii_digit() {
-                i += 1;
-            }
-            let end: u64 = s[end_idx..i].parse().unwrap_or(0);
-
-            // Skip to closing ')'.
-            while i < n && bytes[i] != b')' {
-                i += 1;
-            }
-            if i < n {
-                i += 1;
-            }
-
-            out.push((start, end));
-        } else {
-            i += 1;
-        }
-    }
-
-    out
-}
 
 /// A genomic junction as `toolkit genomic-junction-compare` identifies it:
 /// `(contig, intron_start, intron_end, intron_strand)`, 0-based half-open, with
 /// `intron_strand` `+`, `-` or `*` (unknown; its own value, matching only `*`).
 pub type GenomicJunction = (String, u64, u64, char);
+
+/// A `genomic_intron_strand` value as `+`, `-` or `*` (unknown).
+pub(crate) fn normalize_intron_strand(s: &str) -> char {
+    match s.chars().next() {
+        Some(c @ ('+' | '-')) => c,
+        _ => '*',
+    }
+}
+
+/// One side's genomic junctions, rebuilt from its `cs`. Shared by
+/// `genomic-junction-compare` and `query-junction-compare`.
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct SideJunctions {
+    pub intron_strand: char,
+    /// In `cs` order, i.e. reference-ascending. An alignment's introns never
+    /// repeat (its reference position only moves forward), so these are distinct.
+    pub junctions: Vec<GenomicJunction>,
+    /// Reference-forward motif letters, parallel to `junctions`.
+    pub motifs: Vec<[u8; 4]>,
+}
+
+/// One side's junctions from its comparison-table columns: every `~` op of
+/// `cs`, placed at `target_start`, with the side's intron strand. An unmapped
+/// side (`target_name` empty or `*`) has none.
+pub(crate) fn side_genomic_junctions(
+    target_name: &str,
+    target_start: &str,
+    genomic_intron_strand: &str,
+    cs: &str,
+) -> SideJunctions {
+    if target_name.is_empty() || target_name == "*" {
+        return SideJunctions { intron_strand: '*', ..Default::default() };
+    }
+    let gs = normalize_intron_strand(genomic_intron_strand);
+    let tstart: u64 = target_start.parse().unwrap_or(0);
+    let stats = crate::cs_parser::parse_cs(cs);
+    let junctions = stats
+        .raw_genomic_junctions
+        .iter()
+        .map(|&(s, e)| (target_name.to_string(), tstart + s, tstart + e, gs))
+        .collect();
+    SideJunctions { intron_strand: gs, junctions, motifs: stats.raw_junction_motifs }
+}
 
 /// Set-overlap stats for genome-coordinate junctions, treating each
 /// [`GenomicJunction`] as a set element. Deduplicated on both sides.
@@ -278,37 +256,25 @@ fn py_str(s: &str) -> String {
 mod tests {
     use super::*;
 
-    // ── parse_genomic_junction_str ─────────────────────────────────────────
-
     #[test]
-    fn genomic_parse_empty() {
-        assert!(parse_genomic_junction_str("()").is_empty());
-        assert!(parse_genomic_junction_str("").is_empty());
+    fn intron_strand_is_normalized() {
+        assert_eq!(normalize_intron_strand("+"), '+');
+        assert_eq!(normalize_intron_strand("-"), '-');
+        assert_eq!(normalize_intron_strand("*"), '*');
+        assert_eq!(normalize_intron_strand(""), '*');
     }
 
     #[test]
-    fn genomic_parse_single() {
+    fn side_junctions_are_placed_on_the_reference_with_strand_and_motif() {
+        let s = side_genomic_junctions("chr1", "1000", "+", ":10~gt100ag:5~nn50nn:5");
+        assert_eq!(s.intron_strand, '+');
         assert_eq!(
-            parse_genomic_junction_str("((100, 250),)"),
-            vec![(100, 250)]
+            s.junctions,
+            vec![("chr1".to_string(), 1010, 1110, '+'), ("chr1".to_string(), 1115, 1165, '+')]
         );
-    }
-
-    #[test]
-    fn genomic_parse_multiple() {
-        assert_eq!(
-            parse_genomic_junction_str("((100, 250), (400, 800))"),
-            vec![(100, 250), (400, 800)]
-        );
-    }
-
-    #[test]
-    fn genomic_parse_extra_whitespace_tolerated() {
-        // Be defensive about loose whitespace between integers / commas.
-        assert_eq!(
-            parse_genomic_junction_str("((100,250), (400,  800))"),
-            vec![(100, 250), (400, 800)]
-        );
+        assert_eq!(s.motifs, vec![*b"gtag", *b"nnnn"]);
+        let unmapped = side_genomic_junctions("*", "0", "+", ":5~gt20ag:5");
+        assert_eq!(unmapped, SideJunctions { intron_strand: '*', ..Default::default() });
     }
 
     // ── genomic_junction_set_stats ─────────────────────────────────────────
@@ -460,11 +426,9 @@ mod tests {
     }
 
     #[test]
-    fn format_genomic_pairs_round_trip_through_the_column_parser() {
+    fn format_genomic_pairs_drop_contig_and_strand() {
         let v = vec![("chr22".to_string(), 100, 250, '-'), ("chr22".to_string(), 400, 800, '-')];
-        let s = format_genomic_junction_tuple(&v);
-        assert_eq!(s, "((100, 250), (400, 800))");
-        assert_eq!(parse_genomic_junction_str(&s), vec![(100, 250), (400, 800)]);
+        assert_eq!(format_genomic_junction_tuple(&v), "((100, 250), (400, 800))");
     }
 
     #[test]

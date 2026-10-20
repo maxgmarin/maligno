@@ -56,18 +56,22 @@
 //!      (across the whole table) carry that junction on side A (always gzipped).
 //!   4. `{prefix}.query_junction_compare.unmatched_junctions.B.tsv.gz`  — same,
 //!      for B.
+//!   5. With `--emit-all-junctions`, `{prefix}.query_junction_compare.all_junctions.{A,B}.tsv.gz`
+//!      — every distinct junction on that side across the whole table, in the
+//!      unmatched tables' columns (the unmatched table is its subset with
+//!      `n_reads_query_junctions_different > 0`).
 //!
 //! **Two-pass design.** Pass 1 (above) reconstructs junctions only for the
 //! small "differing" subset, identifying which junctions are unsupported.
 //! Pass 2 re-scans the *entire* comparison table a second time, narrowly
-//! column-projected, tallying total occurrences of exactly those
-//! already-flagged junctions — a cheap pass needing only genomic-space set
-//! membership (`genomic_junctions_A/B`), no `cs`-tag reconstruction, since it
-//! never needs to know a junction's query position. This is why `--input`
-//! must be Parquet: pass 2 re-reads the same file, which needs a real,
-//! seekable, column-project-able source (not `stdin`, and much cheaper than
-//! a second full TSV parse). The same pass also collects every distinct
-//! junction per side (`UniqueJunctions`) for the summary — no extra read.
+//! column-projected, and adds every junction of every read (from `cs`, with
+//! the same `junction::side_genomic_junctions` as `genomic-junction-compare`)
+//! to one `JunctionCatalog` per side: whole-table read counts and motifs. It
+//! never needs a junction's query position. This is why `--input` must be
+//! Parquet: pass 2 re-reads the same file, which needs a real, seekable,
+//! column-project-able source (not `stdin`, and much cheaper than a second
+//! full TSV parse). The unmatched tables, the all-junctions tables and the
+//! summary's distinct-junction counts all come from the two catalogs.
 
 mod reconstruct;
 mod rollup;
@@ -81,25 +85,19 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 
 use crate::columns::{
-    header_line, sided, Col, CS, GENOMIC_INTRON_STRAND, GENOMIC_JUNCTIONS, N_INTRON_EVENTS, LABEL_A,
-    LABEL_B, N_QUERY_JUNCTIONS_ONLY_A, N_QUERY_JUNCTIONS_ONLY_B, QJC_PER_JUNCTION_COLS, QUERY_END,
+    header_line, Col, CS, GENOMIC_INTRON_STRAND, N_INTRON_EVENTS, LABEL_A, LABEL_B,
+    N_QUERY_JUNCTIONS_ONLY_A, N_QUERY_JUNCTIONS_ONLY_B, QJC_PER_JUNCTION_COLS, QUERY_END,
     QUERY_START, QUERY_LEN, QUERY_NAME, SIDE_A, SIDE_B, STRAND, TARGET_NAME, TARGET_START,
 };
 use crate::compare_summary::{
     labels_from_row, require_ab_schema, require_col, wanted_columns, SideIndex,
 };
 use crate::io_utils::open_output;
-use crate::junction::parse_genomic_junction_str;
+use crate::junction::{normalize_intron_strand, side_genomic_junctions};
 use crate::table_input::{open_table, InputFormat};
 
-use reconstruct::{
-    build_junction_records, build_side_junctions, normalize_intron_strand, side_position_sets,
-    write_per_read_row,
-};
-use rollup::{
-    accumulate_side_total, accumulate_unmatched, unique_junction_counts, write_unmatched_table, TotalsAcc,
-    UniqueJunctions, UnmatchedAcc,
-};
+use reconstruct::{build_junction_records, build_side_junctions, side_position_sets, write_per_read_row};
+use rollup::{unique_junction_counts, JunctionCatalog};
 use summary::Summary;
 
 /// A `target_name` value indicates an unmapped read when it is empty or `"*"`
@@ -125,7 +123,15 @@ pub struct QueryJunctionCompareArgs {
     /// Filename prefix for all outputs.
     #[arg(short = 'p', long = "prefix", value_name = "STR")]
     prefix: String,
+
+    /// Also write every distinct junction of each side, across the whole table,
+    /// to `{prefix}.query_junction_compare.all_junctions.{A,B}.tsv.gz`.
+    #[arg(long = "emit-all-junctions")]
+    emit_all_junctions: bool,
 }
+
+/// The per-side columns pass 2 reads: what `side_genomic_junctions` needs.
+const PASS2_SIDE_COLS: [Col; 4] = [TARGET_NAME, TARGET_START, GENOMIC_INTRON_STRAND, CS];
 
 /// The per-side columns pass 1 reads, resolved for each side up front.
 const SIDE_COLS: [Col; 8] = [
@@ -156,6 +162,8 @@ pub fn run(args: &QueryJunctionCompareArgs) -> Result<()> {
     let per_read_out = path(format!("{}.query_junction_compare.per_read_per_junc_info.tsv.gz", args.prefix));
     let unmatched_a_out = path(format!("{}.query_junction_compare.unmatched_junctions.A.tsv.gz", args.prefix));
     let unmatched_b_out = path(format!("{}.query_junction_compare.unmatched_junctions.B.tsv.gz", args.prefix));
+    let all_a_out = path(format!("{}.query_junction_compare.all_junctions.A.tsv.gz", args.prefix));
+    let all_b_out = path(format!("{}.query_junction_compare.all_junctions.B.tsv.gz", args.prefix));
 
     let wanted = wanted_columns(
         &[QUERY_NAME, QUERY_LEN, LABEL_A, LABEL_B, N_QUERY_JUNCTIONS_ONLY_A, N_QUERY_JUNCTIONS_ONLY_B],
@@ -183,8 +191,8 @@ pub fn run(args: &QueryJunctionCompareArgs) -> Result<()> {
     let mut summary = Summary::default();
     let mut per_read_w = open_output(Some(&per_read_out))?;
     writeln!(per_read_w, "{}", header_line(&QJC_PER_JUNCTION_COLS))?;
-    let mut unmatched_acc_a: UnmatchedAcc = HashMap::new();
-    let mut unmatched_acc_b: UnmatchedAcc = HashMap::new();
+    let mut catalog_a = JunctionCatalog::default();
+    let mut catalog_b = JunctionCatalog::default();
 
     while let Some(fields_owned) = source.next_row()? {
         let fields: Vec<&str> = fields_owned.iter().map(String::as_str).collect();
@@ -256,61 +264,45 @@ pub fn run(args: &QueryJunctionCompareArgs) -> Result<()> {
             write_per_read_row(&mut per_read_w, read_name, 'B', r)?;
         }
 
-        accumulate_unmatched(&mut unmatched_acc_a, &recs_a);
-        accumulate_unmatched(&mut unmatched_acc_b, &recs_b);
+        catalog_a.add_unmatched(&recs_a);
+        catalog_b.add_unmatched(&recs_b);
     }
     per_read_w.flush()?;
 
-    // ── Pass 2: total occurrence counts + distinct junctions ────────────────
-    // Seed the "junctions of interest" from pass 1's own unmatched rollups —
-    // no need to write/re-read anything, they're already in memory. Then
-    // re-scan the whole table once more, narrowly column-projected, tallying
-    // how many reads *total* carry each already-flagged junction, and
-    // collecting every distinct junction per side for the summary.
-    let mut totals_a: TotalsAcc = unmatched_acc_a.keys().map(|k| (k.clone(), 0u64)).collect();
-    let mut totals_b: TotalsAcc = unmatched_acc_b.keys().map(|k| (k.clone(), 0u64)).collect();
-    let mut unique_a = UniqueJunctions::default();
-    let mut unique_b = UniqueJunctions::default();
-
-    let totals_wanted = wanted_columns(&[], &[TARGET_NAME, GENOMIC_JUNCTIONS, GENOMIC_INTRON_STRAND]);
-    let totals_wanted_refs: Vec<&str> = totals_wanted.iter().map(String::as_str).collect();
-    let mut totals_source = open_table(&args.input, InputFormat::Parquet, Some(&totals_wanted_refs))
+    // ── Pass 2: every junction of every read, per side ──────────────────────
+    // Re-scan the whole table, narrowly column-projected, adding each side's
+    // junctions (whole-table read counts and motifs) to its catalog.
+    let pass2_wanted = wanted_columns(&[], &PASS2_SIDE_COLS);
+    let pass2_wanted_refs: Vec<&str> = pass2_wanted.iter().map(String::as_str).collect();
+    let mut pass2_source = open_table(&args.input, InputFormat::Parquet, Some(&pass2_wanted_refs))
         .with_context(|| format!("re-reading comparison table '{}' for pass 2", args.input))?;
-    let totals_cols_owned = totals_source.header()?;
-    let totals_col_index: HashMap<&str, usize> =
-        totals_cols_owned.iter().map(String::as_str).enumerate().map(|(i, c)| (c, i)).collect();
-    let totals_idx = |col: Col, side: &str| require_col(&totals_col_index, &sided(col, side));
-    let chrom_a_idx = totals_idx(TARGET_NAME, SIDE_A)?;
-    let chrom_b_idx = totals_idx(TARGET_NAME, SIDE_B)?;
-    let gj_a_idx = totals_idx(GENOMIC_JUNCTIONS, SIDE_A)?;
-    let gj_b_idx = totals_idx(GENOMIC_JUNCTIONS, SIDE_B)?;
-    let intron_strand_a_idx = totals_idx(GENOMIC_INTRON_STRAND, SIDE_A)?;
-    let intron_strand_b_idx = totals_idx(GENOMIC_INTRON_STRAND, SIDE_B)?;
+    let pass2_cols_owned = pass2_source.header()?;
+    let pass2_col_index: HashMap<&str, usize> =
+        pass2_cols_owned.iter().map(String::as_str).enumerate().map(|(i, c)| (c, i)).collect();
+    let p2_a = SideIndex::resolve(&pass2_col_index, &PASS2_SIDE_COLS, SIDE_A)?;
+    let p2_b = SideIndex::resolve(&pass2_col_index, &PASS2_SIDE_COLS, SIDE_B)?;
 
-    while let Some(fields) = totals_source.next_row()? {
-        let get = |i: usize| -> &str { fields.get(i).map(String::as_str).unwrap_or("") };
-
-        let chrom_a = get(chrom_a_idx);
-        if is_mapped(chrom_a) {
-            let intron_strand_a = normalize_intron_strand(get(intron_strand_a_idx));
-            let juncs_a = parse_genomic_junction_str(get(gj_a_idx));
-            accumulate_side_total(chrom_a, intron_strand_a, &juncs_a, &mut totals_a);
-            unique_a.observe(chrom_a, intron_strand_a, &juncs_a);
-        }
-
-        let chrom_b = get(chrom_b_idx);
-        if is_mapped(chrom_b) {
-            let intron_strand_b = normalize_intron_strand(get(intron_strand_b_idx));
-            let juncs_b = parse_genomic_junction_str(get(gj_b_idx));
-            accumulate_side_total(chrom_b, intron_strand_b, &juncs_b, &mut totals_b);
-            unique_b.observe(chrom_b, intron_strand_b, &juncs_b);
+    while let Some(fields_owned) = pass2_source.next_row()? {
+        let fields: Vec<&str> = fields_owned.iter().map(String::as_str).collect();
+        for (idx, catalog) in [(&p2_a, &mut catalog_a), (&p2_b, &mut catalog_b)] {
+            let get = |c: &str| idx.get(&fields, c);
+            catalog.add_side(&side_genomic_junctions(
+                get(TARGET_NAME.name),
+                get(TARGET_START.name),
+                get(GENOMIC_INTRON_STRAND.name),
+                get(CS.name),
+            ));
         }
     }
 
-    write_unmatched_table(&unmatched_a_out, &unmatched_acc_a, &totals_a)?;
-    write_unmatched_table(&unmatched_b_out, &unmatched_acc_b, &totals_b)?;
-    let unique = unique_junction_counts(&unique_a, &unique_b);
-    summary.set_junction_counts(&unique, unmatched_acc_a.len() as u64, unmatched_acc_b.len() as u64);
+    catalog_a.write(&unmatched_a_out, true)?;
+    catalog_b.write(&unmatched_b_out, true)?;
+    if args.emit_all_junctions {
+        catalog_a.write(&all_a_out, false)?;
+        catalog_b.write(&all_b_out, false)?;
+    }
+    let unique = unique_junction_counts(&catalog_a, &catalog_b);
+    summary.set_junction_counts(&unique, catalog_a.n_unmatched(), catalog_b.n_unmatched());
     summary.write_tsv(&summary_out, &label_a, &label_b)?;
 
     eprintln!(
@@ -327,5 +319,9 @@ pub fn run(args: &QueryJunctionCompareArgs) -> Result<()> {
     eprintln!("  {per_read_out}");
     eprintln!("  {unmatched_a_out}");
     eprintln!("  {unmatched_b_out}");
+    if args.emit_all_junctions {
+        eprintln!("  {all_a_out}");
+        eprintln!("  {all_b_out}");
+    }
     Ok(())
 }

@@ -15,7 +15,10 @@ intron_strand)`, the same identity and column names as `genomic-junction-compare
 [per-junction table](genomic-junction-compare-per-junction.md). The A file
 covers junctions called in A but unsupported by B, and the B file the reverse.
 Column 7 counts how many reads in the whole comparison table carry the same
-junction on this side.
+junction on this side. With `--emit-all-junctions`, every junction of each side
+is also written, in the same columns; this table is its subset with
+`n_reads_query_junctions_different > 0` (see
+[query-junction-compare-all-junctions.md](query-junction-compare-all-junctions.md)).
 
 7 columns.
 

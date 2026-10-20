@@ -464,8 +464,9 @@ pub(crate) const QJC_PER_JUNCTION_COLS: [Col; 13] = [
     OTHER_SIDE_ALIGNED,
 ];
 
-/// `{prefix}.query_junction_compare.unmatched_junctions.{A,B}.tsv.gz`, in output order.
-pub(crate) const QJC_UNMATCHED_COLS: [Col; 7] = [
+/// `{prefix}.query_junction_compare.unmatched_junctions.{A,B}.tsv.gz` and
+/// `.all_junctions.{A,B}.tsv.gz` (`--emit-all-junctions`), in output order.
+pub(crate) const QJC_JUNCTION_COLS: [Col; 7] = [
     TARGET_NAME,
     INTRON_START,
     INTRON_END,
@@ -576,8 +577,8 @@ mod tests {
     #[test]
     fn junction_commands_name_a_junction_the_same_way() {
         assert_unique(&QJC_PER_JUNCTION_COLS, "query-junction-compare per-junction");
-        assert_unique(&QJC_UNMATCHED_COLS, "query-junction-compare unmatched");
-        assert_eq!(QJC_UNMATCHED_COLS[..4], GJC_PER_JUNCTION_COLS[..4]);
+        assert_unique(&QJC_JUNCTION_COLS, "query-junction-compare unmatched");
+        assert_eq!(QJC_JUNCTION_COLS[..4], GJC_PER_JUNCTION_COLS[..4]);
         assert_eq!(QJC_PER_JUNCTION_COLS[4..8], GJC_PER_JUNCTION_COLS[..4]);
     }
 

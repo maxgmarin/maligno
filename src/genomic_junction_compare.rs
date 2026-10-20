@@ -38,11 +38,11 @@ use crate::columns::{
     GENOMIC_INTRON_STRAND,
 };
 use crate::compare_summary::{labels_from_row, require_ab_schema, require_col, wanted_columns, SideIndex};
-use crate::cs_parser::{note_motif, oriented_motif, parse_cs};
+use crate::cs_parser::{note_motif, oriented_motif};
 use crate::io_utils::open_output;
 use crate::junction::{
     format_genomic_junction_tuple, genomic_junction_set_diffs, genomic_junction_set_stats,
-    GenomicJunction,
+    side_genomic_junctions, GenomicJunction, SideJunctions,
 };
 use crate::table_input::{open_table, InputFormat};
 
@@ -68,47 +68,6 @@ pub struct GenomicJunctionCompareArgs {
     /// Filename prefix for all outputs.
     #[arg(short = 'p', long = "prefix", value_name = "STR")]
     prefix: String,
-}
-
-/// A `target_name` value indicates an unmapped read when it is empty or `"*"`
-/// (same convention as `compare_summary` and `query_junction_compare`).
-#[inline]
-fn is_mapped(target_name: &str) -> bool {
-    !(target_name.is_empty() || target_name == "*")
-}
-
-/// One side's genomic junctions, rebuilt from its `cs`.
-#[derive(Debug, Default, PartialEq)]
-struct SideJunctions {
-    intron_strand: char,
-    /// In `cs` order, i.e. reference-ascending. An alignment's introns never
-    /// repeat (its reference position only moves forward), so these are distinct.
-    junctions: Vec<GenomicJunction>,
-    /// Reference-forward motif letters, parallel to `junctions`.
-    motifs: Vec<[u8; 4]>,
-}
-
-fn side_junctions(
-    target_name: &str,
-    target_start: &str,
-    genomic_intron_strand: &str,
-    cs: &str,
-) -> SideJunctions {
-    if !is_mapped(target_name) {
-        return SideJunctions { intron_strand: '*', ..Default::default() };
-    }
-    let gs = match genomic_intron_strand.chars().next() {
-        Some(c @ ('+' | '-')) => c,
-        _ => '*',
-    };
-    let tstart: u64 = target_start.parse().unwrap_or(0);
-    let stats = parse_cs(cs);
-    let junctions = stats
-        .raw_genomic_junctions
-        .iter()
-        .map(|&(s, e)| (target_name.to_string(), tstart + s, tstart + e, gs))
-        .collect();
-    SideJunctions { intron_strand: gs, junctions, motifs: stats.raw_junction_motifs }
 }
 
 /// The motifs as a Python tuple of strings, in the junction's orientation:
@@ -248,7 +207,7 @@ pub fn run(args: &GenomicJunctionCompareArgs) -> Result<()> {
         }
         let side = |idx: &SideIndex| {
             let get = |c: &str| idx.get(&fields, c);
-            let s = side_junctions(
+            let s = side_genomic_junctions(
                 get(TARGET_NAME.name),
                 get(TARGET_START.name),
                 get(GENOMIC_INTRON_STRAND.name),
@@ -382,7 +341,7 @@ mod tests {
 
     #[test]
     fn junctions_are_rebuilt_from_cs_with_strand_and_motif() {
-        let s = side_junctions("chr1", "1000", "+", ":10~gt100ag:5~nn50nn:5");
+        let s = side_genomic_junctions("chr1", "1000", "+", ":10~gt100ag:5~nn50nn:5");
         assert_eq!(s.intron_strand, '+');
         assert_eq!(
             s.junctions,
@@ -395,18 +354,18 @@ mod tests {
 
     #[test]
     fn unmapped_or_unknown_strand_sides() {
-        let unmapped = side_junctions("*", "0", "*", "");
+        let unmapped = side_genomic_junctions("*", "0", "*", "");
         assert_eq!(unmapped.intron_strand, '*');
         assert!(unmapped.junctions.is_empty());
-        let unknown = side_junctions("chr1", "0", "*", ":5~ct20ac:5");
+        let unknown = side_genomic_junctions("chr1", "0", "*", ":5~ct20ac:5");
         assert_eq!(unknown.intron_strand, '*');
         assert_eq!(format_motif_list(&unknown.motifs, '*'), "('ct-ac',)", "kept reference-forward");
     }
 
     #[test]
     fn strand_disagreement_makes_every_junction_differ() {
-        let a = side_junctions("chr1", "0", "+", ":5~gt20ag:5");
-        let b = side_junctions("chr1", "0", "-", ":5~gt20ag:5");
+        let a = side_genomic_junctions("chr1", "0", "+", ":5~gt20ag:5");
+        let b = side_genomic_junctions("chr1", "0", "-", ":5~gt20ag:5");
         let c = compare_sides(&a, &b);
         assert_eq!((c.shared, c.only_a, c.only_b), (0, 1, 1));
         assert_eq!(format_genomic_junction_tuple(&c.only_a_list), "((5, 25),)");
