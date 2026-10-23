@@ -42,7 +42,7 @@ use parquet::arrow::arrow_reader::{ParquetRecordBatchReader, ParquetRecordBatchR
 use parquet::arrow::{ArrowWriter, ProjectionMask};
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::metadata::KeyValue;
-use parquet::file::properties::WriterProperties;
+use parquet::file::properties::{WriterProperties, DEFAULT_MAX_ROW_GROUP_ROW_COUNT};
 
 use crate::columns::{ColType, COMPARE_DIFF_COLS, COMPARE_KEY_COLS, COMPARE_SIDE_COLS, SIDES, sided};
 use crate::comparison_row::{ComparisonRow, DiffValue};
@@ -52,13 +52,19 @@ use crate::io_utils::fmt_float;
 /// the file footer so a reader can detect a schema it does not understand.
 const SCHEMA_VERSION: &str = "6";
 
-/// Rows buffered before a row group is flushed. Bounds peak memory at
-/// O(row group) rather than O(reads).
-///
-/// Row-group size is a pure memory dial here: larger groups don't change write
-/// speed or file size, but raise peak memory. Parquet's per-column writers and
-/// their zstd contexts add a fixed overhead that no row-group choice affects.
-const ROW_GROUP_ROWS: usize = 20_000;
+/// Rows per row group in the written file: parquet-rs's own default
+/// (1,048,576), set explicitly through
+/// `WriterProperties::set_max_row_group_row_count`. `ArrowWriter` keeps the
+/// in-progress row group, encoded and compressed, in memory until it closes, so
+/// this sets the writer's peak memory against file size: larger row groups
+/// compress better (on 908k HG00099 reads: one row group ≈ 189 MB, 20k-row groups
+/// ≈ 205 MB) at the cost of holding more of the table in memory while writing.
+const ROW_GROUP_ROWS: usize = DEFAULT_MAX_ROW_GROUP_ROW_COUNT;
+
+/// Rows buffered, uncompressed, in the column builders before they are handed
+/// to `ArrowWriter` as one batch. Independent of the row-group size: batches
+/// are appended to the in-progress row group, which closes at `ROW_GROUP_ROWS`.
+const BATCH_ROWS: usize = 20_000;
 
 // ── Column types ─────────────────────────────────────────────────────────────
 
@@ -188,8 +194,8 @@ impl ColBuilder {
 /// Streams `ComparisonRow`s into a Parquet file, one row group per
 /// `ROW_GROUP_ROWS` rows.
 ///
-/// Rows are appended into per-column builders as they stream past, so no row is
-/// retained beyond its row group and peak memory does not scale with read count.
+/// Rows are appended into per-column builders and handed to `ArrowWriter` every
+/// `BATCH_ROWS` rows; at most one row group is held in memory, encoded, at a time.
 pub(crate) struct ComparisonParquetWriter<W: Write + Send> {
     writer: ArrowWriter<W>,
     schema: SchemaRef,
@@ -200,11 +206,17 @@ pub(crate) struct ComparisonParquetWriter<W: Write + Send> {
 
 impl<W: Write + Send> ComparisonParquetWriter<W> {
     pub(crate) fn new(sink: W) -> Result<Self> {
+        Self::with_row_group_rows(sink, ROW_GROUP_ROWS)
+    }
+
+    /// `new` with a given row-group size (tests use a small one).
+    fn with_row_group_rows(sink: W, row_group_rows: usize) -> Result<Self> {
         let schema = build_schema();
         let props = WriterProperties::builder()
             .set_compression(Compression::ZSTD(
                 ZstdLevel::try_new(3).context("invalid zstd level")?,
             ))
+            .set_max_row_group_row_count(Some(row_group_rows))
             .set_key_value_metadata(Some(vec![KeyValue::new(
                 "maligno_comparison_schema_version".to_string(),
                 SCHEMA_VERSION.to_string(),
@@ -233,7 +245,7 @@ impl<W: Write + Send> ComparisonParquetWriter<W> {
             .collect()
     }
 
-    /// Append one row, flushing a row group when the buffer is full.
+    /// Append one row, handing the buffered batch to `ArrowWriter` when full.
     pub(crate) fn append(&mut self, row: &ComparisonRow<'_>) -> Result<()> {
         let n = COMPARE_SIDE_COLS.len();
         self.cols[0].append_raw(row.read_name);
@@ -254,29 +266,31 @@ impl<W: Write + Send> ComparisonParquetWriter<W> {
         }
         self.buffered += 1;
         self.rows_written += 1;
-        if self.buffered >= ROW_GROUP_ROWS {
-            self.flush_row_group()?;
+        if self.buffered >= BATCH_ROWS {
+            self.flush_batch()?;
         }
         Ok(())
     }
 
-    /// Turn the buffered rows into a row group and reset the builders.
-    fn flush_row_group(&mut self) -> Result<()> {
+    /// Hand the buffered rows to `ArrowWriter`, which appends them to the
+    /// in-progress row group (closing it at the row-group size), and reset the
+    /// builders.
+    fn flush_batch(&mut self) -> Result<()> {
         if self.buffered == 0 {
             return Ok(());
         }
         let arrays: Vec<ArrayRef> = self.cols.iter_mut().map(|c| c.finish()).collect();
         let batch = RecordBatch::try_new(self.schema.clone(), arrays)
-            .context("assembling a Parquet row group")?;
-        self.writer.write(&batch).context("writing a Parquet row group")?;
+            .context("assembling a Parquet record batch")?;
+        self.writer.write(&batch).context("writing a Parquet record batch")?;
         // `finish()` already reset each builder; drop the buffered count to match.
         self.buffered = 0;
         Ok(())
     }
 
-    /// Flush the partial row group and close the file. Returns the row count.
+    /// Flush the last batch and close the file. Returns the row count.
     pub(crate) fn finish(mut self) -> Result<u64> {
-        self.flush_row_group()?;
+        self.flush_batch()?;
         self.writer.close().context("closing the Parquet file")?;
         Ok(self.rows_written)
     }
@@ -490,6 +504,43 @@ mod tests {
     /// The documented inverse: render a Parquet cell back to its TSV form.
     fn cell_to_tsv(batch: &RecordBatch, col: usize, row: usize) -> String {
         arrow_cell_to_string(batch.column(col).as_ref(), row)
+    }
+
+    #[test]
+    fn row_groups_close_at_the_row_group_size() {
+        let path = std::env::temp_dir().join(format!(
+            "maligno_pq_rowgroups_{}_{:?}.parquet",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        // Row groups of 15,000 rows, filled by 20,000-row batches: groups close
+        // at the row-group size, not at batch boundaries.
+        let rg_rows = 15_000;
+        let n_rows = 2 * rg_rows + 123;
+        {
+            let mut w =
+                ComparisonParquetWriter::with_row_group_rows(std::fs::File::create(&path).unwrap(), rg_rows)
+                    .expect("writer");
+            let side = [("target_name", "chr1"), ("strand", "+")];
+            for _ in 0..n_rows {
+                let row = ComparisonRow::build(
+                    "read1",
+                    100,
+                    "SetA",
+                    "SetB",
+                    |c| lookup(&side, c),
+                    |c| lookup(&side, c),
+                );
+                w.append(&row).expect("append");
+            }
+            assert_eq!(w.finish().unwrap(), n_rows as u64);
+        }
+        let file = std::fs::File::open(&path).unwrap();
+        let meta = ParquetRecordBatchReaderBuilder::try_new(file).unwrap().metadata().clone();
+        let _ = std::fs::remove_file(&path);
+        let sizes: Vec<i64> = meta.row_groups().iter().map(|g| g.num_rows()).collect();
+        let rg = rg_rows as i64;
+        assert_eq!(sizes, vec![rg, rg, 123]);
     }
 
     // ── the schema is derived, not restated ──────────────────────────────────
