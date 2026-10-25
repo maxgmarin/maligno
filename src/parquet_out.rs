@@ -30,9 +30,7 @@ use std::io::Write;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
-use arrow_array::builder::{
-    BooleanBuilder, Float64Builder, Int64Builder, StringBuilder, UInt64Builder,
-};
+use arrow_array::builder::{BooleanBuilder, Float64Builder, Int64Builder, StringBuilder};
 use arrow_array::{
     Array, ArrayRef, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray,
     UInt64Array,
@@ -50,7 +48,7 @@ use crate::io_utils::fmt_float;
 
 /// Bumped when the Parquet column set, types or null semantics change. Recorded in
 /// the file footer so a reader can detect a schema it does not understand.
-const SCHEMA_VERSION: &str = "6";
+const SCHEMA_VERSION: &str = "7";
 
 /// Rows per row group in the written file: parquet-rs's own default
 /// (1,048,576), set explicitly through
@@ -69,15 +67,36 @@ const BATCH_ROWS: usize = 20_000;
 // ── Column types ─────────────────────────────────────────────────────────────
 
 impl ColType {
+    /// The Parquet type. Counts (`U64`) are written as **signed** Int64, so that
+    /// subtracting two columns downstream (pandas/numpy, polars) can go negative
+    /// instead of wrapping around as unsigned arithmetic would. Values are
+    /// converted with a checked `i64::try_from`; see `to_i64`.
     fn arrow(self) -> DataType {
         match self {
             ColType::Str => DataType::Utf8,
-            ColType::U64 => DataType::UInt64,
+            ColType::U64 => DataType::Int64,
             ColType::I64 => DataType::Int64,
             ColType::F64 => DataType::Float64,
             ColType::Bool => DataType::Boolean,
         }
     }
+}
+
+/// A count as the Int64 it is written as. Counts never realistically exceed
+/// `i64::MAX`; if one did, this is an error rather than a wrapped value.
+fn to_i64(x: u64) -> Result<i64> {
+    i64::try_from(x).with_context(|| format!("count {x} exceeds the Int64 range of the Parquet column"))
+}
+
+/// Every column's `ColType`, in schema order (keys, A's side, B's side, the
+/// comparison block).
+fn column_types() -> Vec<ColType> {
+    let mut types: Vec<ColType> = COMPARE_KEY_COLS.iter().map(|c| c.ty).collect();
+    for _ in SIDES {
+        types.extend(COMPARE_SIDE_COLS.iter().map(|c| c.ty));
+    }
+    types.extend(COMPARE_DIFF_COLS.iter().map(|c| c.ty));
+    types
 }
 
 /// Build the flat 93-column schema, deriving names, order and types from
@@ -118,7 +137,8 @@ pub(crate) fn build_schema() -> SchemaRef {
 /// One column's Arrow builder, tagged so the appenders stay type-checked.
 enum ColBuilder {
     Str(StringBuilder),
-    U64(UInt64Builder),
+    /// A `U64` count, written as Int64 (see `ColType::arrow`).
+    U64(Int64Builder),
     I64(Int64Builder),
     F64(Float64Builder),
     Bool(BooleanBuilder),
@@ -128,7 +148,7 @@ impl ColBuilder {
     fn new(ty: ColType) -> Self {
         match ty {
             ColType::Str => ColBuilder::Str(StringBuilder::new()),
-            ColType::U64 => ColBuilder::U64(UInt64Builder::new()),
+            ColType::U64 => ColBuilder::U64(Int64Builder::new()),
             ColType::I64 => ColBuilder::I64(Int64Builder::new()),
             ColType::F64 => ColBuilder::F64(Float64Builder::new()),
             ColType::Bool => ColBuilder::Bool(BooleanBuilder::new()),
@@ -141,7 +161,8 @@ impl ColBuilder {
     /// unmapped case, and for a numeric column it means the value was absent.
     /// An unparseable numeric also becomes a null rather than a fabricated zero.
     /// `NaN` in a float column becomes a null, since it means "undefined".
-    fn append_raw(&mut self, s: &str) {
+    /// A count above `i64::MAX` is an error rather than a wrapped value.
+    fn append_raw(&mut self, s: &str) -> Result<()> {
         match self {
             ColBuilder::Str(b) => {
                 if s.is_empty() {
@@ -150,13 +171,14 @@ impl ColBuilder {
                     b.append_value(s)
                 }
             }
-            ColBuilder::U64(b) => b.append_option(s.parse::<u64>().ok()),
+            ColBuilder::U64(b) => b.append_option(s.parse::<u64>().ok().map(to_i64).transpose()?),
             ColBuilder::I64(b) => b.append_option(s.parse::<i64>().ok()),
             ColBuilder::F64(b) => {
                 b.append_option(s.parse::<f64>().ok().filter(|v| !v.is_nan()))
             }
             ColBuilder::Bool(b) => b.append_option(s.parse::<bool>().ok()),
         }
+        Ok(())
     }
 
     /// Append an already-typed comparison-block value.
@@ -164,7 +186,7 @@ impl ColBuilder {
         match (self, v) {
             (ColBuilder::Bool(b), DiffValue::Bool(x)) => b.append_value(x),
             (ColBuilder::I64(b), DiffValue::I64(x)) => b.append_value(x),
-            (ColBuilder::U64(b), DiffValue::U64(x)) => b.append_value(x),
+            (ColBuilder::U64(b), DiffValue::U64(x)) => b.append_value(to_i64(x)?),
             // NaN means "undefined" — store it as a null, not a float NaN.
             (ColBuilder::F64(b), DiffValue::F64(x)) => {
                 b.append_option(if x.is_nan() { None } else { Some(x) })
@@ -224,42 +246,31 @@ impl<W: Write + Send> ComparisonParquetWriter<W> {
             .build();
         let writer = ArrowWriter::try_new(sink, schema.clone(), Some(props))
             .context("creating the Parquet writer")?;
-        let cols = Self::fresh_builders(&schema);
+        let cols = Self::fresh_builders();
         Ok(Self { writer, schema, cols, buffered: 0, rows_written: 0 })
     }
 
-    fn fresh_builders(schema: &SchemaRef) -> Vec<ColBuilder> {
-        schema
-            .fields()
-            .iter()
-            .map(|f| {
-                ColBuilder::new(match f.data_type() {
-                    DataType::Utf8 => ColType::Str,
-                    DataType::UInt64 => ColType::U64,
-                    DataType::Int64 => ColType::I64,
-                    DataType::Float64 => ColType::F64,
-                    DataType::Boolean => ColType::Bool,
-                    other => unreachable!("build_schema never emits {other:?}"),
-                })
-            })
-            .collect()
+    /// One builder per column, in schema order, from the column definitions
+    /// (not the Arrow types: a `U64` count and an `I64` column are both Int64).
+    fn fresh_builders() -> Vec<ColBuilder> {
+        column_types().into_iter().map(ColBuilder::new).collect()
     }
 
     /// Append one row, handing the buffered batch to `ArrowWriter` when full.
     pub(crate) fn append(&mut self, row: &ComparisonRow<'_>) -> Result<()> {
         let n = COMPARE_SIDE_COLS.len();
-        self.cols[0].append_raw(row.read_name);
+        self.cols[0].append_raw(row.read_name)?;
         match &mut self.cols[1] {
-            ColBuilder::U64(b) => b.append_value(row.read_len),
-            _ => unreachable!("query_len is UInt64"),
+            ColBuilder::U64(b) => b.append_value(to_i64(row.read_len)?),
+            _ => unreachable!("query_len is a U64 count"),
         }
-        self.cols[2].append_raw(row.label_a);
-        self.cols[3].append_raw(row.label_b);
+        self.cols[2].append_raw(row.label_a)?;
+        self.cols[3].append_raw(row.label_b)?;
         for (i, v) in row.aln_a.raw().iter().enumerate() {
-            self.cols[4 + i].append_raw(v);
+            self.cols[4 + i].append_raw(v)?;
         }
         for (i, v) in row.aln_b.raw().iter().enumerate() {
-            self.cols[4 + n + i].append_raw(v);
+            self.cols[4 + n + i].append_raw(v)?;
         }
         for (i, v) in row.diff.values().into_iter().enumerate() {
             self.cols[4 + 2 * n + i].append_diff(v)?;
@@ -353,6 +364,7 @@ pub(crate) fn arrow_cell_to_string(a: &dyn Array, row: usize) -> String {
     }
     match a.data_type() {
         DataType::Utf8 => a.as_any().downcast_ref::<StringArray>().unwrap().value(row).to_string(),
+        // Files written before counts became Int64 store them as UInt64.
         DataType::UInt64 => a.as_any().downcast_ref::<UInt64Array>().unwrap().value(row).to_string(),
         DataType::Int64 => a.as_any().downcast_ref::<Int64Array>().unwrap().value(row).to_string(),
         DataType::Float64 => fmt_float(a.as_any().downcast_ref::<Float64Array>().unwrap().value(row)),
@@ -707,6 +719,50 @@ mod tests {
         let found = kv.iter().find(|k| k.key == "maligno_comparison_schema_version");
         assert_eq!(found.and_then(|k| k.value.clone()).as_deref(), Some(SCHEMA_VERSION));
         let _ = std::fs::remove_file(&path);
+    }
+
+    // ── integer types ────────────────────────────────────────────────────────
+
+    #[test]
+    fn count_columns_are_written_as_signed_int64() {
+        let a: &[(&str, &'static str)] =
+            &[("target_name", "chr1"), ("n_softclip_bases_start", "2"), ("n_insertion_bases", "7")];
+        let b: &[(&str, &'static str)] =
+            &[("target_name", "chr1"), ("n_softclip_bases_start", "39"), ("n_insertion_bases", "0")];
+        let (batch, tsv) = write_and_read(&[(a, b)]);
+        let schema = batch.schema();
+        for name in ["query_len", "n_softclip_bases_start_A", "n_insertion_bases_B", "n_query_junctions_shared"] {
+            assert_eq!(schema.field_with_name(name).unwrap().data_type(), &DataType::Int64, "{name}");
+        }
+        assert!(
+            schema.fields().iter().all(|f| f.data_type() != &DataType::UInt64),
+            "no column is written as UInt64"
+        );
+        // B − A on the columns goes negative instead of wrapping.
+        let col = |name: &str| {
+            let i = schema.index_of(name).unwrap();
+            batch.column(i).as_any().downcast_ref::<Int64Array>().unwrap().value(0)
+        };
+        assert_eq!(col("n_softclip_bases_start_A") - col("n_softclip_bases_start_B"), -37);
+        // The cells still render exactly as the TSV holds them.
+        let i = schema.index_of("n_softclip_bases_start_B").unwrap();
+        assert_eq!(cell_to_tsv(&batch, i, 0), tsv[0][i]);
+    }
+
+    #[test]
+    fn a_count_beyond_int64_is_an_error_not_a_wrapped_value() {
+        assert_eq!(to_i64(42).unwrap(), 42);
+        assert_eq!(to_i64(i64::MAX as u64).unwrap(), i64::MAX);
+        assert!(to_i64(i64::MAX as u64 + 1).is_err());
+        let mut b = ColBuilder::new(ColType::U64);
+        assert!(b.append_raw("18446744073709551615").is_err());
+        assert!(b.append_raw("12").is_ok());
+    }
+
+    #[test]
+    fn older_files_with_uint64_columns_still_read() {
+        let old = UInt64Array::from(vec![7u64]);
+        assert_eq!(arrow_cell_to_string(&old, 0), "7");
     }
 
     #[test]

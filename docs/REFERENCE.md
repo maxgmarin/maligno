@@ -774,6 +774,12 @@ stay values:
 A per-side value that is missing or can't be parsed becomes null, never a
 made-up `0`.
 
+**Column types.** Every integer column, counts and lengths included, is a
+signed 64-bit integer (Int64), so subtracting two columns in pandas, numpy or
+polars gives a negative number where it should, rather than wrapping around as
+unsigned integers would. Decimal columns are Float64, text columns are strings,
+and `strand_match` is a boolean.
+
 **Escaping.** In the TSV, text fields escape backslash, tab, newline and
 carriage return as `\\`, `\t`, `\n`, `\r`. Parquet stores the text unescaped.
 This only matters for read names or labels containing those characters.
