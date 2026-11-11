@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 
 use crate::external_sort::{parse_mem, sort_lines_to_file};
+use crate::memory::warn_if_many_memory_regions;
 use crate::io_utils::{open_input, open_output};
 use crate::paf_groups::PafGroups;
 use crate::readinfo::{collapse_group, readinfo_header};
@@ -100,7 +101,10 @@ pub fn run(args: &Paf2TablesArgs) -> Result<()> {
     let result = open_input(&args.input)
         .and_then(|lines| sort_lines_to_file(lines, &sorted, mem, &tmp_dir, Some(args.sort_threads)))
         .with_context(|| format!("sorting input ({})", args.input))
-        .and_then(|()| write_tables(&sorted, args, false));
+        .and_then(|()| {
+            warn_if_many_memory_regions();
+            write_tables(&sorted, args, false)
+        });
     if !args.keep_sorted_paf || result.is_err() {
         let _ = fs::remove_file(&sorted);
     }

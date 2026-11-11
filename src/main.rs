@@ -56,6 +56,7 @@ mod compare;            // primary `compare` command (on-rails: sort → tables 
 mod external_sort;      // in-process PAF sort (ext-sort) + read-ID set check
 mod paf2tables;         // PAF → sort → alninfo and/or readinfo, one pass
 mod paf_groups;         // shared PAF → per-read group reader (paf2tables / compare)
+mod memory;             // global allocator (mimalloc) + memory-mapping warning
 mod readinfo;           // shared collapse library (standalone alninfo → readinfo CLI not registered; run()/ReadInfoArgs/flush_group kept for future reuse)
 mod record;
 
@@ -73,6 +74,9 @@ use paf2tables::Paf2TablesArgs;
 use query_junction_compare::QueryJunctionCompareArgs;
 use genomic_junction_compare::GenomicJunctionCompareArgs;
 use sam2paf::Sam2pafArgs;
+
+#[global_allocator]
+static GLOBAL: memory::ReportingAlloc = memory::ReportingAlloc;
 
 /// Unified alignment-comparison toolkit.
 #[derive(Parser, Debug)]

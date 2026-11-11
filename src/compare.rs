@@ -40,6 +40,7 @@ use crate::comparison_row::{write_compare_header, ComparisonRow};
 use crate::parquet_out::{ComparisonParquetWriter, OutputFormat};
 use crate::compare_summary::{classify, CompareSummary};
 use crate::external_sort::{parse_mem, read_id_set_check, sort_lines_to_file};
+use crate::memory::warn_if_many_memory_regions;
 use crate::io_utils::open_output;
 use crate::paf_groups::PafGroups;
 use crate::columns::{header_line, READINFO_COLS};
@@ -263,6 +264,7 @@ pub fn run(args: &CompareArgs) -> Result<()> {
             .with_context(|| format!("sorting input A ({})", args.aln_a))?;
         sort_one(&args.aln_b, fmt_b, &b_sorted)
             .with_context(|| format!("sorting input B ({})", args.aln_b))?;
+        warn_if_many_memory_regions();
 
         // ── Step 2: read-ID set-equality check (O(1) memory), before any output ─
         eprintln!("[INFO] verifying the two inputs share the same read-ID set...");

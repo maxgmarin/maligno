@@ -128,6 +128,11 @@ to build one from. A record with neither stops the run (see
    in-process external sort. It holds up to `--sort-mem` (default `1G`) per
    file in memory, uses `--sort-threads` threads (default `1`), and spills to
    temporary files under `--sort-tmp-dir` (default: `--outdir`).
+   - On Linux, after the sort, `compare` warns if the process is using at
+     least half of the system's limit on memory mappings
+     (`vm.max_map_count`). Allocations fail at that limit even with RAM free.
+   - If you see the warning, use a smaller `--sort-mem`, or pre-sort the
+     inputs and use `--presorted`.
 2. **Verify.** Checks that both inputs carry the **same set of read names**.
    If they differ, `compare` stops with an error that reports how many names
    are shared, only in A, and only in B (with examples). With
@@ -285,6 +290,8 @@ is ready for `toolkit compare-readinfo`. The tables are identical to
   chunks that are written to **`--sort-tmp-dir`** and merged. The default
   directory is the folder of `--readinfo`, or of `--alninfo` when `--readinfo`
   is not given.
+  - On Linux, the same memory-mapping warning as `compare` is printed after
+    the sort.
 - **`--keep-sorted-paf`** keeps the sorted PAF as `<input stem>.sorted.paf.gz`
   in that same folder, where the stem is the input file name without `.gz`
   and `.paf`. It needs a file `--input`, not stdin.

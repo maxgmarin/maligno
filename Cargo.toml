@@ -13,6 +13,11 @@ anyhow   = "1"
 flate2   = "1"
 ext-sort = { version = "0.1", features = ["memory-limit"] }
 
+# Global allocator on every target. musl's built-in malloc fragments the address
+# space into tens of thousands of mappings under the external sort and hits
+# Linux's vm.max_map_count; mimalloc keeps a few large ones. v2 = the long-stable line.
+mimalloc = { version = "0.1", default-features = false, features = ["v2"] }
+
 # Parquet output for the comparison table. Pinned exactly and feature-trimmed:
 # default features would pull 71 new crates (arrow-csv/json/cast/string/ord/arith,
 # the regex stack, serde_json, and the brotli/snap/lz4 codecs); this set pulls 35.
